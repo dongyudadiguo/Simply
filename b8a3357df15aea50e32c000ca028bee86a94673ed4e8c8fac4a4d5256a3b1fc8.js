@@ -1,4 +1,4 @@
-﻿(async () => {
+// first_editor.js
 const http = require("http");
 const net = require("net");
 const fs = require("fs");
@@ -9,8 +9,6 @@ const HOST = "124.221.146.23";
 const PORT = 9000;
 const WEB_PORT = 7070;
 
-const TURNSTILE_SITEKEY = "0x4AAAAAADNgS66XXyfkgQMZ";
-
 const REGISTER        = 1;
 const UPLOAD_FILE     = 2;
 const DOWNLOAD_FILE   = 3;
@@ -18,7 +16,6 @@ const ADD_CHILD       = 4;
 const STREAM_CHILDREN = 5;
 const USER_SET_HASH   = 6;
 const USER_GET_HASH   = 7;
-const RECOMMEND_EDGE  = 8;
 
 const C = globalThis.CVM;
 
@@ -84,72 +81,41 @@ function socket() {
 }
 
 function recv_all(s, n) {
-    if (!s._buf)
-        s._buf = Buffer.alloc(0);
-
     return new Promise(resolve => {
-        function done() {
-            if (s._buf.length < n)
-                return false;
-
-            let out = s._buf.subarray(0, n);
-            s._buf = s._buf.subarray(n);
-
-            s.off("data", ondata);
-
-            resolve(out);
-            return true;
-        }
+        let chunks = [];
+        let len = 0;
 
         function ondata(data) {
-            s._buf = Buffer.concat([s._buf, data]);
-            done();
-        }
+            chunks.push(data);
+            len += data.length;
 
-        if (done())
-            return;
+            if (len >= n) {
+                s.off("data", ondata);
+
+                let buf = Buffer.concat(chunks, len);
+                let out = buf.subarray(0, n);
+                let rest = buf.subarray(n);
+
+                if (rest.length)
+                    s.unshift(rest);
+
+                resolve(out);
+            }
+        }
 
         s.on("data", ondata);
     });
 }
 
-function load_id() {
-    if (!fs.existsSync("id.bin"))
-        return null;
-
-    let id = fs.readFileSync("id.bin");
-
-    if (id.length !== 32)
-        return null;
-
-    return id;
-}
-
-function has_id() {
-    return Buffer.isBuffer(C.ID) && C.ID.length === 32;
-}
-
-async function register_token(token) {
-    let data = Buffer.from(token, "utf8");
-
-    let n = Buffer.alloc(4);
-    n.writeUInt32BE(data.length);
+async function register_id() {
+    if (fs.existsSync("id.bin"))
+        return fs.readFileSync("id.bin");
 
     let s = await socket();
 
-    s.write(Buffer.concat([
-        Buffer.from([REGISTER]),
-        n,
-        data
-    ]));
+    s.write(Buffer.from([REGISTER]));
 
-    let st = (await recv_all(s, 1))[0];
-
-    if (st !== 0) {
-        s.end();
-        throw new Error("register failed");
-    }
-
+    await recv_all(s, 1);
     let id = await recv_all(s, 32);
 
     s.end();
@@ -205,7 +171,10 @@ async function download_file(h, ext = ".bin") {
 
     fs.writeFileSync(full, data);
 
-    return { path: full, data };
+    return {
+        path: full,
+        data
+    };
 }
 
 async function add_child(parent, child) {
@@ -262,9 +231,6 @@ async function stream_children(parent) {
 }
 
 async function user_set_hash(key, val) {
-    if (!has_id())
-        throw new Error("no id");
-
     let s = await socket();
 
     s.write(Buffer.from([USER_SET_HASH]));
@@ -272,18 +238,12 @@ async function user_set_hash(key, val) {
     s.write(key);
     s.write(val);
 
-    let st = (await recv_all(s, 1))[0];
+    await recv_all(s, 1);
 
     s.end();
-
-    if (st !== 0)
-        throw new Error("USER_SET_HASH failed");
 }
 
 async function user_get_hash(key) {
-    if (!has_id())
-        return null;
-
     let s = await socket();
 
     s.write(Buffer.from([USER_GET_HASH]));
@@ -303,33 +263,22 @@ async function user_get_hash(key) {
     return h;
 }
 
-async function recommend_edge(parent, child) {
-    if (!has_id())
-        throw new Error("no id");
-
-    let s = await socket();
-
-    s.write(Buffer.from([RECOMMEND_EDGE]));
-    s.write(C.ID);
-    s.write(parent);
-    s.write(child);
-
-    let st = (await recv_all(s, 1))[0];
-
-    s.end();
-
-    if (st !== 0)
-        throw new Error("RECOMMEND_EDGE failed");
-}
-
 async function load_js(h) {
     let file = await download_file(h, ".js");
-    return file.data.toString("utf8");
+
+    delete require.cache[file.path];
+
+    let mod = require(file.path);
+
+    if (!mod.run)
+        throw new Error("module has no run: " + file.path);
+
+    return mod;
 }
 
 /* runtime */
 
-C.ID = load_id();
+C.ID = null;
 
 C.sha256 = sha256;
 C.str_sha = str_sha;
@@ -343,8 +292,7 @@ C.next_of = next_of;
 C.socket = socket;
 C.recv_all = recv_all;
 
-C.register_token = register_token;
-C.has_id = has_id;
+C.register_id = register_id;
 C.upload_file = upload_file;
 C.download_file = download_file;
 C.download_raw = download_raw;
@@ -353,7 +301,6 @@ C.get_first_child = get_first_child;
 C.stream_children = stream_children;
 C.user_set_hash = user_set_hash;
 C.user_get_hash = user_get_hash;
-C.recommend_edge = recommend_edge;
 C.load_js = load_js;
 
 C.STD = Buffer.alloc(4096);
@@ -418,16 +365,13 @@ C.add_check = function (key, sha, data) {
     C.CHECKLIST.push({ key, sha, data });
 };
 
-C.execute_set = function (file) {
-    C.IMP_FILE = file;
-
-    C.IMP = async function () {
-        await eval(C.IMP_FILE);
-    };
+C.execute_set = function (mod) {
+    C.IMP = mod.run;
 };
 
-C.execute_call = async function (file) {
-    await eval(file);
+C.execute_call = async function (mod) {
+    if (mod.run)
+        await mod.run();
 };
 
 C.run_block_exec = async function (block, call) {
@@ -451,12 +395,12 @@ C.run_block_exec = async function (block, call) {
             target = await get_first_child(key);
 
         try {
-            let file = await load_js(target);
+            let mod = await load_js(target);
 
             if (call)
-                await C.execute_call(file);
+                await C.execute_call(mod);
             else
-                C.execute_set(file);
+                C.execute_set(mod);
 
             return;
         } catch {
@@ -474,7 +418,7 @@ C.run_block_set = async block => C.run_block_exec(block, false);
 C.run_block_call = async block => C.run_block_exec(block, true);
 C.run_block_auto = async block => C.run_block_exec(block, true);
 
-/* parser */
+/* block parser */
 
 function parse_blocks(buf) {
     let out = [];
@@ -488,13 +432,11 @@ function parse_blocks(buf) {
             break;
 
         let data = buf.subarray(off + 4, off + 4 + sz);
-        let key = sha256(data);
 
         out.push({
             off,
             size: n,
             abs: sz,
-            key: hex(key),
             text: printable(data) ? data.toString("utf8") : null,
             hex: hex(data)
         });
@@ -539,22 +481,18 @@ const html_page = `
 <head>
 <meta charset="utf-8">
 <title>CVM Editor</title>
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <style>
 body{margin:0;background:#111;color:#ddd;font-family:Consolas,monospace}
 #top{height:36px;background:#222;display:flex;align-items:center;padding:4px;gap:8px}
-#auth{padding:8px;background:#181818}
-#main{display:grid;grid-template-columns:300px 1fr 420px;height:calc(100vh - 84px)}
+#main{display:grid;grid-template-columns:300px 1fr 420px;height:calc(100vh - 44px)}
 .panel{border-right:1px solid #333;overflow:auto;padding:8px}
 button,input{background:#222;color:#ddd;border:1px solid #555;padding:4px}
 .item{padding:4px;border-bottom:1px solid #222;cursor:pointer}
 .item:hover{background:#333}
 .pos{color:#80ff80}
 .neg{color:#ff8080}
-.hash{color:#888;font-size:11px;word-break:break-all}
 .hex{color:#888;word-break:break-all}
 textarea{width:100%;height:70vh;background:#080808;color:#ddd;border:1px solid #444;font-family:Consolas,monospace}
-.smallbtn{font-size:11px;margin-left:4px}
 </style>
 </head>
 <body>
@@ -563,18 +501,8 @@ textarea{width:100%;height:70vh;background:#080808;color:#ddd;border:1px solid #
 <input id="hashInput" style="width:520px" placeholder="hash hex">
 <button onclick="openHash()">open</button>
 <button onclick="saveHex()">save hex</button>
-<span id="idstatus">id: checking</span>
 <span id="status"></span>
 </div>
-
-<div id="auth">
-    <div
-        class="cf-turnstile"
-        data-sitekey="${TURNSTILE_SITEKEY}"
-        data-callback="onToken">
-    </div>
-</div>
-
 <div id="main">
 <div class="panel"><h3>children</h3><div id="children"></div></div>
 <div class="panel"><h3>blocks</h3><div id="blocks"></div></div>
@@ -582,8 +510,6 @@ textarea{width:100%;height:70vh;background:#080808;color:#ddd;border:1px solid #
 </div>
 
 <script>
-let CURRENT = "";
-
 function qs(x){return document.querySelector(x)}
 
 async function api(path,obj){
@@ -606,32 +532,6 @@ function prettyHex(s){
     return s.match(/.{1,32}/g)?.join("\\n")||"";
 }
 
-async function refreshId(){
-    let r = await api("/api/id");
-
-    if(r.ok){
-        qs("#idstatus").textContent = "id: " + r.id.slice(0, 16);
-        qs("#auth").style.display = "none";
-    }else{
-        qs("#idstatus").textContent = "id: none";
-        qs("#auth").style.display = "block";
-    }
-}
-
-async function onToken(token){
-    status("registering");
-
-    let r = await api("/api/register", { token });
-
-    if(r.ok){
-        qs("#idstatus").textContent = "id: " + r.id.slice(0, 16);
-        qs("#auth").style.display = "none";
-        status("registered");
-    }else{
-        status("register failed: " + r.error);
-    }
-}
-
 async function openRoot(){
     let r=await api("/api/root");
     await openHashHex(r.hash);
@@ -642,22 +542,15 @@ async function openHash(){
 }
 
 async function openHashHex(h){
-    CURRENT = h;
     qs("#hashInput").value=h;
     status("loading");
 
-    let c=await api("/api/children/"+h);
-    drawChildren(c.children || []);
-
     let d=await api("/api/download/"+h);
+    qs("#hexedit").value=prettyHex(d.hex);
+    drawBlocks(d.blocks);
 
-    if(d.error){
-        qs("#hexedit").value="";
-        qs("#blocks").innerHTML='<div class="item neg">not file / directory only</div>';
-    }else{
-        qs("#hexedit").value=prettyHex(d.hex);
-        drawBlocks(d.blocks || []);
-    }
+    let c=await api("/api/children/"+h);
+    drawChildren(c.children);
 
     status("ok");
 }
@@ -668,13 +561,8 @@ function drawChildren(arr){
     for(let h of arr){
         let div=document.createElement("div");
         div.className="item";
-        div.innerHTML='<div>'+h+'</div><button class="smallbtn">recommend</button>';
+        div.textContent=h;
         div.onclick=()=>openHashHex(h);
-        div.querySelector("button").onclick=async ev=>{
-            ev.stopPropagation();
-            let r=await api("/api/recommend",{parent:CURRENT,child:h});
-            status(r.ok?"recommended":"recommend failed: "+r.error);
-        };
         e.appendChild(div);
     }
 }
@@ -689,9 +577,7 @@ function drawBlocks(arr){
         let body=b.text!==null
             ? '"' + esc(b.text) + '"'
             : '<span class="hex">'+b.hex+'</span>';
-        div.innerHTML=
-            '<span class="'+cls+'">['+b.size+']</span> @'+b.off+' '+body+
-            '<div class="hash">key '+b.key+'</div>';
+        div.innerHTML='<span class="'+cls+'">['+b.size+']</span> @'+b.off+' '+body;
         e.appendChild(div);
     }
 }
@@ -703,7 +589,6 @@ async function saveHex(){
     await openHashHex(r.hash);
 }
 
-refreshId();
 openRoot();
 </script>
 </body>
@@ -719,41 +604,6 @@ async function handle(req, res) {
             return;
         }
 
-        if (url.pathname === "/api/id") {
-            if (has_id()) {
-                send(res, {
-                    ok: true,
-                    id: hex(C.ID)
-                });
-            } else {
-                send(res, {
-                    ok: false
-                });
-            }
-
-            return;
-        }
-
-        if (url.pathname === "/api/register") {
-            let b = JSON.parse((await body(req)).toString());
-
-            try {
-                C.ID = await register_token(b.token);
-
-                send(res, {
-                    ok: true,
-                    id: hex(C.ID)
-                });
-            } catch (e) {
-                send(res, {
-                    ok: false,
-                    error: String(e.message || e)
-                });
-            }
-
-            return;
-        }
-
         if (url.pathname === "/api/root") {
             send(res, { hash: hex(str_sha("Croot")) });
             return;
@@ -761,22 +611,13 @@ async function handle(req, res) {
 
         if (url.pathname.startsWith("/api/download/")) {
             let h = unhex(url.pathname.split("/").pop());
+            let data = await download_raw(h);
 
-            try {
-                let data = await download_raw(h);
-
-                send(res, {
-                    hash: hex(h),
-                    hex: hex(data),
-                    blocks: parse_blocks(data)
-                });
-            } catch {
-                send(res, {
-                    hash: hex(h),
-                    error: "not file"
-                });
-            }
-
+            send(res, {
+                hash: hex(h),
+                hex: hex(data),
+                blocks: parse_blocks(data)
+            });
             return;
         }
 
@@ -799,58 +640,21 @@ async function handle(req, res) {
             return;
         }
 
-        if (url.pathname === "/api/recommend") {
-            let b = JSON.parse((await body(req)).toString());
-
-            try {
-                await recommend_edge(unhex(b.parent), unhex(b.child));
-                send(res, { ok: true });
-            } catch (e) {
-                send(res, {
-                    ok: false,
-                    error: String(e.message || e)
-                });
-            }
-
-            return;
-        }
-
-        if (url.pathname.startsWith("/api/user_get/")) {
-            let key = unhex(url.pathname.split("/").pop());
-            let h = await user_get_hash(key);
-
-            send(res, {
-                ok: !!h,
-                hash: h ? hex(h) : null
-            });
-
-            return;
-        }
-
-        if (url.pathname === "/api/user_set") {
-            let b = JSON.parse((await body(req)).toString());
-
-            try {
-                await user_set_hash(unhex(b.key), unhex(b.val));
-                send(res, { ok: true });
-            } catch (e) {
-                send(res, {
-                    ok: false,
-                    error: String(e.message || e)
-                });
-            }
-
-            return;
-        }
-
         send(res, { error: "unknown" });
     } catch (e) {
         send(res, { error: String(e.stack || e) });
     }
 }
 
-if (!C.EDITOR_STARTED) {
-    C.EDITOR_STARTED = true;
+let started = false;
+
+exports.run = async function () {
+    if (started)
+        return;
+
+    started = true;
+
+    C.ID = await register_id();
 
     http.createServer((req, res) => {
         handle(req, res);
@@ -858,5 +662,4 @@ if (!C.EDITOR_STARTED) {
 
     console.log("CVM editor:");
     console.log("http://127.0.0.1:" + WEB_PORT);
-}
-})();
+};

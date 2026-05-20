@@ -1,10 +1,11 @@
-import socket, struct, hashlib
+import socket, struct, hashlib, os
 
 HOST = "124.221.146.23"
 PORT = 9000
 
 UPLOAD_FILE = 2
 ADD_CHILD = 4
+RECOMMEND_EDGE = 8
 
 def sha(b):
     return hashlib.sha256(b).digest()
@@ -28,7 +29,11 @@ def upload(data):
     s.sendall(struct.pack(">I", len(data)))
     s.sendall(data)
 
-    recvn(s, 1)
+    st = recvn(s, 1)[0]
+    if st:
+        s.close()
+        raise RuntimeError("upload failed")
+
     h = recvn(s, 32)
 
     s.close()
@@ -41,14 +46,43 @@ def add_child(parent, child):
     s.sendall(parent)
     s.sendall(child)
 
-    recvn(s, 1)
-
+    st = recvn(s, 1)[0]
     s.close()
+
+    if st:
+        raise RuntimeError("add_child failed")
+
+def recommend(parent, child, id):
+    s = conn()
+
+    s.sendall(bytes([RECOMMEND_EDGE]))
+    s.sendall(id)
+    s.sendall(parent)
+    s.sendall(child)
+
+    st = recvn(s, 1)[0]
+    s.close()
+
+    if st:
+        raise RuntimeError("recommend failed")
 
 def block(data):
     return struct.pack("<i", len(data)) + data
 
+def read_id():
+    if not os.path.exists("id.bin"):
+        raise RuntimeError("missing id.bin, register first")
+
+    id = open("id.bin", "rb").read()
+
+    if len(id) != 32:
+        raise RuntimeError("bad id.bin")
+
+    return id
+
 def main():
+    id = read_id()
+
     with open("first_editor.js", "rb") as f:
         editor_js = f.read()
 
@@ -58,13 +92,22 @@ def main():
     first_block = block(payload)
     first_block_hash = upload(first_block)
 
-    add_child(sha(payload), editor_hash)
-    add_child(sha(b"Cstart"), first_block_hash)
+    p_editor = sha(payload)
+    p_start = sha(b"Cstart")
+
+    # 先建立普通边
+    add_child(p_editor, editor_hash)
+    add_child(p_start, first_block_hash)
+
+    # 再推荐到最前
+    recommend(p_editor, editor_hash, id)
+    recommend(p_start, first_block_hash, id)
 
     print("editor js   ", editor_hash.hex())
     print("first block ", first_block_hash.hex())
-    print("sha(FIRST_EDITOR) -> editor js")
-    print("sha(Cstart)       -> first block")
+    print("parent editor", p_editor.hex())
+    print("parent start ", p_start.hex())
+    print("recommended ok")
 
 if __name__ == "__main__":
     main()

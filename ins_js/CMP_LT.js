@@ -1,4 +1,4 @@
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let a = C.STD.readInt32LE(0);
@@ -8,4 +8,4 @@ exports.run = async function () {
     C.STD_OFFSET = 1;
 
     await C.continue_();
-};
+})();

@@ -1,4 +1,4 @@
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -8,4 +8,4 @@ exports.run = async function () {
     C.STD_OFFSET += 4;
 
     await C.continue_();
-};
+})();

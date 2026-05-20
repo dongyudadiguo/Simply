@@ -10,19 +10,19 @@ OUT = "ins_js"
 
 FILES = {
 "CONTINUE.js": r'''
-exports.run = async function () {
+(async () => {
     await CVM.continue_();
-};
+})();
 ''',
 
 "BLOCK_END.js": r'''
-exports.run = async function () {
+(async () => {
     await CVM.block_end();
-};
+})();
 ''',
 
 "IF.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -42,11 +42,11 @@ exports.run = async function () {
         C.PTR = after;
         await C.run_block_auto(C.PTR);
     }
-};
+})();
 ''',
 
 "IFF.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -67,27 +67,27 @@ exports.run = async function () {
         await C.run_block_auto(trueblock);
     else
         await C.run_block_auto(falseblock);
-};
+})();
 ''',
 
 "CLEAR.js": r'''
-exports.run = async function () {
+(async () => {
     CVM.STD.fill(0);
     CVM.STD_OFFSET = 0;
     await CVM.continue_();
-};
+})();
 ''',
 
 "VARSIZE.js": r'''
-exports.run = async function () {
+(async () => {
     let data = CVM.next_of(CVM.PTR);
     CVM.VAR_SIZE = CVM.block_size(data);
     await CVM.continue_();
-};
+})();
 ''',
 
 "VARSET.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -100,11 +100,11 @@ exports.run = async function () {
     C.VARS.set(id, v);
 
     await C.continue_();
-};
+})();
 ''',
 
 "VARGET.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -120,11 +120,11 @@ exports.run = async function () {
     C.STD_OFFSET += C.VAR_SIZE;
 
     await C.continue_();
-};
+})();
 ''',
 
 "INT.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -134,11 +134,11 @@ exports.run = async function () {
     C.STD_OFFSET += 4;
 
     await C.continue_();
-};
+})();
 ''',
 
 "RANDOM_INT.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -153,11 +153,11 @@ exports.run = async function () {
     C.STD_OFFSET += 4;
 
     await C.continue_();
-};
+})();
 ''',
 
 "CMP_EQ.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let a = C.STD.readInt32LE(0);
@@ -167,11 +167,11 @@ exports.run = async function () {
     C.STD_OFFSET = 1;
 
     await C.continue_();
-};
+})();
 ''',
 
 "CMP_LT.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let a = C.STD.readInt32LE(0);
@@ -181,11 +181,11 @@ exports.run = async function () {
     C.STD_OFFSET = 1;
 
     await C.continue_();
-};
+})();
 ''',
 
 "CMP_GT.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let a = C.STD.readInt32LE(0);
@@ -195,11 +195,11 @@ exports.run = async function () {
     C.STD_OFFSET = 1;
 
     await C.continue_();
-};
+})();
 ''',
 
 "TEXT.js": r'''
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -208,23 +208,22 @@ exports.run = async function () {
     console.log(text);
 
     await C.continue_();
-};
+})();
 ''',
 
 "PRINT_INT.js": r'''
-exports.run = async function () {
+(async () => {
     let v = CVM.STD.readInt32LE(0);
 
     console.log(v);
 
     await CVM.continue_();
-};
+})();
 ''',
 
 "INPUT_INT.js": r'''
-const readline = require("readline/promises");
-
-exports.run = async function () {
+(async () => {
+    const readline = require("readline/promises");
     const C = CVM;
 
     const rl = readline.createInterface({
@@ -245,30 +244,24 @@ exports.run = async function () {
     C.STD_OFFSET += 4;
 
     await C.continue_();
-};
+})();
 ''',
 }
 
 INS = {
     "CONTINUE": "CONTINUE.js",
     "BLOCK_END": "BLOCK_END.js",
-
     "IF": "IF.js",
     "IFF": "IFF.js",
-
     "CLEAR": "CLEAR.js",
-
     "VARSIZE": "VARSIZE.js",
     "VARSET": "VARSET.js",
     "VARGET": "VARGET.js",
-
     "INT": "INT.js",
     "RANDOM_INT": "RANDOM_INT.js",
-
     "CMP_EQ": "CMP_EQ.js",
     "CMP_LT": "CMP_LT.js",
     "CMP_GT": "CMP_GT.js",
-
     "TEXT": "TEXT.js",
     "PRINT_INT": "PRINT_INT.js",
     "INPUT_INT": "INPUT_INT.js",
@@ -294,26 +287,20 @@ def recvn(s, n):
 
 def upload(data):
     s = conn()
-
     s.sendall(bytes([UPLOAD_FILE]))
     s.sendall(struct.pack(">I", len(data)))
     s.sendall(data)
-
     recvn(s, 1)
     h = recvn(s, 32)
-
     s.close()
     return h
 
 def add_child(parent, child):
     s = conn()
-
     s.sendall(bytes([ADD_CHILD]))
     s.sendall(parent)
     s.sendall(child)
-
     recvn(s, 1)
-
     s.close()
 
 def write_files():
@@ -333,7 +320,6 @@ def upload_ins():
             data = f.read()
 
         h = upload(data)
-
         add_child(key(ins), h)
 
         print(f"{ins:12} {file:18} {h.hex()}")

@@ -1,6 +1,5 @@
-const readline = require("readline/promises");
-
-exports.run = async function () {
+(async () => {
+    const readline = require("readline/promises");
     const C = CVM;
 
     const rl = readline.createInterface({
@@ -21,4 +20,4 @@ exports.run = async function () {
     C.STD_OFFSET += 4;
 
     await C.continue_();
-};
+})();

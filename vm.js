@@ -1,4 +1,3 @@
-// vm.js
 const net = require("net");
 const fs = require("fs");
 const path = require("path");
@@ -13,6 +12,8 @@ const STREAM_CHILDREN = 5;
 const CVM = globalThis.CVM = {
     BASE: null,
     PTR: null,
+
+    IMP_FILE: "",
     IMP: null,
 };
 
@@ -120,23 +121,24 @@ async function download_file(hash, ext = ".js") {
 
     fs.writeFileSync(full, data);
 
-    return {
-        path: full,
-        data
-    };
+    return { path: full, data };
 }
 
 async function load_js(hash) {
     let file = await download_file(hash, ".js");
+    return file.data.toString("utf8");
+}
 
-    delete require.cache[file.path];
+function execute_set(file) {
+    CVM.IMP_FILE = file;
 
-    let mod = require(file.path);
+    CVM.IMP = async function () {
+        await eval(CVM.IMP_FILE);
+    };
+}
 
-    if (!mod.run)
-        throw new Error("module has no run(): " + file.path);
-
-    return mod;
+async function execute_call(file) {
+    await eval(file);
 }
 
 Object.assign(CVM, {
@@ -154,6 +156,9 @@ Object.assign(CVM, {
     get_first_child,
     download_file,
     load_js,
+
+    execute_set,
+    execute_call,
 });
 
 async function boot() {
@@ -184,15 +189,15 @@ async function boot() {
     let first_js_hash = await get_first_child(first_key);
     console.log("first js hash", hex(first_js_hash));
 
-    let mod = await load_js(first_js_hash);
+    let first_file = await load_js(first_js_hash);
 
-    CVM.IMP = mod.run;
+    execute_set(first_file);
 }
 
 (async function main() {
     await boot();
 
-    console.log("run first module");
+    console.log("run first file");
 
     await CVM.IMP();
 })();

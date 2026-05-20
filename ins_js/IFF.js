@@ -1,4 +1,4 @@
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -19,4 +19,4 @@ exports.run = async function () {
         await C.run_block_auto(trueblock);
     else
         await C.run_block_auto(falseblock);
-};
+})();

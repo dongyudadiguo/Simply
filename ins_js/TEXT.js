@@ -1,4 +1,4 @@
-exports.run = async function () {
+(async () => {
     const C = CVM;
 
     let data = C.next_of(C.PTR);
@@ -7,4 +7,4 @@ exports.run = async function () {
     console.log(text);
 
     await C.continue_();
-};
+})();

@@ -1,3 +1,3 @@
-exports.run = async function () {
+(async () => {
     await CVM.continue_();
-};
+})();

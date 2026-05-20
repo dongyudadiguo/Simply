@@ -1,4 +1,4 @@
-// first_editor.js
+(async () => {
 const http = require("http");
 const net = require("net");
 const fs = require("fs");
@@ -174,10 +174,7 @@ async function download_file(h, ext = ".bin") {
 
     fs.writeFileSync(full, data);
 
-    return {
-        path: full,
-        data
-    };
+    return { path: full, data };
 }
 
 async function add_child(parent, child) {
@@ -268,20 +265,12 @@ async function user_get_hash(key) {
 
 async function load_js(h) {
     let file = await download_file(h, ".js");
-
-    delete require.cache[file.path];
-
-    let mod = require(file.path);
-
-    if (!mod.run)
-        throw new Error("module has no run: " + file.path);
-
-    return mod;
+    return file.data.toString("utf8");
 }
 
 /* runtime */
 
-C.ID = null;
+C.ID = await register_id();
 
 C.sha256 = sha256;
 C.str_sha = str_sha;
@@ -368,13 +357,16 @@ C.add_check = function (key, sha, data) {
     C.CHECKLIST.push({ key, sha, data });
 };
 
-C.execute_set = function (mod) {
-    C.IMP = mod.run;
+C.execute_set = function (file) {
+    C.IMP_FILE = file;
+
+    C.IMP = async function () {
+        await eval(C.IMP_FILE);
+    };
 };
 
-C.execute_call = async function (mod) {
-    if (mod.run)
-        await mod.run();
+C.execute_call = async function (file) {
+    await eval(file);
 };
 
 C.run_block_exec = async function (block, call) {
@@ -398,12 +390,12 @@ C.run_block_exec = async function (block, call) {
             target = await get_first_child(key);
 
         try {
-            let mod = await load_js(target);
+            let file = await load_js(target);
 
             if (call)
-                await C.execute_call(mod);
+                await C.execute_call(file);
             else
-                C.execute_set(mod);
+                C.execute_set(file);
 
             return;
         } catch {
@@ -421,7 +413,7 @@ C.run_block_set = async block => C.run_block_exec(block, false);
 C.run_block_call = async block => C.run_block_exec(block, true);
 C.run_block_auto = async block => C.run_block_exec(block, true);
 
-/* block parser */
+/* parser */
 
 function parse_blocks(buf) {
     let out = [];
@@ -548,12 +540,18 @@ async function openHashHex(h){
     qs("#hashInput").value=h;
     status("loading");
 
-    let d=await api("/api/download/"+h);
-    qs("#hexedit").value=prettyHex(d.hex);
-    drawBlocks(d.blocks);
-
     let c=await api("/api/children/"+h);
-    drawChildren(c.children);
+    drawChildren(c.children || []);
+
+    let d=await api("/api/download/"+h);
+
+    if(d.error){
+        qs("#hexedit").value="";
+        qs("#blocks").innerHTML='<div class="item neg">not file / directory only</div>';
+    }else{
+        qs("#hexedit").value=prettyHex(d.hex);
+        drawBlocks(d.blocks || []);
+    }
 
     status("ok");
 }
@@ -614,13 +612,22 @@ async function handle(req, res) {
 
         if (url.pathname.startsWith("/api/download/")) {
             let h = unhex(url.pathname.split("/").pop());
-            let data = await download_raw(h);
 
-            send(res, {
-                hash: hex(h),
-                hex: hex(data),
-                blocks: parse_blocks(data)
-            });
+            try {
+                let data = await download_raw(h);
+
+                send(res, {
+                    hash: hex(h),
+                    hex: hex(data),
+                    blocks: parse_blocks(data)
+                });
+            } catch {
+                send(res, {
+                    hash: hex(h),
+                    error: "not file"
+                });
+            }
+
             return;
         }
 
@@ -649,15 +656,8 @@ async function handle(req, res) {
     }
 }
 
-let started = false;
-
-exports.run = async function () {
-    if (started)
-        return;
-
-    started = true;
-
-    C.ID = await register_id();
+if (!C.EDITOR_STARTED) {
+    C.EDITOR_STARTED = true;
 
     http.createServer((req, res) => {
         handle(req, res);
@@ -665,4 +665,5 @@ exports.run = async function () {
 
     console.log("CVM editor:");
     console.log("http://127.0.0.1:" + WEB_PORT);
-};
+}
+})();

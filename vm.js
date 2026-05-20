@@ -1,17 +1,15 @@
 const net = require("net");
 const fs = require("fs");
+const path = require("path");
 const crypto = require("crypto");
-const { pathToFileURL } = require("url");
 
 const HOST = "124.221.146.23";
 const PORT = 9000;
 
-const REGISTER = 1;
 const DOWNLOAD_FILE = 3;
 const STREAM_CHILDREN = 5;
 
 const CVM = globalThis.CVM = {
-    ID: null,
     BASE: null,
     PTR: null,
     IMP: null,
@@ -47,25 +45,23 @@ function block_data(p) {
 
 function socket() {
     return new Promise(resolve => {
-        let s = net.createConnection(PORT, HOST, () => {
-            resolve(s);
-        });
+        let s = net.createConnection(PORT, HOST, () => resolve(s));
     });
 }
 
 function recv_all(s, n) {
     return new Promise(resolve => {
-        let arr = [];
+        let chunks = [];
         let len = 0;
 
         function ondata(data) {
-            arr.push(data);
+            chunks.push(data);
             len += data.length;
 
             if (len >= n) {
                 s.off("data", ondata);
 
-                let buf = Buffer.concat(arr, len);
+                let buf = Buffer.concat(chunks, len);
                 let out = buf.subarray(0, n);
                 let rest = buf.subarray(n);
 
@@ -80,31 +76,20 @@ function recv_all(s, n) {
     });
 }
 
-async function register_id() {
-    let s = await socket();
-
-    s.write(Buffer.from([REGISTER]));
-
-    await recv_all(s, 1);
-    let id = await recv_all(s, 32);
-
-    s.end();
-
-    return id;
-}
-
 async function get_first_child(parent) {
     let s = await socket();
 
     s.write(Buffer.from([STREAM_CHILDREN]));
-    s.write(CVM.ID);
     s.write(parent);
 
-    await recv_all(s, 1);
+    let st = (await recv_all(s, 1))[0];
+
+    if (st !== 0)
+        throw new Error("no child: " + hex(parent));
+
     let child = await recv_all(s, 32);
 
     s.end();
-
     return child;
 }
 
@@ -114,7 +99,10 @@ async function download_file(hash, ext = ".js") {
     s.write(Buffer.from([DOWNLOAD_FILE]));
     s.write(hash);
 
-    await recv_all(s, 1);
+    let st = (await recv_all(s, 1))[0];
+
+    if (st !== 0)
+        throw new Error("download failed: " + hex(hash));
 
     let size_buf = await recv_all(s, 4);
     let size = size_buf.readUInt32BE(0);
@@ -123,11 +111,13 @@ async function download_file(hash, ext = ".js") {
 
     s.end();
 
-    let path = hex(hash) + ext;
-    fs.writeFileSync(path, data);
+    let file = hex(hash) + ext;
+    let full = path.resolve(process.cwd(), file);
+
+    fs.writeFileSync(full, data);
 
     return {
-        path,
+        path: full,
         data
     };
 }
@@ -135,11 +125,14 @@ async function download_file(hash, ext = ".js") {
 async function load_js(hash) {
     let file = await download_file(hash, ".js");
 
-    let url =
-        pathToFileURL(process.cwd() + "/" + file.path).href +
-        "?t=" + Date.now();
+    delete require.cache[file.path];
 
-    return import(url);
+    let mod = require(file.path);
+
+    if (!mod.run)
+        throw new Error("module has no run(): " + file.path);
+
+    return mod;
 }
 
 Object.assign(CVM, {
@@ -154,20 +147,22 @@ Object.assign(CVM, {
     socket,
     recv_all,
 
-    register_id,
     get_first_child,
     download_file,
     load_js,
 });
 
 async function boot() {
-    CVM.ID = await register_id();
+    console.log("boot");
 
     let start_key = str_sha("Cstart");
+    console.log("Cstart", hex(start_key));
 
     let first_block_hash = await get_first_child(start_key);
+    console.log("first block", hex(first_block_hash));
 
     let first_block = await download_file(first_block_hash, ".bin");
+    console.log("first block downloaded", first_block.path);
 
     CVM.BASE = {
         buf: first_block.data,
@@ -176,21 +171,21 @@ async function boot() {
 
     CVM.PTR = CVM.BASE;
 
-    let first_js_hash = sha256(block_data(CVM.PTR));
+    let payload = block_data(CVM.PTR);
+    console.log("first payload", payload.toString());
+
+    let first_js_hash = sha256(payload);
+    console.log("first js", hex(first_js_hash));
 
     let mod = await load_js(first_js_hash);
 
     CVM.IMP = mod.run;
 }
 
-async function main_loop() {
-    while (1) {
-        await CVM.IMP();
-        await new Promise(resolve => setImmediate(resolve));
-    }
-}
-
 (async function main() {
     await boot();
-    await main_loop();
+
+    console.log("run first module");
+
+    await CVM.IMP();
 })();

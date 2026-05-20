@@ -1,3 +1,4 @@
+// vm.js
 const net = require("net");
 const fs = require("fs");
 const path = require("path");
@@ -177,8 +178,11 @@ async function boot() {
     let payload = block_data(CVM.PTR);
     console.log("first payload", payload.toString());
 
-    let first_js_hash = sha256(payload);
-    console.log("first js", hex(first_js_hash));
+    let first_key = sha256(payload);
+    console.log("first key", hex(first_key));
+
+    let first_js_hash = await get_first_child(first_key);
+    console.log("first js hash", hex(first_js_hash));
 
     let mod = await load_js(first_js_hash);
 

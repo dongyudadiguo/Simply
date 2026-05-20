@@ -50,27 +50,30 @@ function socket() {
 }
 
 function recv_all(s, n) {
+    if (!s._buf)
+        s._buf = Buffer.alloc(0);
+
     return new Promise(resolve => {
-        let chunks = [];
-        let len = 0;
+        function done() {
+            if (s._buf.length < n)
+                return false;
+
+            let out = s._buf.subarray(0, n);
+            s._buf = s._buf.subarray(n);
+
+            s.off("data", ondata);
+
+            resolve(out);
+            return true;
+        }
 
         function ondata(data) {
-            chunks.push(data);
-            len += data.length;
-
-            if (len >= n) {
-                s.off("data", ondata);
-
-                let buf = Buffer.concat(chunks, len);
-                let out = buf.subarray(0, n);
-                let rest = buf.subarray(n);
-
-                if (rest.length)
-                    s.unshift(rest);
-
-                resolve(out);
-            }
+            s._buf = Buffer.concat([s._buf, data]);
+            done();
         }
+
+        if (done())
+            return;
 
         s.on("data", ondata);
     });

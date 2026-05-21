@@ -35,7 +35,7 @@ function hex(b) {
 }
 
 function unhex(s) {
-    return Buffer.from(String(s || "").replace(/\s+/g, ""), "hex");
+    return Buffer.from(s.replace(/\s+/g, ""), "hex");
 }
 
 function read_i32(p) {
@@ -171,13 +171,7 @@ async function upload_file(data) {
         data
     ]));
 
-    let st = (await recv_all(s, 1))[0];
-
-    if (st !== 0) {
-        s.end();
-        throw new Error("upload failed");
-    }
-
+    await recv_all(s, 1);
     let h = await recv_all(s, 32);
 
     s.end();
@@ -192,10 +186,8 @@ async function download_raw(h) {
 
     let st = (await recv_all(s, 1))[0];
 
-    if (st !== 0) {
-        s.end();
+    if (st !== 0)
         throw new Error("download failed: " + hex(h));
-    }
 
     let nb = await recv_all(s, 4);
     let n = nb.readUInt32BE(0);
@@ -223,31 +215,9 @@ async function add_child(parent, child) {
     s.write(parent);
     s.write(child);
 
-    let st = (await recv_all(s, 1))[0];
+    await recv_all(s, 1);
 
     s.end();
-
-    if (st !== 0)
-        throw new Error("add_child failed");
-}
-
-async function recommend_edge(parent, child) {
-    if (!has_id())
-        throw new Error("no id, register first");
-
-    let s = await socket();
-
-    s.write(Buffer.from([RECOMMEND_EDGE]));
-    s.write(C.ID);
-    s.write(parent);
-    s.write(child);
-
-    let st = (await recv_all(s, 1))[0];
-
-    s.end();
-
-    if (st !== 0)
-        throw new Error("recommend failed");
 }
 
 async function get_first_child(parent) {
@@ -258,10 +228,8 @@ async function get_first_child(parent) {
 
     let st = (await recv_all(s, 1))[0];
 
-    if (st !== 0) {
-        s.end();
+    if (st !== 0)
         throw new Error("no child: " + hex(parent));
-    }
 
     let child = await recv_all(s, 32);
 
@@ -295,7 +263,7 @@ async function stream_children(parent) {
 
 async function user_set_hash(key, val) {
     if (!has_id())
-        throw new Error("no id, register first");
+        throw new Error("no id");
 
     let s = await socket();
 
@@ -335,6 +303,25 @@ async function user_get_hash(key) {
     return h;
 }
 
+async function recommend_edge(parent, child) {
+    if (!has_id())
+        throw new Error("no id");
+
+    let s = await socket();
+
+    s.write(Buffer.from([RECOMMEND_EDGE]));
+    s.write(C.ID);
+    s.write(parent);
+    s.write(child);
+
+    let st = (await recv_all(s, 1))[0];
+
+    s.end();
+
+    if (st !== 0)
+        throw new Error("RECOMMEND_EDGE failed");
+}
+
 async function load_js(h) {
     let file = await download_file(h, ".js");
     return file.data.toString("utf8");
@@ -358,16 +345,15 @@ C.recv_all = recv_all;
 
 C.register_token = register_token;
 C.has_id = has_id;
-
 C.upload_file = upload_file;
 C.download_file = download_file;
 C.download_raw = download_raw;
 C.add_child = add_child;
-C.recommend_edge = recommend_edge;
 C.get_first_child = get_first_child;
 C.stream_children = stream_children;
 C.user_set_hash = user_set_hash;
 C.user_get_hash = user_get_hash;
+C.recommend_edge = recommend_edge;
 C.load_js = load_js;
 
 C.STD = Buffer.alloc(4096);
@@ -502,14 +488,15 @@ function parse_blocks(buf) {
             break;
 
         let data = buf.subarray(off + 4, off + 4 + sz);
+        let key = sha256(data);
 
         out.push({
             off,
             size: n,
             abs: sz,
+            key: hex(key),
             text: printable(data) ? data.toString("utf8") : null,
-            hex: hex(data),
-            key: hex(sha256(data))
+            hex: hex(data)
         });
 
         off += 4 + sz;
@@ -555,19 +542,19 @@ const html_page = `
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <style>
 body{margin:0;background:#111;color:#ddd;font-family:Consolas,monospace}
-#top{min-height:36px;background:#222;display:flex;align-items:center;padding:4px;gap:8px;flex-wrap:wrap}
+#top{height:36px;background:#222;display:flex;align-items:center;padding:4px;gap:8px}
 #auth{padding:8px;background:#181818}
-#main{display:grid;grid-template-columns:330px 1fr 460px;height:calc(100vh - 90px)}
+#main{display:grid;grid-template-columns:300px 1fr 420px;height:calc(100vh - 84px)}
 .panel{border-right:1px solid #333;overflow:auto;padding:8px}
-button,input{background:#222;color:#ddd;border:1px solid #555;padding:4px;margin:2px}
+button,input{background:#222;color:#ddd;border:1px solid #555;padding:4px}
 .item{padding:4px;border-bottom:1px solid #222;cursor:pointer}
 .item:hover{background:#333}
 .pos{color:#80ff80}
 .neg{color:#ff8080}
-.hash{color:#88aaff;word-break:break-all}
+.hash{color:#888;font-size:11px;word-break:break-all}
 .hex{color:#888;word-break:break-all}
-textarea{width:100%;height:66vh;background:#080808;color:#ddd;border:1px solid #444;font-family:Consolas,monospace}
-.small{font-size:12px;color:#aaa}
+textarea{width:100%;height:70vh;background:#080808;color:#ddd;border:1px solid #444;font-family:Consolas,monospace}
+.smallbtn{font-size:11px;margin-left:4px}
 </style>
 </head>
 <body>
@@ -575,9 +562,7 @@ textarea{width:100%;height:66vh;background:#080808;color:#ddd;border:1px solid #
 <button onclick="openRoot()">Croot</button>
 <input id="hashInput" style="width:520px" placeholder="hash hex">
 <button onclick="openHash()">open</button>
-<button onclick="saveHex()">upload hex</button>
-<button onclick="addUploadedToCurrent()">add uploaded as child</button>
-<button onclick="recommendUploadedToCurrent()">recommend uploaded</button>
+<button onclick="saveHex()">save hex</button>
 <span id="idstatus">id: checking</span>
 <span id="status"></span>
 </div>
@@ -593,15 +578,11 @@ textarea{width:100%;height:66vh;background:#080808;color:#ddd;border:1px solid #
 <div id="main">
 <div class="panel"><h3>children</h3><div id="children"></div></div>
 <div class="panel"><h3>blocks</h3><div id="blocks"></div></div>
-<div class="panel">
-<h3>hex</h3>
-<textarea id="hexedit"></textarea>
-<div class="small">last uploaded: <span id="lastUploaded"></span></div>
-</div>
+<div class="panel"><h3>hex</h3><textarea id="hexedit"></textarea></div>
 </div>
 
 <script>
-let LAST_UPLOADED = "";
+let CURRENT = "";
 
 function qs(x){return document.querySelector(x)}
 
@@ -620,10 +601,6 @@ function esc(s){
 }
 
 function status(s){qs("#status").textContent=s}
-
-function currentHash(){
-    return qs("#hashInput").value.trim();
-}
 
 function prettyHex(s){
     return s.match(/.{1,32}/g)?.join("\\n")||"";
@@ -661,10 +638,11 @@ async function openRoot(){
 }
 
 async function openHash(){
-    await openHashHex(currentHash());
+    await openHashHex(qs("#hashInput").value.trim());
 }
 
 async function openHashHex(h){
+    CURRENT = h;
     qs("#hashInput").value=h;
     status("loading");
 
@@ -687,27 +665,16 @@ async function openHashHex(h){
 function drawChildren(arr){
     let e=qs("#children");
     e.innerHTML="";
-
     for(let h of arr){
         let div=document.createElement("div");
         div.className="item";
-
-        let span=document.createElement("div");
-        span.className="hash";
-        span.textContent=h;
-        span.onclick=()=>openHashHex(h);
-
-        let rec=document.createElement("button");
-        rec.textContent="recommend";
-        rec.onclick=async ev=>{
+        div.innerHTML='<div>'+h+'</div><button class="smallbtn">recommend</button>';
+        div.onclick=()=>openHashHex(h);
+        div.querySelector("button").onclick=async ev=>{
             ev.stopPropagation();
-            let r=await api("/api/recommend",{parent:currentHash(),child:h});
-            if(r.ok) status("recommended");
-            else status("recommend failed: "+r.error);
+            let r=await api("/api/recommend",{parent:CURRENT,child:h});
+            status(r.ok?"recommended":"recommend failed: "+r.error);
         };
-
-        div.appendChild(span);
-        div.appendChild(rec);
         e.appendChild(div);
     }
 }
@@ -715,57 +682,16 @@ function drawChildren(arr){
 function drawBlocks(arr){
     let e=qs("#blocks");
     e.innerHTML="";
-
     for(let b of arr){
         let div=document.createElement("div");
         div.className="item";
-
         let cls=b.size<0?"neg":"pos";
         let body=b.text!==null
             ? '"' + esc(b.text) + '"'
             : '<span class="hex">'+b.hex+'</span>';
-
         div.innerHTML=
-            '<div><span class="'+cls+'">['+b.size+']</span> @'+b.off+'</div>' +
-            '<div>'+body+'</div>' +
-            '<div class="small">key: <span class="hash">'+b.key+'</span></div>';
-
-        let openKey=document.createElement("button");
-        openKey.textContent="open key";
-        openKey.onclick=()=>openHashHex(b.key);
-
-        let setOverride=document.createElement("button");
-        setOverride.textContent="set override -> last uploaded";
-        setOverride.onclick=async()=>{
-            if(!LAST_UPLOADED){
-                status("no last uploaded");
-                return;
-            }
-
-            let r=await api("/api/user_set",{
-                key:b.key,
-                val:LAST_UPLOADED
-            });
-
-            if(r.ok) status("override set");
-            else status("override failed: "+r.error);
-        };
-
-        let getOverride=document.createElement("button");
-        getOverride.textContent="get override";
-        getOverride.onclick=async()=>{
-            let r=await api("/api/user_get/"+b.key);
-
-            if(r.ok && r.val)
-                status("override: "+r.val);
-            else
-                status("no override");
-        };
-
-        div.appendChild(openKey);
-        div.appendChild(setOverride);
-        div.appendChild(getOverride);
-
+            '<span class="'+cls+'">['+b.size+']</span> @'+b.off+' '+body+
+            '<div class="hash">key '+b.key+'</div>';
         e.appendChild(div);
     }
 }
@@ -773,55 +699,8 @@ function drawBlocks(arr){
 async function saveHex(){
     let h=qs("#hexedit").value.replace(/\\s+/g,"");
     let r=await api("/api/upload_hex",{hex:h});
-
-    if(r.error){
-        status("save failed: "+r.error);
-        return;
-    }
-
-    LAST_UPLOADED = r.hash;
-    qs("#lastUploaded").textContent = r.hash;
-
     status("saved "+r.hash);
     await openHashHex(r.hash);
-}
-
-async function addUploadedToCurrent(){
-    if(!LAST_UPLOADED){
-        status("no last uploaded");
-        return;
-    }
-
-    let r=await api("/api/add_child",{
-        parent:currentHash(),
-        child:LAST_UPLOADED
-    });
-
-    if(r.ok){
-        status("child added");
-        await openHashHex(currentHash());
-    }else{
-        status("add failed: "+r.error);
-    }
-}
-
-async function recommendUploadedToCurrent(){
-    if(!LAST_UPLOADED){
-        status("no last uploaded");
-        return;
-    }
-
-    let r=await api("/api/recommend",{
-        parent:currentHash(),
-        child:LAST_UPLOADED
-    });
-
-    if(r.ok){
-        status("recommended uploaded");
-        await openHashHex(currentHash());
-    }else{
-        status("recommend failed: "+r.error);
-    }
 }
 
 refreshId();
@@ -920,46 +799,11 @@ async function handle(req, res) {
             return;
         }
 
-        if (url.pathname === "/api/add_child") {
-            let b = JSON.parse((await body(req)).toString());
-
-            try {
-                await add_child(unhex(b.parent), unhex(b.child));
-
-                send(res, { ok: true });
-            } catch (e) {
-                send(res, {
-                    ok: false,
-                    error: String(e.message || e)
-                });
-            }
-
-            return;
-        }
-
         if (url.pathname === "/api/recommend") {
             let b = JSON.parse((await body(req)).toString());
 
             try {
                 await recommend_edge(unhex(b.parent), unhex(b.child));
-
-                send(res, { ok: true });
-            } catch (e) {
-                send(res, {
-                    ok: false,
-                    error: String(e.message || e)
-                });
-            }
-
-            return;
-        }
-
-        if (url.pathname === "/api/user_set") {
-            let b = JSON.parse((await body(req)).toString());
-
-            try {
-                await user_set_hash(unhex(b.key), unhex(b.val));
-
                 send(res, { ok: true });
             } catch (e) {
                 send(res, {
@@ -973,12 +817,28 @@ async function handle(req, res) {
 
         if (url.pathname.startsWith("/api/user_get/")) {
             let key = unhex(url.pathname.split("/").pop());
-            let val = await user_get_hash(key);
+            let h = await user_get_hash(key);
 
             send(res, {
-                ok: true,
-                val: val ? hex(val) : null
+                ok: !!h,
+                hash: h ? hex(h) : null
             });
+
+            return;
+        }
+
+        if (url.pathname === "/api/user_set") {
+            let b = JSON.parse((await body(req)).toString());
+
+            try {
+                await user_set_hash(unhex(b.key), unhex(b.val));
+                send(res, { ok: true });
+            } catch (e) {
+                send(res, {
+                    ok: false,
+                    error: String(e.message || e)
+                });
+            }
 
             return;
         }

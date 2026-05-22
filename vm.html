@@ -1,101 +1,52 @@
 <script>
-  const host = "124.221.146.23";
-  const port = 9000;
-  const apiBase =
-    location.origin == "null" ? `http://${host}:${port}` : location.origin;
+const host = "124.221.146.23";
+const port = 9000;
+const apiBase = location.origin == "null" ? `http://${host}:${port}` : location.origin;
 
-  const textEncoder = new TextEncoder();
-  const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
-  const CVM = (globalThis.CVM = {
-    BASE: null,
-    PTR: null,
-    IMP: null,
-  });
+const CVM = globalThis.CVM = {
+  BASE: null,
+  PTR: null,
+  IMP: null,
+};
 
-  const toBytes = (value) =>
-    value instanceof Uint8Array
-      ? value
-      : value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : ArrayBuffer.isView(value)
-          ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-          : textEncoder.encode(String(value));
+const toBytes = (value) =>
+  value instanceof Uint8Array ? value :
+  value instanceof ArrayBuffer ? new Uint8Array(value) :
+  ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) :
+  textEncoder.encode(String(value));
 
-  const toHex = (value) =>
-    [...toBytes(value)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
+const toHex = (value) =>
+  [...toBytes(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
-  const fromHex = (hex) =>
-    new Uint8Array(
-      String(hex)
-        .match(/../g)
-        ?.map((item) => parseInt(item, 16)) || [],
-    );
+const sha256 = async (value) =>
+  new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
 
-  const sha256 = async (value) =>
-    new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
+const downloadFile = async (hash) =>
+  new Uint8Array(await (await fetch(`${apiBase}/api/file/${toHex(hash)}`)).arrayBuffer());
 
-  const readInt32 = (pointer) =>
-    new DataView(
-      toBytes(pointer.buf).buffer,
-      toBytes(pointer.buf).byteOffset + pointer.off,
-      4,
-    ).getInt32(0, true);
+Object.assign(CVM, {
+  sha256,
+  str_sha: sha256,
+  hex: toHex,
+  download_file: downloadFile,
+  execute_call: (source) => eval(`(async()=>{${source}})()`),
+});
 
-  const getBlockSize = (pointer) => {
-    const size = readInt32(pointer);
-    return size < 0 ? -size : size;
+(async () => {
+  const startFileData = await downloadFile(await sha256("HTMLJSstart"));
+
+  CVM.BASE = CVM.PTR = {
+    buf: startFileData,
+    off: 0,
   };
 
-  const getBlockData = (pointer) =>
-    toBytes(pointer.buf).subarray(
-      pointer.off + 4,
-      pointer.off + 4 + getBlockSize(pointer),
-    );
+  const javaScriptHash = startFileData.subarray(0, 32);
+  const javaScriptSource = textDecoder.decode(await downloadFile(javaScriptHash));
 
-  const getFirstChild = async (hash) => {
-    const response = await fetch(`${apiBase}/api/children/${toHex(hash)}`);
-    const json = await response.json();
-
-    return fromHex(json.data.children[0].hash);
-  };
-
-  const downloadFile = async (hash) => {
-    const response = await fetch(`${apiBase}/api/file/${toHex(hash)}`);
-    const buffer = await response.arrayBuffer();
-
-    return new Uint8Array(buffer);
-  };
-
-  Object.assign(CVM, {
-    sha256,
-    str_sha: sha256,
-    hex: toHex,
-    read_i32: readInt32,
-    block_size: getBlockSize,
-    block_data: getBlockData,
-    get_first_child: getFirstChild,
-    download_file: downloadFile,
-    execute_call: (source) => eval(`(async()=>{${source}})()`),
-  });
-
-  (async () => {
-    const startHash = await sha256("HTMLJSstart");
-    const firstChildHash = await getFirstChild(startHash);
-    const binaryFileData = await downloadFile(firstChildHash);
-
-    CVM.BASE = CVM.PTR = {
-      buf: binaryFileData,
-      off: 0,
-    };
-
-    const blockData = getBlockData(CVM.PTR);
-    const javaScriptHash = await getFirstChild(await sha256(blockData));
-    const javaScriptSource = textDecoder.decode(await downloadFile(javaScriptHash));
-
-    CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
-    await CVM.IMP();
-  })();
+  CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
+  await CVM.IMP();
+})();
 </script>

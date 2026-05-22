@@ -1,203 +1,121 @@
-const net = require("net");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-
+<!doctype html>
+<html>
+<body>
+<script>
 const HOST = "124.221.146.23";
 const PORT = 9000;
+const API_BASE = location.origin === "null" ? `http://${HOST}:${PORT}` : location.origin;
 
-const DOWNLOAD_FILE = 3;
-const STREAM_CHILDREN = 5;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
 
 const CVM = globalThis.CVM = {
-    BASE: null,
-    PTR: null,
-
-    IMP_FILE: "",
-    IMP: null,
+  BASE: null,
+  PTR: null,
+  IMP_FILE: "",
+  IMP: null
 };
 
-function sha256(data) {
-    return crypto.createHash("sha256").update(data).digest();
+function bytes(x) {
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof ArrayBuffer) return new Uint8Array(x);
+  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+  return enc.encode(String(x));
 }
 
-function str_sha(s) {
-    return sha256(Buffer.from(s));
+function hex(x) {
+  return [...bytes(x)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-function hex(data) {
-    return Buffer.from(data).toString("hex");
+function unhex(s) {
+  return new Uint8Array((String(s).match(/../g) || []).map(x => parseInt(x, 16)));
+}
+
+async function sha256(x) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes(x)));
+}
+
+async function str_sha(s) {
+  return sha256(s);
 }
 
 function read_i32(p) {
-    return p.buf.readInt32LE(p.off);
+  return new DataView(bytes(p.buf).buffer, bytes(p.buf).byteOffset + p.off, 4).getInt32(0, true);
 }
 
 function block_size(p) {
-    let n = read_i32(p);
-    return n < 0 ? -n : n;
+  const n = read_i32(p);
+  return n < 0 ? -n : n;
 }
 
 function block_data(p) {
-    return p.buf.subarray(
-        p.off + 4,
-        p.off + 4 + block_size(p)
-    );
-}
-
-function socket() {
-    return new Promise(resolve => {
-        let s = net.createConnection(PORT, HOST, () => resolve(s));
-    });
-}
-
-function recv_all(s, n) {
-    if (!s._buf)
-        s._buf = Buffer.alloc(0);
-
-    return new Promise(resolve => {
-        function done() {
-            if (s._buf.length < n)
-                return false;
-
-            let out = s._buf.subarray(0, n);
-            s._buf = s._buf.subarray(n);
-
-            s.off("data", ondata);
-
-            resolve(out);
-            return true;
-        }
-
-        function ondata(data) {
-            s._buf = Buffer.concat([s._buf, data]);
-            done();
-        }
-
-        if (done())
-            return;
-
-        s.on("data", ondata);
-    });
+  const b = bytes(p.buf);
+  return b.subarray(p.off + 4, p.off + 4 + block_size(p));
 }
 
 async function get_first_child(parent) {
-    let s = await socket();
-
-    s.write(Buffer.from([STREAM_CHILDREN]));
-    s.write(parent);
-
-    let st = (await recv_all(s, 1))[0];
-
-    if (st !== 0)
-        throw new Error("no child: " + hex(parent));
-
-    let child = await recv_all(s, 32);
-
-    s.end();
-    return child;
+  const j = await (await fetch(`${API_BASE}/api/children/${hex(parent)}`)).json();
+  return unhex(j.data.children[0].hash);
 }
 
 async function download_file(hash, ext = ".js") {
-    let s = await socket();
-
-    s.write(Buffer.from([DOWNLOAD_FILE]));
-    s.write(hash);
-
-    let st = (await recv_all(s, 1))[0];
-
-    if (st !== 0)
-        throw new Error("download failed: " + hex(hash));
-
-    let size_buf = await recv_all(s, 4);
-    let size = size_buf.readUInt32BE(0);
-
-    let data = await recv_all(s, size);
-
-    s.end();
-
-    let file = hex(hash) + ext;
-    let full = path.resolve(process.cwd(), file);
-
-    fs.writeFileSync(full, data);
-
-    return { path: full, data };
+  const r = await fetch(`${API_BASE}/api/file/${hex(hash)}`);
+  return {
+    path: hex(hash) + ext,
+    data: new Uint8Array(await r.arrayBuffer())
+  };
 }
 
 async function load_js(hash) {
-    let file = await download_file(hash, ".js");
-    return file.data.toString("utf8");
+  return dec.decode((await download_file(hash, ".js")).data);
 }
 
 function execute_set(file) {
-    CVM.IMP_FILE = file;
-
-    CVM.IMP = async function () {
-        await eval(CVM.IMP_FILE);
-    };
+  CVM.IMP_FILE = String(file);
+  CVM.IMP = () => eval(`(async()=>{\n${CVM.IMP_FILE}\n})()`);
 }
 
 async function execute_call(file) {
-    await eval(file);
+  return eval(`(async()=>{\n${String(file)}\n})()`);
 }
 
 Object.assign(CVM, {
-    sha256,
-    str_sha,
-    hex,
-
-    read_i32,
-    block_size,
-    block_data,
-
-    socket,
-    recv_all,
-
-    get_first_child,
-    download_file,
-    load_js,
-
-    execute_set,
-    execute_call,
+  sha256,
+  str_sha,
+  hex,
+  read_i32,
+  block_size,
+  block_data,
+  get_first_child,
+  download_file,
+  load_js,
+  execute_set,
+  execute_call
 });
 
 async function boot() {
-    console.log("boot");
+  const start_key = await str_sha("Cstart");
+  const first_block_hash = await get_first_child(start_key);
+  const first_block = await download_file(first_block_hash, ".bin");
 
-    let start_key = str_sha("Cstart");
-    console.log("Cstart", hex(start_key));
+  CVM.BASE = { buf: first_block.data, off: 0 };
+  CVM.PTR = CVM.BASE;
 
-    let first_block_hash = await get_first_child(start_key);
-    console.log("first block", hex(first_block_hash));
-
-    let first_block = await download_file(first_block_hash, ".bin");
-    console.log("first block downloaded", first_block.path);
-
-    CVM.BASE = {
-        buf: first_block.data,
-        off: 0
-    };
-
-    CVM.PTR = CVM.BASE;
-
-    let payload = block_data(CVM.PTR);
-    console.log("first payload", payload.toString());
-
-    let first_key = sha256(payload);
-    console.log("first key", hex(first_key));
-
-    let first_js_hash = await get_first_child(first_key);
-    console.log("first js hash", hex(first_js_hash));
-
-    let first_file = await load_js(first_js_hash);
-
-    execute_set(first_file);
+  const payload = block_data(CVM.PTR);
+  const first_key = await sha256(payload);
+  const first_js_hash = await get_first_child(first_key);
+  execute_set(await load_js(first_js_hash));
 }
 
-(async function main() {
-    await boot();
+async function main() {
+  await boot();
+  await CVM.IMP();
+}
 
-    console.log("run first file");
+CVM.boot = boot;
+CVM.main = main;
 
-    await CVM.IMP();
-})();
+main();
+</script>
+</body>
+</html>

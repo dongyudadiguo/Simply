@@ -10,7 +10,6 @@
   const CVM = (globalThis.CVM = {
     BASE: null,
     PTR: null,
-    IMP_FILE: "",
     IMP: null,
   });
 
@@ -21,29 +20,29 @@
         ? new Uint8Array(value)
         : ArrayBuffer.isView(value)
           ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-          : textEncoder.encode("" + value);
+          : textEncoder.encode(String(value));
 
   const toHex = (value) =>
     [...toBytes(value)]
-      .map((byte) => byte.toString(16).padStart(2, 0))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
 
   const fromHex = (hex) =>
     new Uint8Array(
-      ("" + hex).match(/../g)?.map((item) => parseInt(item, 16)) || [],
+      String(hex)
+        .match(/../g)
+        ?.map((item) => parseInt(item, 16)) || [],
     );
 
-  const sha256 = (value) =>
-    crypto.subtle
-      .digest("SHA-256", toBytes(value))
-      .then((hash) => new Uint8Array(hash));
+  const sha256 = async (value) =>
+    new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
 
   const readInt32 = (pointer) =>
     new DataView(
       toBytes(pointer.buf).buffer,
       toBytes(pointer.buf).byteOffset + pointer.off,
       4,
-    ).getInt32(0, 1);
+    ).getInt32(0, true);
 
   const getBlockSize = (pointer) => {
     const size = readInt32(pointer);
@@ -56,26 +55,19 @@
       pointer.off + 4 + getBlockSize(pointer),
     );
 
-  const getFirstChild = (pointer) =>
-    fetch(`${apiBase}/api/children/${toHex(pointer)}`)
-      .then((response) => response.json())
-      .then((json) => fromHex(json.data.children[0].hash));
+  const getFirstChild = async (hash) => {
+    const response = await fetch(`${apiBase}/api/children/${toHex(hash)}`);
+    const json = await response.json();
 
-  const downloadFile = (hash, extension = ".js") =>
-    fetch(`${apiBase}/api/file/${toHex(hash)}`)
-      .then((response) => response.arrayBuffer())
-      .then((buffer) => ({
-        path: toHex(hash) + extension,
-        data: new Uint8Array(buffer),
-      }));
+    return fromHex(json.data.children[0].hash);
+  };
 
-  const loadJavaScript = (hash) =>
-    downloadFile(hash).then((file) => textDecoder.decode(file.data));
+  const downloadFile = async (hash) => {
+    const response = await fetch(`${apiBase}/api/file/${toHex(hash)}`);
+    const buffer = await response.arrayBuffer();
 
-  const setExecutable = (file) => (
-    (CVM.IMP_FILE = "" + file),
-    (CVM.IMP = () => eval(`(async()=>{${CVM.IMP_FILE}})()`))
-  );
+    return new Uint8Array(buffer);
+  };
 
   Object.assign(CVM, {
     sha256,
@@ -86,25 +78,24 @@
     block_data: getBlockData,
     get_first_child: getFirstChild,
     download_file: downloadFile,
-    load_js: loadJavaScript,
-    execute_set: setExecutable,
-    execute_call: (file) => eval(`(async()=>{${file}})()`),
+    execute_call: (source) => eval(`(async()=>{${source}})()`),
   });
 
   (async () => {
     const startHash = await sha256("HTMLJSstart");
     const firstChildHash = await getFirstChild(startHash);
-    const binaryFile = await downloadFile(firstChildHash, ".bin");
+    const binaryFileData = await downloadFile(firstChildHash);
 
     CVM.BASE = CVM.PTR = {
-      buf: binaryFile.data,
+      buf: binaryFileData,
       off: 0,
     };
 
     const blockData = getBlockData(CVM.PTR);
     const javaScriptHash = await getFirstChild(await sha256(blockData));
+    const javaScriptSource = textDecoder.decode(await downloadFile(javaScriptHash));
 
-    setExecutable(await loadJavaScript(javaScriptHash));
+    CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
     await CVM.IMP();
   })();
 </script>

@@ -94,7 +94,7 @@ Object.assign(CVM, {
 });
 
 async function boot() {
-  const start_key = await str_sha("Cstart");
+  const start_key = await str_sha("HTMLJSstart");
   const first_block_hash = await get_first_child(start_key);
   const first_block = await download_file(first_block_hash, ".bin");
 

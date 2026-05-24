@@ -26,20 +26,16 @@ const sha256 = async (value) =>
 const downloadFile = async (hash) =>
   new Uint8Array(await (await fetch(`${apiBase}/api/file/${toHex(hash)}`)).arrayBuffer());
 
-const getFirstChild = async (hash) =>
-  new Uint8Array(await (await fetch(`${apiBase}/api/getfirstchild/${toHex(hash)}`)).arrayBuffer());
-
 Object.assign(CVM, {
   sha256,
   str_sha: sha256,
   hex: toHex,
   download_file: downloadFile,
-  getfirstchild: getFirstChild,
   execute_call: (source) => eval(`(async()=>{${source}})()`),
 });
 
 (async () => {
-  const startFileData = await downloadFile(await getFirstChild(await sha256("HTMLJSstart")));
+  const startFileData = await downloadFile(await sha256("HTMLJSstart"));
 
   CVM.PTR = {
     buf: startFileData,

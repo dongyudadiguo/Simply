@@ -7,7 +7,6 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 const CVM = globalThis.CVM = {
-  BASE: null,
   PTR: null,
   IMP: null,
 };
@@ -38,7 +37,7 @@ Object.assign(CVM, {
 (async () => {
   const startFileData = await downloadFile(await sha256("HTMLJSstart"));
 
-  CVM.BASE = CVM.PTR = {
+  CVM.PTR = {
     buf: startFileData,
     off: 0,
   };

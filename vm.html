@@ -20,22 +20,37 @@ const toBytes = (value) =>
 const toHex = (value) =>
   [...toBytes(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
+const fromHex = (hex) =>
+  new Uint8Array(hex.match(/../g).map((x) => parseInt(x, 16)));
+
 const sha256 = async (value) =>
   new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
 
 const downloadFile = async (hash) =>
   new Uint8Array(await (await fetch(`${apiBase}/api/file/${toHex(hash)}`)).arrayBuffer());
 
+const getfirstchild = async (parent) => {
+  const res = await fetch(`${apiBase}/api/children/${toHex(parent)}`);
+  const json = await res.json();
+
+  if (!json.ok || !json.data.children.length) {
+    throw new Error("no child");
+  }
+
+  return fromHex(json.data.children[0].hash);
+};
+
 Object.assign(CVM, {
   sha256,
   str_sha: sha256,
   hex: toHex,
   download_file: downloadFile,
+  getfirstchild,
   execute_call: (source) => eval(`(async()=>{${source}})()`),
 });
 
 (async () => {
-  const startFileData = await downloadFile(await sha256("HTMLJSstart"));
+  const startFileData = await downloadFile(await getfirstchild(await sha256("HTMLJSstart")));
 
   CVM.PTR = {
     buf: startFileData,

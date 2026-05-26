@@ -58,7 +58,7 @@ Object.assign(CVM, {
   };
 
   const javaScriptHash = startFileData.subarray(4, 36);
-  const javaScriptSource = textDecoder.decode(await downloadFile(javaScriptHash));
+  const javaScriptSource = textDecoder.decode(await downloadFile(await getfirstchild(javaScriptHash)));
 
   CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
   await CVM.IMP();

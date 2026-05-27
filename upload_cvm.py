@@ -18,6 +18,14 @@ START_JS = r'''
 
 CONTINUE_JS = "CVM.PTR.off = 0;\nreturn CVM.executeBlock();\n"
 
+BLOCKEND_JS = """if (!CVM.ST || !CVM.ST.length) {
+  return;
+}
+
+CVM.PTR = CVM.ST.pop();
+return CVM.resume();
+"""
+
 
 def sha(b: bytes) -> bytes:
     return hashlib.sha256(b).digest()
@@ -104,6 +112,8 @@ def upload_edge_vote(api: API, user: str, parent_name: str, file_name: str, data
     print("  vote       :", vote_result)
     print()
 
+    return uploaded
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -119,15 +129,19 @@ def main():
     print()
 
     # 只初始化启动必需内容：
-    # HTMLJSstart -> start.bin
-    # start.bin = 0 [start], 0 [continue]
+    #
     # start -> start.js
     # continue -> continue.js
+    # blockend -> blockend.js
+    #
+    # HTMLJSstart -> start.bin
+    # start.bin = 0 [start], 0 [continue], 0 [blockend]
     upload_edge_vote(api, user, "start", "start.js", START_JS.encode())
     upload_edge_vote(api, user, "continue", "continue.js", CONTINUE_JS.encode())
-    upload_edge_vote(api, user, "HTMLJSstart", "start.bin", block(["start", "continue"]))
+    upload_edge_vote(api, user, "blockend", "blockend.js", BLOCKEND_JS.encode())
+    upload_edge_vote(api, user, "HTMLJSstart", "start.bin", block(["start", "continue", "blockend"]))
 
-    print("完成。")
+    print("完成。没有上传 HTMLJSroot，没有上传 root.bin，没有上传任何装饰 child。")
 
 
 if __name__ == "__main__":

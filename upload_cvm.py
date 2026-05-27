@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import re
-import struct
 import sys
 import urllib.error
 import urllib.request
@@ -18,13 +17,7 @@ START_JS = r'''
 
 CONTINUE_JS = "CVM.PTR.off = 0;\nreturn CVM.executeBlock();\n"
 
-BLOCKEND_JS = """if (!CVM.ST || !CVM.ST.length) {
-  return;
-}
-
-CVM.PTR = CVM.ST.pop();
-return CVM.resume();
-"""
+ZERO_HASH = b"\x00" * 32
 
 
 def sha(b: bytes) -> bytes:
@@ -36,7 +29,8 @@ def key(name: str) -> bytes:
 
 
 def block(names) -> bytes:
-    return b"".join(struct.pack("<I", 0) + key(name) for name in names)
+    # 新格式：连续 32 字节 hash；末尾全零 hash 只是查看/编辑时的终止标记。
+    return b"".join(key(name) for name in names) + ZERO_HASH
 
 
 def read_id(path: str) -> str:
@@ -51,7 +45,6 @@ def read_id(path: str) -> str:
         return t.decode().lower()
 
     m = re.search(rb"[0-9a-fA-F]{64}", raw)
-
     if m:
         return m.group(0).decode().lower()
 
@@ -128,20 +121,27 @@ def main():
     print("user:", user)
     print()
 
-    # 只初始化启动必需内容：
-    #
-    # start -> start.js
-    # continue -> continue.js
-    # blockend -> blockend.js
+    # 新启动块格式：
     #
     # HTMLJSstart -> start.bin
-    # start.bin = 0 [start], 0 [continue], 0 [blockend]
+    #
+    # start.bin:
+    #   [start]
+    #   [continue]
+    #   [0000000000000000000000000000000000000000000000000000000000000000]
+    #
+    # 全零 hash 只是块查看/编辑时的终止标记，不再上传 blockend。
     upload_edge_vote(api, user, "start", "start.js", START_JS.encode())
     upload_edge_vote(api, user, "continue", "continue.js", CONTINUE_JS.encode())
-    upload_edge_vote(api, user, "blockend", "blockend.js", BLOCKEND_JS.encode())
-    upload_edge_vote(api, user, "HTMLJSstart", "start.bin", block(["start", "continue", "blockend"]))
+    upload_edge_vote(api, user, "HTMLJSstart", "start.bin", block(["start", "continue"]))
 
-    print("完成。没有上传 HTMLJSroot，没有上传 root.bin，没有上传任何装饰 child。")
+    print("完成。")
+    print("start.bin 格式：")
+    print("  [start]")
+    print("  [continue]")
+    print("  [zero hash marker]")
+    print()
+    print("没有上传 blockend，没有上传 HTMLJSroot，没有上传 root.bin。")
 
 
 if __name__ == "__main__":

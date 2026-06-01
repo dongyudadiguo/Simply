@@ -136,124 +136,265 @@ START_JS = r"""
 // ============================================================
 if (!CVM.__ui) {
   CVM.__ui = true;
-  await (async () => {
-    const cvm = CVM, dec = new TextDecoder();
-    const hex = (x) => typeof x === "string" ? x : cvm.hex(x);
-    const unhex = (h) => new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
-    const ZERO = "00".repeat(32);
-    const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    const item = (x) => typeof x === "string" ? { hash: x, data: new Uint8Array() } : x;
 
-    if (!cvm.PROG) cvm.PROG = cvm.parseBlock(cvm.PTR.buf);
+  const cvm = CVM;
+  const decoder = new TextDecoder();
+  const zeroHash = "00".repeat(32);
+  const emptyData = new Uint8Array();
 
-    const kids = async (h) =>
-      ((await (await fetch(`${apiBase}/api/children/${h}`)).json()).data || {}).children || [];
+  const unhex = (hex) =>
+    new Uint8Array(hex.match(/../g).map((part) => parseInt(part, 16)));
 
-    const labels = new Map();
-    const label = async (h) => {
-      if (labels.has(h)) return labels.get(h);
-      let v;
-      try {
-        const b = await cvm.download_file(unhex(h)), t = dec.decode(b);
-        v = b.length && /[^\x09\x0a\x0d\x20-\x7e]/.test(t) ? `[${b.length}B] ${h.slice(0, 12)}...` : (t || "(空)");
-      } catch { v = h.slice(0, 12) + "..."; }
-      labels.set(h, v);
-      return v;
+  const asItem = (value) =>
+    typeof value === "string" ? { hash: value, data: emptyData } : value;
+
+  const children = async (hash) =>
+    (await (await fetch(`${apiBase}/api/children/${hash}`)).json()).data.children;
+
+  const label = async (hash) => {
+    const bytes = await cvm.download_file(unhex(hash));
+    const text = decoder.decode(bytes);
+    return (text || hash).slice(0, 80);
+  };
+
+  if (!cvm.PROG) {
+    cvm.PROG = cvm.parseBlock(cvm.PTR.buf);
+  }
+
+  document.head.insertAdjacentHTML("beforeend", `<style>
+    .cvm-panel {
+      position: fixed;
+      z-index: 99999;
+      width: 320px;
+      max-height: 72vh;
+      overflow: auto;
+      padding: 8px;
+      color: #ddd;
+      background: #222;
+      border: 1px solid #555;
+      font: 12px/1.5 monospace;
+    }
+    .cvm-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      cursor: move;
+      user-select: none;
+    }
+    .cvm-row,
+    .cvm-drop {
+      margin: 4px 0;
+      padding: 4px 6px;
+      background: #333;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .cvm-row {
+      cursor: pointer;
+    }
+    .cvm-drop {
+      height: 8px;
+      padding: 0;
+      background: #555;
+    }
+    .cvm-drop:hover {
+      background: #89b4fa;
+    }
+    .cvm-path {
+      margin-bottom: 6px;
+      color: #aaa;
+      word-break: break-all;
+    }
+    .cvm-remove {
+      float: right;
+      color: #f38ba8;
+    }
+    #cvm-out {
+      position: fixed;
+      left: 50%;
+      top: 14px;
+      z-index: 99998;
+      transform: translateX(-50%);
+      padding: 6px 18px;
+      color: #111;
+      background: #a6e3a1;
+      font: bold 28px system-ui;
+    }
+  </style>`);
+
+  const dragPanel = (panel, handle) => {
+    let startX = 0;
+    let startY = 0;
+    let panelX = 0;
+    let panelY = 0;
+    let dragging = false;
+
+    handle.onmousedown = (event) => {
+      if (event.target.closest("button")) return;
+
+      dragging = true;
+      startX = event.clientX;
+      startY = event.clientY;
+
+      const rect = panel.getBoundingClientRect();
+      panelX = rect.left;
+      panelY = rect.top;
+
+      panel.style.left = `${panelX}px`;
+      panel.style.top = `${panelY}px`;
+      panel.style.right = "auto";
+
+      event.preventDefault();
     };
 
-    cvm.out = (s) => {
-      let o = document.getElementById("cvm-out");
-      if (!o) { o = document.createElement("div"); o.id = "cvm-out"; document.body.appendChild(o); }
-      o.textContent = s;
+    addEventListener("mousemove", (event) => {
+      if (!dragging) return;
+
+      panel.style.left = `${panelX + event.clientX - startX}px`;
+      panel.style.top = `${panelY + event.clientY - startY}px`;
+    });
+
+    addEventListener("mouseup", () => {
+      dragging = false;
+    });
+  };
+
+  const makePanel = (title, action, style) => {
+    const panel = document.createElement("div");
+
+    panel.className = "cvm-panel";
+    panel.style.cssText = style;
+    panel.innerHTML = `
+      <div class="cvm-head">
+        <b>${title}</b>
+        <button>${action}</button>
+      </div>
+      <div class="cvm-path"></div>
+      <div class="cvm-list"></div>
+    `;
+
+    document.body.appendChild(panel);
+    dragPanel(panel, panel.querySelector(".cvm-head"));
+
+    return {
+      button: panel.querySelector("button"),
+      path: panel.querySelector(".cvm-path"),
+      list: panel.querySelector(".cvm-list"),
     };
+  };
 
-    document.head.insertAdjacentHTML("beforeend", `<style>
-      .cvm-panel{position:fixed;z-index:99999;background:#1e1e2e;color:#cdd6f4;font:12px/1.5 monospace;border:1px solid #45475a;border-radius:8px;box-shadow:0 8px 24px #0008;width:320px;max-height:72vh;display:flex;flex-direction:column}
-      .cvm-head{padding:6px 10px;background:#313244;cursor:move;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;gap:8px;align-items:center;user-select:none}
-      .cvm-head span+span{cursor:pointer;color:#89b4fa}.cvm-body{padding:8px;overflow:auto}.cvm-path{color:#9399b2;margin-bottom:6px;word-break:break-all}
-      .cvm-row{padding:4px 6px;margin:2px 0;background:#313244;border-radius:4px;cursor:grab;display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden}
-      .cvm-row:hover{background:#45475a}.cvm-row b{color:#89b4fa}.cvm-tag{color:#a6e3a1}.cvm-x{color:#f38ba8;cursor:pointer;margin-left:auto}
-      .cvm-drop{height:10px;border:1px dashed #585b70;border-radius:4px;margin:2px 0}.cvm-drop.over{height:22px;border-color:#89b4fa;background:#313244}
-      #cvm-out{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:99998;font:bold 30px/1.4 system-ui;color:#1e1e2e;background:#a6e3a1;padding:6px 20px;border-radius:10px;box-shadow:0 4px 12px #0005}
-    </style>`);
+  const browser = makePanel("文件浏览器", "上级", "left:16px;top:16px");
+  const editor = makePanel("自编辑器 HTMLJSstart", "登录", "right:16px;top:16px");
 
-    const drag = (p, h) => {
-      let sx, sy, x, y, on = false;
-      h.onmousedown = (e) => {
-        if (e.target !== h && e.target.tagName === "SPAN" && e.target !== h.firstElementChild) return;
-        on = true; sx = e.clientX; sy = e.clientY;
-        const r = p.getBoundingClientRect(); x = r.left; y = r.top; e.preventDefault();
-      };
-      addEventListener("mousemove", (e) => {
-        if (!on) return;
-        p.style.left = x + e.clientX - sx + "px"; p.style.top = y + e.clientY - sy + "px"; p.style.right = "auto";
-      });
-      addEventListener("mouseup", () => on = false);
-    };
+  cvm.out = (text) => {
+    let output = document.getElementById("cvm-out");
 
-    const panel = (html, pos) => {
-      const p = document.createElement("div");
-      p.className = "cvm-panel"; Object.assign(p.style, pos); p.innerHTML = html; document.body.appendChild(p);
-      drag(p, p.querySelector(".cvm-head"));
-      return p;
-    };
-
-    const fb = panel(`<div class="cvm-head"><span>文件浏览器</span><span id="fb-up">上级</span></div><div class="cvm-body"><div class="cvm-path" id="fb-path"></div><div id="fb-list"></div></div>`, { left: "16px", top: "16px" });
-    const ed = panel(`<div class="cvm-head"><span>自编辑器 HTMLJSstart</span><span id="ed-user">登录</span></div><div class="cvm-body"><div id="ed-list"></div></div>`, { right: "16px", top: "16px" });
-
-    cvm.fbStack = [ZERO];
-
-    const renderBrowser = async () => {
-      const cur = cvm.fbStack.at(-1), box = fb.querySelector("#fb-list");
-      fb.querySelector("#fb-path").textContent = "root/" + cvm.fbStack.slice(1).map((h) => h.slice(0, 8)).join("/");
-      box.textContent = "加载中...";
-      box.innerHTML = "";
-      for (const c of await kids(cur)) {
-        const r = document.createElement("div");
-        r.className = "cvm-row"; r.draggable = true;
-        r.innerHTML = `<b>></b><span>${esc(await label(c.hash))}</span><span class="cvm-tag">[${c.score}]</span>`;
-        r.ondragstart = (e) => e.dataTransfer.setData("text/plain", c.hash);
-        r.onclick = () => { cvm.fbStack.push(c.hash); renderBrowser(); };
-        box.appendChild(r);
-      }
-      if (!box.children.length) box.textContent = "(无子节点)";
-    };
-
-    const changed = async () => { await cvm.setprog(cvm.PROG); renderEditor(); };
-
-    const drop = (i) => {
-      const z = document.createElement("div");
-      z.className = "cvm-drop";
-      z.ondragover = (e) => { e.preventDefault(); z.classList.add("over"); };
-      z.ondragleave = () => z.classList.remove("over");
-      z.ondrop = async (e) => {
-        e.preventDefault(); z.classList.remove("over");
-        const h = e.dataTransfer.getData("text/plain");
-        if (h) { cvm.PROG.splice(i, 0, { hash: h, data: new Uint8Array() }); await changed(); }
-      };
-      return z;
-    };
-
-    async function renderEditor() {
-      const box = ed.querySelector("#ed-list");
-      box.innerHTML = ""; box.appendChild(drop(0));
-      for (let i = 0; i < cvm.PROG.length; i++) {
-        const it = item(cvm.PROG[i]), r = document.createElement("div");
-        r.className = "cvm-row";
-        r.innerHTML = `<b>${i}</b><span>${esc(await label(it.hash))}</span>${it.data.length ? `<span class="cvm-tag">[${it.data.length}B]</span>` : ""}<span class="cvm-x">x</span>`;
-        r.querySelector(".cvm-x").onclick = async () => { cvm.PROG.splice(i, 1); await changed(); };
-        box.appendChild(r); box.appendChild(drop(i + 1));
-      }
+    if (!output) {
+      output = document.createElement("div");
+      output.id = "cvm-out";
+      document.body.appendChild(output);
     }
 
-    fb.querySelector("#fb-up").onclick = () => { if (cvm.fbStack.length > 1) { cvm.fbStack.pop(); renderBrowser(); } };
-    ed.querySelector("#ed-user").onclick = () => { const id = prompt("user id"); if (id) cvm.user(id.trim().toLowerCase()); };
+    output.textContent = text;
+  };
 
-    cvm.renderBrowser = renderBrowser;
-    cvm.renderEditor = renderEditor;
-    await renderBrowser();
+  cvm.browserStack = [zeroHash];
+
+  const saveProgram = async () => {
+    await cvm.setprog(cvm.PROG);
     await renderEditor();
-  })();
+  };
+
+  const makeDrop = (index) => {
+    const drop = document.createElement("div");
+
+    drop.className = "cvm-drop";
+    drop.ondragover = (event) => event.preventDefault();
+
+    drop.ondrop = async (event) => {
+      event.preventDefault();
+
+      const hash = event.dataTransfer.getData("text/plain");
+      cvm.PROG.splice(index, 0, { hash, data: emptyData });
+
+      await saveProgram();
+    };
+
+    return drop;
+  };
+
+  async function renderBrowser() {
+    const currentHash = cvm.browserStack.at(-1);
+
+    browser.path.textContent = cvm.browserStack
+      .map((hash) => hash.slice(0, 8))
+      .join("/");
+
+    browser.list.innerHTML = "";
+
+    for (const child of await children(currentHash)) {
+      const row = document.createElement("div");
+
+      row.className = "cvm-row";
+      row.draggable = true;
+      row.textContent = `${await label(child.hash)} [${child.score}]`;
+
+      row.ondragstart = (event) =>
+        event.dataTransfer.setData("text/plain", child.hash);
+
+      row.onclick = () => {
+        cvm.browserStack.push(child.hash);
+        renderBrowser();
+      };
+
+      browser.list.appendChild(row);
+    }
+  }
+
+  async function renderEditor() {
+    editor.path.textContent = "当前程序";
+    editor.list.innerHTML = "";
+    editor.list.appendChild(makeDrop(0));
+
+    for (let index = 0; index < cvm.PROG.length; index++) {
+      const programItem = asItem(cvm.PROG[index]);
+      const row = document.createElement("div");
+      const remove = document.createElement("span");
+
+      row.className = "cvm-row";
+      row.textContent = `${index}. ${await label(programItem.hash)}`;
+
+      remove.className = "cvm-remove";
+      remove.textContent = "x";
+      remove.onclick = async () => {
+        cvm.PROG.splice(index, 1);
+        await saveProgram();
+      };
+
+      row.appendChild(remove);
+      editor.list.appendChild(row);
+      editor.list.appendChild(makeDrop(index + 1));
+    }
+  }
+
+  browser.button.onclick = () => {
+    if (cvm.browserStack.length > 1) {
+      cvm.browserStack.pop();
+      renderBrowser();
+    }
+  };
+
+  editor.button.onclick = () => {
+    cvm.user(prompt("user id").trim().toLowerCase());
+  };
+
+  cvm.renderBrowser = renderBrowser;
+  cvm.renderEditor = renderEditor;
+
+  await renderBrowser();
+  await renderEditor();
 }
 
 

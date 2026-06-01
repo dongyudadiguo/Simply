@@ -60,5 +60,10 @@ Object.assign(CVM, {
 
   CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
   await CVM.IMP();
-})();
+})().catch((err) => {
+  console.error(err);
+  document.body.style.whiteSpace = "pre-wrap";
+  document.body.style.font = "16px monospace";
+  document.body.textContent = String(err?.stack || err);
+});
 </script>

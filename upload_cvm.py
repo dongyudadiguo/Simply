@@ -2,7 +2,7 @@
 import argparse, hashlib, json, re, urllib.request
 from pathlib import Path
 
-BASE_DEFAULT = "http://124.221.146.23:9000"
+BASE_DEFAULT = "http://124.221.146.23:8080"
 
 START_JS = r"""
 // ============================================================

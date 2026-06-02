@@ -1,5 +1,7 @@
 <script>
-const apiBase = "";
+const host = "124.221.146.23";
+const port = 8080;
+const apiBase = `http://${host}:${port}`;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -60,10 +62,5 @@ Object.assign(CVM, {
 
   CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
   await CVM.IMP();
-})().catch((err) => {
-  console.error(err);
-  document.body.style.whiteSpace = "pre-wrap";
-  document.body.style.font = "16px monospace";
-  document.body.textContent = String(err?.stack || err);
-});
+})();
 </script>

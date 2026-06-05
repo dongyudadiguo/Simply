@@ -1,120 +1,569 @@
 #!/usr/bin/env python3
-import argparse, hashlib, json, re, urllib.request, os
+# -*- coding: utf-8 -*-
+
+import argparse
+import hashlib
+import json
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 BASE_DEFAULT = "http://124.221.146.23:9000"
 ZERO_HASH = b"\x00" * 32
+ZERO_HEX = "00" * 32
 
-def sha(b): return hashlib.sha256(b).digest()
-def key(s): return sha(s.encode())
 
-def block(names):
+def sha(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def key(name: str) -> bytes:
+    return sha(name.encode())
+
+
+def le32(n: int) -> bytes:
+    return int(n).to_bytes(4, "little")
+
+
+def block(items) -> bytes:
     out = bytearray()
-    for name in names:
-        out += key(name)
-        out += (0).to_bytes(4, "little")
+
+    for item in items:
+        if isinstance(item, str):
+            name = item
+            data = b""
+        else:
+            name, data = item
+            if isinstance(data, str):
+                data = data.encode()
+            data = data or b""
+
+        name_hash = key(name) if isinstance(name, str) else bytes.fromhex(name)
+
+        out += name_hash
+        out += len(data).to_bytes(4, "little")
+        out += data
+
     out += ZERO_HASH
     return bytes(out)
 
-class API:
-    def __init__(self, base):
-        self.base = base.rstrip("/")
-    def call(self, method, path, data=b"", headers=None):
-        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers or {})
-        return json.loads(urllib.request.urlopen(req).read().decode())
-    def upload(self, data):
-        return self.call("POST", "/api/upload", data)["data"]["hash"]
-    def edge(self, p, c):
-        self.call("POST", f"/api/edge/{p}/{c}")
-    def vote(self, u, p, c):
-        self.call("POST", f"/api/vote/{u}/{p}/{c}")
 
-def get_or_create_id(api, path):
+class API:
+    def __init__(self, base: str):
+        self.base = base.rstrip("/")
+
+    def request(self, method: str, path: str, data=None, headers=None) -> bytes:
+        req = urllib.request.Request(
+            self.base + path,
+            data=data,
+            method=method,
+            headers=headers or {},
+        )
+        return urllib.request.urlopen(req).read()
+
+    def json(self, method: str, path: str, data=None, headers=None):
+        raw = self.request(method, path, data, headers)
+        out = json.loads(raw.decode())
+
+        if not out.get("ok"):
+            raise RuntimeError(out.get("error", "api error"))
+
+        return out.get("data")
+
+    def upload(self, data: bytes) -> str:
+        return self.json("POST", "/api/upload", data)["hash"]
+
+    def edge(self, parent: str, child: str):
+        self.json("POST", f"/api/edge/{parent}/{child}", b"")
+
+    def vote(self, user: str, parent: str, child: str):
+        self.json("POST", f"/api/vote/{user}/{parent}/{child}", b"")
+
+    def children(self, parent: str):
+        try:
+            return self.json("GET", f"/api/children/{parent}")["children"]
+        except Exception:
+            return []
+
+    def file(self, file_hash: str):
+        try:
+            return self.request("GET", f"/api/file/{file_hash}")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                return None
+            raise
+
+    def register(self) -> str:
+        data = json.dumps({"token": ""}).encode()
+        return self.json(
+            "POST",
+            "/api/register",
+            data,
+            {"Content-Type": "application/json"},
+        )["id"]
+
+
+def get_or_create_id(api: API, path: str) -> str:
     p = Path(path)
+
     if p.exists():
         raw = p.read_bytes()
-        if len(raw) == 32: return raw.hex()
-        m = re.search(rb"[0-9a-fA-F]{64}", raw)
-        if m: return m.group(0).decode().lower()
-    
-    print("id.bin 不存在，正在注册新用户...")
-    req = urllib.request.Request(api.base + "/api/register", data=json.dumps({"token": ""}).encode(), method="POST", headers={"Content-Type": "application/json"})
-    res = json.loads(urllib.request.urlopen(req).read().decode())
-    if not res.get("ok"):
-        raise RuntimeError("register failed: " + res.get("error", "unknown"))
-    
-    new_id = res["data"]["id"]
-    p.write_bytes(bytes.fromhex(new_id))
-    print(f"已注册并保存新用户: {new_id}")
-    return new_id
 
-def put(api, user, name, data):
+        if len(raw) == 32:
+            return raw.hex()
+
+        m = re.search(rb"[0-9a-fA-F]{64}", raw)
+        if m:
+            return m.group(0).decode().lower()
+
+    print("id.bin 不存在，正在注册新用户...")
+    user = api.register()
+    p.write_bytes(bytes.fromhex(user))
+    print(f"已注册并保存新用户: {user}")
+    return user
+
+
+def ensure_direct_file(api: API, data: bytes) -> str:
+    file_hash = sha(data).hex()
+    old = api.file(file_hash)
+
+    if old == data:
+        return file_hash
+
+    got = api.upload(data)
+    if got != file_hash:
+        raise RuntimeError("upload hash mismatch")
+
+    return got
+
+
+def first_child(api: API, parent: str):
+    xs = api.children(parent)
+    return xs[0]["hash"] if xs else None
+
+
+def put_if_changed(api: API, user: str, name: str, data: bytes):
     parent = key(name).hex()
     child = sha(data).hex()
-    api.upload(name.encode())
-    got = api.upload(data)
-    if got != child:
-        raise RuntimeError(f"hash mismatch: {name}")
+
+    # 让 key(name) 本身可下载成名字文本，用于浏览器显示 tag。
+    ensure_direct_file(api, name.encode())
+
+    current = first_child(api, parent)
+
+    if current == child:
+        print(f"[=] {name} unchanged")
+        return child
+
+    ensure_direct_file(api, data)
     api.edge(parent, child)
     api.vote(user, parent, child)
-    print(f"[+] {name} -> {child[:16]}...")
+
+    if current:
+        print(f"[*] {name} updated -> {child[:16]}...")
+    else:
+        print(f"[+] {name} created -> {child[:16]}...")
+
     return child
 
-def root(api, user, name):
-    parent = ZERO_HASH.hex()
+
+def mount_root(api: API, user: str, name: str):
     child = key(name).hex()
-    api.edge(parent, child)
-    api.vote(user, parent, child)
+    existing = {x["hash"] for x in api.children(ZERO_HEX)}
 
-# ==========================================
-# 1. 核心启动文件 (Stable Studio + VM Engine)
-# ==========================================
-START_JS = r"""
+    if child in existing:
+        print(f"[=] root/{name} mounted")
+        return
 
-// ============================================================
-// 标准持续函数 + std/stdoffset 标准参数缓存
-// ============================================================
-(() => {
-  const cvm = CVM, dec = new TextDecoder(), enc = new TextEncoder();
+    api.edge(ZERO_HEX, child)
+    api.vote(user, ZERO_HEX, child)
+    print(f"[+] root/{name} mounted")
 
-  const hex = (x) => typeof x === "string" ? x : cvm.hex(x);
 
-  const unhex = (h) =>
-    new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
+def no_data_meter(label: str) -> str:
+    html = f"""
+      <div style="padding:7px 2px;color:#8c8580;font-weight:900">
+        {label}<br>
+        <span style="font-weight:700;font-size:11px">此节点没有节点参数 data。</span>
+      </div>
+    """
+    return "async ({ body }) => { body.innerHTML = " + json.dumps(html) + "; }"
 
-  const bytes = (x) => x instanceof Uint8Array ? x :
+
+def svg_for(name: str) -> str:
+    text = name[:4]
+    return f"""<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect x="8" y="8" width="48" height="48" rx="8" fill="#fffaf1" stroke="#2a211c" stroke-width="4"/>
+  <text x="32" y="40" font-size="18" fill="#2a211c" text-anchor="middle" font-family="monospace" font-weight="900">{text}</text>
+</svg>"""
+
+
+def make_index_html(base: str) -> str:
+    base = base.rstrip("/")
+    return f"""<!doctype html>
+<meta charset="utf-8">
+<title>CVM</title>
+<script>
+const apiBase = globalThis.apiBase = {json.dumps(base)};
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+const CVM = globalThis.CVM = {{
+  PTR: null,
+  IMP: null,
+}};
+
+const toBytes = (value) =>
+  value instanceof Uint8Array ? value :
+  value instanceof ArrayBuffer ? new Uint8Array(value) :
+  ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) :
+  textEncoder.encode(String(value));
+
+const toHex = (value) =>
+  [...toBytes(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+const fromHex = (hex) =>
+  new Uint8Array((String(hex).match(/../g) || []).map((x) => parseInt(x, 16)));
+
+const sha256 = async (value) =>
+  new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
+
+const downloadFile = async (hash) =>
+  new Uint8Array(await (await fetch(`${{apiBase}}/api/file/${{toHex(hash)}}`)).arrayBuffer());
+
+const getfirstchild = async (parent) => {{
+  const res = await fetch(`${{apiBase}}/api/children/${{toHex(parent)}}`);
+  const json = await res.json();
+
+  if (!json.ok || !json.data.children.length) {{
+    throw new Error("no child");
+  }}
+
+  return fromHex(json.data.children[0].hash);
+}};
+
+Object.assign(CVM, {{
+  sha256,
+  str_sha: sha256,
+  hex: toHex,
+  download_file: downloadFile,
+  getfirstchild,
+  execute_call: (source) => eval(`(async()=>{{${{source}}}})()`),
+}});
+
+(async () => {{
+  const startFileData = await downloadFile(await getfirstchild(await sha256("HTMLJSstart")));
+
+  CVM.PTR = {{
+    buf: startFileData,
+    off: 0,
+  }};
+
+  const javaScriptHash = startFileData.subarray(0, 32);
+  const javaScriptSource = textDecoder.decode(await downloadFile(await getfirstchild(javaScriptHash)));
+
+  CVM.IMP = () => eval(`(async()=>{{${{javaScriptSource}}}})()`);
+  await CVM.IMP();
+}})();
+</script>
+"""
+
+
+LOADER_JS = r"""
+{
+  const cvm = CVM;
+  const dec = new TextDecoder();
+  const enc = new TextEncoder();
+
+  const bytes = (x) =>
+    x instanceof Uint8Array ? x :
     x instanceof ArrayBuffer ? new Uint8Array(x) :
     ArrayBuffer.isView(x) ? new Uint8Array(x.buffer, x.byteOffset, x.byteLength) :
     enc.encode(String(x ?? ""));
 
+  const toHex = (x) =>
+    [...bytes(x)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  const hex = (x) =>
+    typeof x === "string" ? x.trim().toLowerCase() : toHex(x);
+
+  const unhex = (h) => {
+    h = String(h || "").trim();
+    if (!h) return new Uint8Array();
+    const m = h.match(/../g) || [];
+    return new Uint8Array(m.map((x) => parseInt(x, 16)));
+  };
+
   const u32 = (b, o) =>
     new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true);
 
-  const w32 = (b, o, n) =>
-    new DataView(b.buffer, b.byteOffset, b.byteLength).setUint32(o, n >>> 0, true);
-
   const zhash = (b, o) => {
-    if (o + 32 > b.length) return true;
+    if (o + 32 > b.length) return false;
     for (let i = o; i < o + 32; i++) if (b[i]) return false;
     return true;
   };
 
-  const readHash = (o = cvm.PTR.off) => cvm.PTR.buf.subarray(o, o + 32);
+  const isBlockFile = (file) => {
+    file = bytes(file);
+    let o = 0;
 
-  const item = (x) => typeof x === "string"
-    ? { hash: x, data: new Uint8Array() }
-    : {
-        hash: typeof x.hash === "string" ? x.hash : hex(x.hash),
-        data: bytes(x.data),
-      };
+    for (;;) {
+      if (o + 32 > file.length) return false;
+      if (zhash(file, o)) return o + 32 === file.length;
+      if (o + 36 > file.length) return false;
 
-  const dlen = (o = cvm.PTR.off) =>
-    zhash(cvm.PTR.buf, o) ? 0 : u32(cvm.PTR.buf, o + 32);
+      const n = u32(file, o + 32);
+      if (n > file.length - o - 36) return false;
 
+      o += 36 + n;
+    }
+  };
+
+  const dlen = () =>
+    zhash(cvm.PTR.buf, cvm.PTR.off) ? 0 : u32(cvm.PTR.buf, cvm.PTR.off + 32);
+
+  const readHash = () =>
+    cvm.PTR.buf.subarray(cvm.PTR.off, cvm.PTR.off + 32);
+
+  cvm.bytes ??= bytes;
+  cvm.hex ??= hex;
+  cvm.unhex ??= unhex;
+  cvm.u32 ??= u32;
+  cvm.zhash ??= zhash;
+  cvm.isBlockFile ??= isBlockFile;
   cvm.FC ??= new Map();
   cvm.HC ??= new Map();
-  cvm.OV ??= new Map();
   cvm.ST ??= [];
+
+  const downloadCached = async (h) => {
+    const k = hex(h);
+    if (!cvm.FC.has(k)) cvm.FC.set(k, await cvm.download_file(h));
+    return cvm.FC.get(k);
+  };
+
+  cvm.gethashhashfile ??= async (keyHash) => {
+    const k = hex(keyHash);
+
+    if (!cvm.HC.has(k)) {
+      cvm.HC.set(k, await cvm.getfirstchild(keyHash));
+    }
+
+    return downloadCached(cvm.HC.get(k));
+  };
+
+  cvm.resume = async () => {
+    cvm.PTR.off += 36 + dlen();
+    return cvm.executeBlock();
+  };
+
+  cvm.executeBlock = async () => {
+    for (;;) {
+      if (cvm.Modify_override) await cvm.Modify_override();
+
+      if (zhash(cvm.PTR.buf, cvm.PTR.off)) {
+        const prev = cvm.ST.pop();
+
+        if (!prev) return;
+
+        cvm.PTR = prev;
+        return cvm.resume();
+      }
+
+      const file = await cvm.gethashhashfile(readHash());
+
+      if (isBlockFile(file)) {
+        cvm.ST.push({
+          buf: cvm.PTR.buf,
+          off: cvm.PTR.off,
+        });
+
+        cvm.PTR = {
+          buf: file,
+          off: 0,
+        };
+
+        continue;
+      }
+
+      return cvm.execute_call(dec.decode(file));
+    }
+  };
+
+  return cvm.resume();
+}
+"""
+
+
+CORE_CODEC_JS = r"""
+{
+  const cvm = CVM;
+
+  cvm.textEncoder ??= new TextEncoder();
+  cvm.textDecoder ??= new TextDecoder();
+
+  cvm.bytes = (x) =>
+    x instanceof Uint8Array ? x :
+    x instanceof ArrayBuffer ? new Uint8Array(x) :
+    ArrayBuffer.isView(x) ? new Uint8Array(x.buffer, x.byteOffset, x.byteLength) :
+    cvm.textEncoder.encode(String(x ?? ""));
+
+  cvm.toHex = (x) =>
+    [...cvm.bytes(x)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  cvm.hex = (x) =>
+    typeof x === "string" ? x.trim().toLowerCase() : cvm.toHex(x);
+
+  cvm.unhex = (h) => {
+    h = String(h || "").trim().replace(/[^0-9a-f]/gi, "");
+    if (!h) return new Uint8Array();
+    if (h.length % 2) h = h.slice(0, -1);
+    return new Uint8Array((h.match(/../g) || []).map((x) => parseInt(x, 16)));
+  };
+
+  cvm.concat = (...xs) => {
+    xs = xs.map(cvm.bytes);
+
+    const out = new Uint8Array(xs.reduce((n, x) => n + x.length, 0));
+    let o = 0;
+
+    for (const x of xs) {
+      out.set(x, o);
+      o += x.length;
+    }
+
+    return out;
+  };
+
+  cvm.u32 = (b, o = 0) =>
+    new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true);
+
+  cvm.writeU32 = (b, o, n) =>
+    new DataView(b.buffer, b.byteOffset, b.byteLength).setUint32(o, n >>> 0, true);
+
+  cvm.u32bytes = (n) => {
+    const b = new Uint8Array(4);
+    cvm.writeU32(b, 0, n);
+    return b;
+  };
+
+  cvm.sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  return cvm.resume();
+}
+"""
+
+
+CORE_BLOCK_JS = r"""
+{
+  const cvm = CVM;
+
+  cvm.ZERO_HASH ??= new Uint8Array(32);
+
+  cvm.zhash = (b, o = 0) => {
+    if (o + 32 > b.length) return false;
+    for (let i = o; i < o + 32; i++) if (b[i]) return false;
+    return true;
+  };
+
+  cvm.isBlockFile = (file) => {
+    file = cvm.bytes(file);
+    let o = 0;
+
+    for (;;) {
+      if (o + 32 > file.length) return false;
+      if (cvm.zhash(file, o)) return o + 32 === file.length;
+      if (o + 36 > file.length) return false;
+
+      const n = cvm.u32(file, o + 32);
+      if (n > file.length - o - 36) return false;
+
+      o += 36 + n;
+    }
+  };
+
+  cvm.item = (x) =>
+    typeof x === "string"
+      ? { hash: cvm.hex(x), data: new Uint8Array() }
+      : {
+          hash: cvm.hex(x.hash),
+          data: cvm.bytes(x.data ?? new Uint8Array()),
+        };
+
+  cvm.buildBlock = (items) => {
+    items = items.map(cvm.item);
+
+    const out = new Uint8Array(
+      items.reduce((n, item) => n + 36 + item.data.length, 32)
+    );
+
+    let o = 0;
+
+    for (const item of items) {
+      out.set(cvm.unhex(item.hash), o);
+      o += 32;
+
+      cvm.writeU32(out, o, item.data.length);
+      o += 4;
+
+      out.set(item.data, o);
+      o += item.data.length;
+    }
+
+    return out;
+  };
+
+  cvm.parseBlock = (file) => {
+    file = cvm.bytes(file);
+
+    if (!cvm.isBlockFile(file)) {
+      throw new Error("not a module-set block");
+    }
+
+    const items = [];
+
+    for (let o = 0; !cvm.zhash(file, o);) {
+      const n = cvm.u32(file, o + 32);
+
+      items.push({
+        hash: cvm.hex(file.subarray(o, o + 32)),
+        data: file.slice(o + 36, o + 36 + n),
+      });
+
+      o += 36 + n;
+    }
+
+    return items;
+  };
+
+  cvm.readHash = (o = cvm.PTR.off) =>
+    cvm.PTR.buf.subarray(o, o + 32);
+
+  cvm.dlen = (o = cvm.PTR.off) =>
+    cvm.zhash(cvm.PTR.buf, o) ? 0 : cvm.u32(cvm.PTR.buf, o + 32);
+
+  cvm.data = () =>
+    cvm.PTR.buf.subarray(cvm.PTR.off + 36, cvm.PTR.off + 36 + cvm.dlen());
+
+  cvm.parseBlockSafe = (file) => {
+    try {
+      file = file && file.length ? file : new Uint8Array(32);
+      return cvm.parseBlock(file).map(cvm.item);
+    } catch {
+      return [];
+    }
+  };
+
+  return cvm.resume();
+}
+"""
+
+
+CORE_MEMORY_JS = r"""
+{
+  const cvm = CVM;
 
   cvm.std ??= new Uint8Array(1024);
   cvm.stdsize ??= 0;
@@ -122,11 +571,13 @@ START_JS = r"""
 
   cvm.stdEnsure = (need) => {
     if (cvm.std.length >= need) return;
+
     let n = cvm.std.length || 1024;
     while (n < need) n *= 2;
-    const b = new Uint8Array(n);
-    b.set(cvm.std);
-    cvm.std = b;
+
+    const next = new Uint8Array(n);
+    next.set(cvm.std);
+    cvm.std = next;
   };
 
   cvm.stdInput = () => {
@@ -136,9 +587,11 @@ START_JS = r"""
 
   cvm.stdRead = (n) => {
     n = Math.max(0, n | 0);
+
     const o = cvm.stdoffset | 0;
     const end = Math.min(cvm.stdsize || cvm.std.length, o + n);
     const out = cvm.std.slice(o, end);
+
     cvm.stdoffset = o + n;
     return out;
   };
@@ -149,12 +602,15 @@ START_JS = r"""
   };
 
   cvm.stdWrite = (data) => {
-    data = bytes(data);
+    data = cvm.bytes(data);
+
     const o = cvm.stdoffset | 0;
     cvm.stdEnsure(o + data.length);
     cvm.std.set(data, o);
+
     cvm.stdoffset = o + data.length;
     cvm.stdsize = Math.max(cvm.stdsize || 0, cvm.stdoffset);
+
     return data.length;
   };
 
@@ -168,11 +624,12 @@ START_JS = r"""
   cvm.VAR ??= new Map();
   cvm.VSZ ??= new Map();
 
-  cvm.varKey = (id) => hex(id);
+  cvm.varKey = (id) => cvm.hex(id);
 
   cvm.setVarSize = (id, size) => {
     const k = cvm.varKey(id);
     size = Math.max(0, size >>> 0);
+
     cvm.VSZ.set(k, size);
 
     const old = cvm.VAR.get(k) || new Uint8Array();
@@ -185,146 +642,245 @@ START_JS = r"""
 
   cvm.getVar = (id) => {
     const k = cvm.varKey(id);
+
     if (!cvm.VAR.has(k)) {
       cvm.VAR.set(k, new Uint8Array(cvm.VSZ.get(k) || 0));
     }
+
     return cvm.VAR.get(k);
   };
 
   cvm.setVar = (id, data) => {
     const k = cvm.varKey(id);
-    const size = cvm.VSZ.get(k) ?? bytes(data).length;
+    const size = cvm.VSZ.get(k) ?? cvm.bytes(data).length;
     const next = new Uint8Array(size);
-    next.set(bytes(data).subarray(0, size));
+
+    next.set(cvm.bytes(data).subarray(0, size));
+
     cvm.VSZ.set(k, size);
     cvm.VAR.set(k, next);
+
     return next;
   };
 
-  const download = async (h) => {
-    const k = hex(h);
-    if (!cvm.FC.has(k)) cvm.FC.set(k, await cvm.download_file(h));
+  return cvm.resume();
+}
+"""
+
+
+NET_API_TEMPLATE = r"""
+{
+  const cvm = CVM;
+  const configuredBase = __CONFIGURED_BASE__;
+
+  const pickBase = () => {
+    let base = "";
+
+    try {
+      if (typeof apiBase !== "undefined" && apiBase) {
+        base = apiBase;
+      }
+    } catch {}
+
+    if (!base && globalThis.apiBase) {
+      base = globalThis.apiBase;
+    }
+
+    if (!base && cvm.apiBase) {
+      base = cvm.apiBase;
+    }
+
+    if (
+      !base &&
+      globalThis.location &&
+      (location.protocol === "http:" || location.protocol === "https:") &&
+      location.port === "9000"
+    ) {
+      base = location.origin;
+    }
+
+    if (!base) {
+      base = configuredBase;
+    }
+
+    return String(base).replace(/\/+$/, "");
+  };
+
+  cvm.apiBase = pickBase();
+  globalThis.apiBase = cvm.apiBase;
+
+  cvm.apiURL = (path) =>
+    cvm.apiBase + (String(path).startsWith("/") ? path : "/" + path);
+
+  cvm.apiJSON = async (method, path, data, headers) => {
+    const options = {
+      method,
+      headers: headers || {},
+    };
+
+    if (data !== undefined && data !== null) {
+      options.body = data;
+    }
+
+    const res = await fetch(cvm.apiURL(path), options);
+    const json = await res.json();
+
+    if (!json.ok) {
+      throw new Error(json.error || method + " " + path + " failed");
+    }
+
+    return json.data;
+  };
+
+  cvm.apiUpload = async (data) =>
+    cvm.unhex((await cvm.apiJSON("POST", "/api/upload", cvm.bytes(data))).hash);
+
+  cvm.apiChildren = async (parent) =>
+    (await cvm.apiJSON("GET", "/api/children/" + cvm.hex(parent))).children || [];
+
+  cvm.apiEdge = async (parent, child) =>
+    cvm.apiJSON(
+      "POST",
+      "/api/edge/" + cvm.hex(parent) + "/" + cvm.hex(child),
+      new Uint8Array()
+    );
+
+  cvm.apiVote = async (user, parent, child) =>
+    cvm.apiJSON(
+      "POST",
+      "/api/vote/" + cvm.hex(user) + "/" + cvm.hex(parent) + "/" + cvm.hex(child),
+      new Uint8Array()
+    );
+
+  cvm.apiUserGet = async (user, keyHash) =>
+    cvm.unhex(
+      (
+        await cvm.apiJSON(
+          "GET",
+          "/api/user/get/" + cvm.hex(user) + "/" + cvm.hex(keyHash)
+        )
+      ).value
+    );
+
+  cvm.apiUserSet = async (user, keyHash, fileHash) =>
+    cvm.apiJSON(
+      "POST",
+      "/api/user/set/" + cvm.hex(user) + "/" + cvm.hex(keyHash) + "/" + cvm.hex(fileHash),
+      new Uint8Array()
+    );
+
+  cvm.apiDownload = async (hash) => {
+    const res = await fetch(cvm.apiURL("/api/file/" + cvm.hex(hash)));
+
+    if (!res.ok) {
+      throw new Error("file not found: " + cvm.hex(hash));
+    }
+
+    return new Uint8Array(await res.arrayBuffer());
+  };
+
+  console.log("[CVM] apiBase =", cvm.apiBase);
+
+  return cvm.resume();
+}
+"""
+
+
+STORE_NAMED_JS = r"""
+{
+  const cvm = CVM;
+
+  cvm.FC ??= new Map();
+  cvm.HC ??= new Map();
+  cvm.OV ??= new Map();
+  cvm.ST ??= [];
+
+  cvm.downloadCached = async (hash) => {
+    const k = cvm.hex(hash);
+
+    if (!cvm.FC.has(k)) {
+      if (cvm.apiDownload) {
+        cvm.FC.set(k, await cvm.apiDownload(hash));
+      } else {
+        cvm.FC.set(k, await cvm.download_file(hash));
+      }
+    }
+
     return cvm.FC.get(k);
   };
 
-  const upload = async (file) =>
-    unhex((await (await fetch(`${apiBase}/api/upload`, {
-      method: "POST",
-      body: file,
-    })).json()).data.hash);
+  cvm.userGet = async (keyHash) => {
+    if (!cvm.USER) throw new Error("no user");
+    return cvm.apiUserGet(cvm.USER, keyHash);
+  };
 
-  const userGet = async (keyHash) =>
-    unhex((await (await fetch(`${apiBase}/api/user/get/${hex(cvm.USER)}/${hex(keyHash)}`)).json()).data.value);
-
-  const userSet = async (keyHash, fileHash) =>
-    fetch(`${apiBase}/api/user/set/${hex(cvm.USER)}/${hex(keyHash)}/${hex(fileHash)}`, {
-      method: "POST",
-    });
+  cvm.userSet = async (keyHash, fileHash) => {
+    if (!cvm.USER) throw new Error("no user");
+    return cvm.apiUserSet(cvm.USER, keyHash, fileHash);
+  };
 
   cvm.gethashhashfile = async (keyHash) => {
-    const k = hex(keyHash);
+    const k = cvm.hex(keyHash);
 
-    if (cvm.OV.has(k)) return cvm.OV.get(k);
+    if (cvm.OV.has(k)) {
+      return cvm.OV.get(k);
+    }
 
     if (!cvm.HC.has(k)) {
-      let h;
+      let fileHash;
 
       if (cvm.USER) {
         try {
-          h = await userGet(keyHash);
+          fileHash = await cvm.userGet(keyHash);
         } catch {
-          h = await cvm.getfirstchild(keyHash);
+          fileHash = await cvm.getfirstchild(keyHash);
         }
       } else {
-        h = await cvm.getfirstchild(keyHash);
+        fileHash = await cvm.getfirstchild(keyHash);
       }
 
-      cvm.HC.set(k, h);
+      cvm.HC.set(k, fileHash);
     }
 
-    return download(cvm.HC.get(k));
+    return cvm.downloadCached(cvm.HC.get(k));
+  };
+
+  cvm.override = (keyHash, file) => {
+    cvm.OV.set(cvm.hex(keyHash), cvm.bytes(file));
   };
 
   cvm.Modify_override = async () => {
     if (!cvm.USER) return;
 
-    for (const [k, file] of cvm.OV) {
-      const h = await upload(file);
-      await userSet(unhex(k), h);
-      cvm.HC.set(k, h);
-      cvm.FC.set(hex(h), file);
+    for (const [keyHex, file] of [...cvm.OV]) {
+      const fileHash = await cvm.apiUpload(file);
+
+      await cvm.userSet(cvm.unhex(keyHex), fileHash);
+
+      cvm.HC.set(keyHex, fileHash);
+      cvm.FC.set(cvm.hex(fileHash), file);
     }
 
     cvm.OV.clear();
   };
 
-  cvm.override = (keyHash, file) => cvm.OV.set(hex(keyHash), file);
-
   cvm.user = (userId) => {
-    cvm.USER = hex(userId);
+    cvm.USER = cvm.hex(userId).trim().toLowerCase();
     cvm.HC.clear();
+    return cvm.USER;
   };
 
-  cvm.data = () =>
-    cvm.PTR.buf.subarray(cvm.PTR.off + 36, cvm.PTR.off + 36 + dlen());
+  return cvm.resume();
+}
+"""
 
-  cvm.buildBlock = (xs) => {
-    xs = xs.map(item);
-    const b = new Uint8Array(xs.reduce((n, x) => n + 36 + x.data.length, 32));
 
-    let o = 0;
-
-    for (const x of xs) {
-      b.set(unhex(x.hash), o);
-      o += 32;
-
-      w32(b, o, x.data.length);
-      o += 4;
-
-      b.set(x.data, o);
-      o += x.data.length;
-    }
-
-    return b;
-  };
-
-  cvm.parseBlock = (b) => {
-    const xs = [];
-
-    for (let o = 0; !zhash(b, o);) {
-      const n = u32(b, o + 32);
-      xs.push({
-        hash: hex(b.subarray(o, o + 32)),
-        data: b.slice(o + 36, o + 36 + n),
-      });
-      o += 36 + n;
-    }
-
-    return xs;
-  };
-
-  cvm.setprog = async (prog) => {
-    cvm.PROG = prog.map(item);
-    const file = cvm.buildBlock(cvm.PROG);
-    cvm.ROOT = file;
-    cvm.PTR = { buf: file, off: 0 };
-    cvm.override(await cvm.sha256("HTMLJSstart"), file);
-  };
-
-  cvm.persistRoot = async () => {
-    if (!cvm.ROOT) return;
-    cvm.PROG = cvm.parseBlock(cvm.ROOT).map(item);
-    cvm.override(await cvm.sha256("HTMLJSstart"), cvm.ROOT);
-
-    try {
-      await cvm.Modify_override();
-    } catch (err) {
-      console.warn("CVM persistRoot failed", err);
-    }
-  };
+EXEC_BLOCK_JS = r"""
+{
+  const cvm = CVM;
 
   cvm.enterBlock = async (block) => {
-    block = bytes(block);
+    block = cvm.bytes(block);
     if (!block.length) block = new Uint8Array(32);
 
     cvm.ST.push({
@@ -340,59 +896,85 @@ START_JS = r"""
     return cvm.executeBlock();
   };
 
-  cvm.executeBlock = async () => {
-    for (;;) {
+  cvm.setprog = async (prog) => {
+    cvm.PROG = prog.map(cvm.item);
+    cvm.ROOT = cvm.buildBlock(cvm.PROG);
+    cvm.override(await cvm.sha256("HTMLJSstart"), cvm.ROOT);
+    return cvm.ROOT;
+  };
+
+  cvm.persistRoot = async () => {
+    if (!cvm.ROOT) return;
+
+    cvm.PROG = cvm.parseBlock(cvm.ROOT).map(cvm.item);
+    cvm.override(await cvm.sha256("HTMLJSstart"), cvm.ROOT);
+
+    try {
       await cvm.Modify_override();
-
-      if (zhash(cvm.PTR.buf, cvm.PTR.off)) {
-        const p = cvm.ST.pop();
-
-        if (!p) return;
-
-        cvm.PTR = p;
-        return cvm.resume();
-      }
-
-      const file = await cvm.gethashhashfile(readHash());
-
-      if (file[0]) return cvm.execute_call(dec.decode(file));
-
-      cvm.ST.push({
-        buf: cvm.PTR.buf,
-        off: cvm.PTR.off,
-      });
-
-      cvm.PTR = {
-        buf: file,
-        off: 0,
-      };
+    } catch (err) {
+      console.warn("CVM persistRoot failed", err);
     }
   };
 
   cvm.resume = async () => {
-    cvm.PTR.off += 36 + dlen();
+    cvm.PTR.off += 36 + cvm.dlen();
     return cvm.executeBlock();
   };
-})();
+
+  cvm.executeBlock = async () => {
+    for (;;) {
+      await cvm.Modify_override();
+
+      if (cvm.zhash(cvm.PTR.buf, cvm.PTR.off)) {
+        const prev = cvm.ST.pop();
+
+        if (!prev) return;
+
+        cvm.PTR = prev;
+        return cvm.resume();
+      }
+
+      const file = await cvm.gethashhashfile(cvm.readHash());
+
+      if (cvm.isBlockFile(file)) {
+        cvm.ST.push({
+          buf: cvm.PTR.buf,
+          off: cvm.PTR.off,
+        });
+
+        cvm.PTR = {
+          buf: file,
+          off: 0,
+        };
+
+        continue;
+      }
+
+      return cvm.execute_call(cvm.textDecoder.decode(file));
+    }
+  };
+
+  return cvm.resume();
+}
+"""
 
 
-// ============================================================
-// 文件浏览器 + 节点可视化编辑器 + 节点内参数编辑器
-// ============================================================
-if (!CVM.__ui) {
-  CVM.__ui = true;
-
+FLOW_DELAY_JS = r"""
+{
   const cvm = CVM;
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  const zeroHash = "00".repeat(32);
-  const zeroBlock = new Uint8Array(32);
-  const emptyData = new Uint8Array();
+  const d = cvm.data();
+  const ms = d.length >= 4 ? cvm.u32(d, 0) : 80;
+  await cvm.sleep(ms);
+  return cvm.resume();
+}
+"""
 
-  const unhex = (hex) =>
-    new Uint8Array(hex.match(/../g).map((part) => parseInt(part, 16)));
 
-  const esc = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({
+DOM_BASE_JS = r"""
+{
+  const cvm = CVM;
+
+  cvm.esc = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
@@ -400,112 +982,528 @@ if (!CVM.__ui) {
     "'": "&#39;",
   })[ch]);
 
-  const bytes = (x) => x instanceof Uint8Array ? x :
-    x instanceof ArrayBuffer ? new Uint8Array(x) :
-    ArrayBuffer.isView(x) ? new Uint8Array(x.buffer, x.byteOffset, x.byteLength) :
-    encoder.encode(String(x ?? ""));
+  cvm.ensureStyle = (id, css) => {
+    if (document.getElementById(id)) return;
 
-  const u32 = (b, o) =>
-    new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true);
-
-  const w32 = (n) => {
-    const b = new Uint8Array(4);
-    new DataView(b.buffer).setUint32(0, n >>> 0, true);
-    return b;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = css;
+    document.head.appendChild(style);
   };
 
-  const concat = (...xs) => {
-    xs = xs.map(bytes);
-    const out = new Uint8Array(xs.reduce((n, x) => n + x.length, 0));
-    let o = 0;
-    for (const x of xs) {
-      out.set(x, o);
-      o += x.length;
+  cvm.ensureStyle("cvm-free-module-set-style", `
+    .cvm2-panel {
+      position: fixed;
+      z-index: 99999;
+      box-sizing: border-box;
+      color: #271f1a;
+      background: rgba(255, 253, 248, .96);
+      border: 1px solid rgba(42, 33, 28, .78);
+      border-radius: 18px;
+      box-shadow: 0 18px 70px rgba(30, 20, 14, .16);
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      resize: none;
     }
-    return out;
-  };
 
-  const asItem = (value) =>
-    typeof value === "string"
-      ? { hash: value, data: emptyData }
-      : {
-          hash: typeof value.hash === "string" ? value.hash : cvm.hex(value.hash),
-          data: value.data ?? emptyData,
-        };
-
-  const children = async (hash) =>
-    (await (await fetch(`${apiBase}/api/children/${hash}`)).json()).data.children;
-
-  const tagOf = async (hash) => {
-    try {
-      const b = await cvm.download_file(unhex(hash));
-      const text = decoder.decode(b);
-      return (text || hash).trim();
-    } catch {
-      return hash;
+    .cvm2-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 8px 11px;
+      cursor: move;
+      user-select: none;
+      border-bottom: 1px solid rgba(42, 33, 28, .14);
     }
-  };
 
-  const label = async (hash) => {
-    const tag = await tagOf(hash);
-    return tag.slice(0, 80);
-  };
+    .cvm2-head b {
+      font: 900 18px/1 system-ui, sans-serif;
+      letter-spacing: -.04em;
+    }
 
-  const metaCache = new Map();
+    .cvm2-head small {
+      color: #aaa39d;
+      font-weight: 800;
+      font-size: 10px;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
 
-  const loadMeta = async (tag) => {
-    if (metaCache.has(tag)) return metaCache.get(tag);
+    .cvm2-tools {
+      margin-left: auto;
+      display: inline-flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
 
-    const getText = async (name) => {
-      try {
-        return decoder.decode(await cvm.gethashhashfile(await cvm.sha256(name)));
-      } catch {
-        return "";
+    .cvm2-button,
+    .cvm2-head button,
+    .cvm2-forge button {
+      color: #271f1a;
+      background: #fff9ee;
+      border: 1px solid rgba(42, 33, 28, .72);
+      border-radius: 999px;
+      padding: 3px 9px;
+      font: 800 11px ui-monospace, monospace;
+      cursor: pointer;
+    }
+
+    .cvm2-button:hover,
+    .cvm2-head button:hover,
+    .cvm2-forge button:hover {
+      color: #fff9ee;
+      background: #271f1a;
+    }
+
+    .cvm2-browser {
+      left: 16px;
+      top: 16px;
+      width: 320px;
+      max-height: calc(100vh - 32px);
+      overflow: hidden;
+    }
+
+    .cvm2-browser-path {
+      padding: 8px 11px 0;
+      color: #8c8580;
+      word-break: break-all;
+    }
+
+    .cvm2-browser-list {
+      max-height: calc(100vh - 106px);
+      overflow: auto;
+      padding: 9px;
+    }
+
+    .cvm2-row {
+      margin: 6px 0;
+      padding: 8px 10px;
+      background: #fffaf1;
+      border: 1px solid rgba(42, 33, 28, .25);
+      border-radius: 13px;
+      cursor: grab;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .cvm2-row:hover {
+      background: #f3eadc;
+      border-color: rgba(42, 33, 28, .72);
+    }
+
+    .cvm2-row small {
+      color: #99908a;
+      margin-left: 5px;
+    }
+
+    .cvm2-editor {
+      right: 16px;
+      top: 16px;
+      width: min(1120px, calc(100vw - 360px));
+      height: min(84vh, 820px);
+      overflow: hidden;
+      resize: none;
+    }
+
+    .cvm2-stage {
+      position: relative;
+      height: calc(100% - 53px);
+      overflow: auto;
+      background:
+        radial-gradient(circle at 18px 18px, rgba(42,33,28,.16) 1px, transparent 1px),
+        linear-gradient(135deg, #fffdf8, #fffaf2);
+      background-size: 30px 30px, 100% 100%;
+      cursor: default;
+    }
+
+    .cvm2-stage.middle-panning {
+      cursor: grabbing;
+      user-select: none;
+    }
+
+    .cvm2-lines {
+      position: absolute;
+      left: 0;
+      top: 0;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .cvm2-frame {
+      position: absolute;
+      box-sizing: border-box;
+      width: 820px;
+      height: 540px;
+      background: rgba(255, 255, 255, .52);
+      border: 1.5px solid rgba(42, 33, 28, .84);
+      border-radius: 22px;
+      box-shadow: 0 8px 28px rgba(30,20,14,.06);
+      resize: none;
+    }
+
+    .cvm2-frame.expanded {
+      width: 760px;
+      height: 500px;
+    }
+
+    .cvm2-frame-head {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      top: -36px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: move;
+      user-select: none;
+    }
+
+    .cvm2-frame-mark {
+      width: 22px;
+      height: 22px;
+      flex: none;
+      border: 4px solid #2a211c;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 5px #fffdf8;
+      background: #2a211c;
+    }
+
+    .cvm2-frame-title {
+      font: 950 21px/1 system-ui, sans-serif;
+      letter-spacing: -.045em;
+      white-space: nowrap;
+    }
+
+    .cvm2-frame-sub {
+      color: #aaa39d;
+      font: 800 10px ui-monospace, monospace;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .cvm2-frame-body {
+      position: absolute;
+      inset: 34px 14px 14px 14px;
+      overflow: visible;
+    }
+
+    .cvm2-frame.drop {
+      background: rgba(255, 246, 225, .8);
+      box-shadow: inset 0 0 0 2px rgba(42,33,28,.28);
+    }
+
+    .cvm2-node {
+      position: absolute;
+      box-sizing: border-box;
+      width: 260px;
+      min-height: 176px;
+      padding: 11px 12px;
+      color: #271f1a;
+      background: rgba(255, 255, 252, .96);
+      border: 1.4px solid rgba(42, 33, 28, .84);
+      border-radius: 17px;
+      box-shadow: 0 4px 16px rgba(30,20,14,.08);
+      cursor: grab;
+      user-select: none;
+      resize: none;
+    }
+
+    .cvm2-node:hover {
+      background: #fff7e6;
+    }
+
+    .cvm2-node.dragging {
+      opacity: .68;
+      cursor: grabbing;
+    }
+
+    .cvm2-node-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .cvm2-node-icon {
+      display: none;
+      width: 25px;
+      height: 25px;
+      flex: none;
+      color: #271f1a;
+    }
+
+    .cvm2-node.has-svg .cvm2-node-icon {
+      display: grid;
+      place-items: center;
+    }
+
+    .cvm2-node-icon svg {
+      width: 25px;
+      height: 25px;
+      display: block;
+    }
+
+    .cvm2-node-name {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font: 950 19px/1.05 system-ui, sans-serif;
+      letter-spacing: -.04em;
+    }
+
+    .cvm2-node-desc {
+      margin-top: 3px;
+      color: #9b948e;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cvm2-data {
+      margin-top: 8px;
+      padding-top: 7px;
+      border-top: 1px solid rgba(42,33,28,.18);
+      user-select: text;
+      cursor: default;
+    }
+
+    .cvm2-data label {
+      display: block;
+      margin: 5px 0 3px;
+      color: #8c8580;
+      font-weight: 800;
+      font-size: 10px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .cvm2-data input,
+    .cvm2-data textarea,
+    .cvm2-forge input,
+    .cvm2-forge textarea {
+      width: 100%;
+      box-sizing: border-box;
+      color: #271f1a;
+      background: #fffaf1;
+      border: 1px solid rgba(42,33,28,.58);
+      border-radius: 9px;
+      padding: 6px;
+      font: 12px ui-monospace, monospace;
+      resize: none;
+    }
+
+    .cvm2-data textarea {
+      height: 42px;
+      min-height: 42px;
+      overflow: auto;
+    }
+
+    .cvm2-chip {
+      display: inline-block;
+      margin-left: 5px;
+      padding: 1px 6px;
+      border: 1px solid rgba(42,33,28,.3);
+      border-radius: 999px;
+      color: #7c746e;
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .cvm2-add-hint {
+      position: absolute;
+      inset: 18px;
+      display: none;
+      place-items: center;
+      border: 1px dashed rgba(42,33,28,.42);
+      border-radius: 18px;
+      color: #8c8580;
+      background: rgba(255,255,255,.45);
+      pointer-events: none;
+      font-weight: 900;
+    }
+
+    .cvm2-stage.drop > .cvm2-add-hint {
+      display: grid;
+    }
+
+    .cvm2-toast {
+      position: fixed;
+      left: 50%;
+      top: 14px;
+      z-index: 100001;
+      transform: translateX(-50%);
+      max-width: min(720px, calc(100vw - 40px));
+      padding: 7px 16px;
+      color: #271f1a;
+      background: #fff3ce;
+      border: 1px solid rgba(42,33,28,.75);
+      border-radius: 999px;
+      box-shadow: 0 10px 40px rgba(30,20,14,.16);
+      font: 900 14px system-ui, sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cvm2-forge {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 100000;
+      width: min(720px, calc(100vw - 48px));
+      max-height: min(82vh, 760px);
+      overflow: auto;
+      background: rgba(255,253,248,.98);
+      border: 1.5px solid rgba(42,33,28,.84);
+      border-radius: 22px;
+      box-shadow: 0 20px 72px rgba(30,20,14,.2);
+      color: #271f1a;
+      font: 13px/1.45 ui-monospace, monospace;
+      resize: none;
+    }
+
+    .cvm2-forge-body {
+      padding: 12px;
+    }
+
+    .cvm2-forge label {
+      display: block;
+      margin: 9px 0 4px;
+      color: #8c8580;
+      font-weight: 900;
+    }
+
+    .cvm2-forge textarea {
+      min-height: 58px;
+      resize: none;
+    }
+
+    .cvm2-forge-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+    }
+
+    .cvm2-forge-list {
+      min-height: 130px;
+      padding: 8px;
+      background: #fffaf1;
+      border: 1px dashed rgba(42,33,28,.4);
+      border-radius: 15px;
+    }
+
+    .cvm2-mini {
+      display: block;
+      margin: 6px 0;
+      padding: 7px;
+      background: white;
+      border: 1px solid rgba(42,33,28,.26);
+      border-radius: 12px;
+      cursor: grab;
+    }
+
+    .cvm2-mini-name {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-weight: 900;
+      margin-bottom: 5px;
+    }
+
+    #cvm-out {
+      position: fixed;
+      left: 50%;
+      top: 14px;
+      z-index: 99998;
+      transform: translateX(-50%);
+      padding: 6px 18px;
+      color: #271f1a;
+      background: #fff3ce;
+      border: 1px solid rgba(42,33,28,.75);
+      border-radius: 999px;
+      font: 900 28px system-ui, sans-serif;
+    }
+
+    @media (max-width: 840px) {
+      .cvm2-editor {
+        left: 16px;
+        right: 16px;
+        top: 360px;
+        width: calc(100vw - 32px);
       }
-    };
 
-    const meta = {
-      svg: await getText(`${tag}.svg`),
-      describe: await getText(`${tag}.describe`),
-      metersupport: await getText(`${tag}.metersupport`),
-    };
-
-    metaCache.set(tag, meta);
-    return meta;
-  };
-
-  const parseBlockSafe = (data) => {
-    try {
-      return cvm.parseBlock(data && data.length ? data : zeroBlock).map(asItem);
-    } catch {
-      return [];
+      .cvm2-forge-grid {
+        grid-template-columns: 1fr;
+      }
     }
+  `);
+
+  cvm.toast = (text, ms = 1600) => {
+    let el = document.querySelector(".cvm2-toast");
+
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "cvm2-toast";
+      document.body.appendChild(el);
+    }
+
+    el.textContent = text;
+    clearTimeout(el.__timer);
+    el.__timer = setTimeout(() => el.remove(), ms);
   };
 
-  if (!cvm.PROG) {
-    cvm.PROG = cvm.parseBlock(cvm.PTR.buf);
-  }
+  cvm.dragPanel = (panel, handle) => {
+    let drag = null;
 
-  cvm.PROG = cvm.PROG.map(asItem);
+    handle.onmousedown = (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest("button,input,textarea,select")) return;
+
+      const rect = panel.getBoundingClientRect();
+
+      drag = {
+        x: event.clientX,
+        y: event.clientY,
+        left: rect.left,
+        top: rect.top,
+      };
+
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+
+      event.preventDefault();
+    };
+
+    addEventListener("mousemove", (event) => {
+      if (!drag) return;
+
+      panel.style.left = `${drag.left + event.clientX - drag.x}px`;
+      panel.style.top = `${drag.top + event.clientY - drag.y}px`;
+    });
+
+    addEventListener("mouseup", () => {
+      drag = null;
+    });
+  };
 
   cvm.LIBS ??= {
     gsap: { url: "https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js", global: "gsap" },
     anime: { url: "https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js", global: "anime" },
     matter: { url: "https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js", global: "Matter" },
-    planck: { url: "https://cdn.jsdelivr.net/npm/planck-js@0.3.31/dist/planck.min.js", global: "planck" },
     pixi: { url: "https://cdn.jsdelivr.net/npm/pixi.js@8.8.1/dist/pixi.min.js", global: "PIXI" },
     phaser: { url: "https://cdn.jsdelivr.net/npm/phaser@3.87.0/dist/phaser.min.js", global: "Phaser" },
     babylon: { url: "https://cdn.jsdelivr.net/npm/babylonjs@7.42.0/babylon.min.js", global: "BABYLON" },
-    konva: { url: "https://cdn.jsdelivr.net/npm/konva@9.3.18/konva.min.js", global: "Konva" },
-    fabric: { url: "https://cdn.jsdelivr.net/npm/fabric@5.5.2/dist/fabric.min.js", global: "fabric" },
-    paper: { url: "https://cdn.jsdelivr.net/npm/paper@0.12.18/dist/paper-full.min.js", global: "paper" },
-    two: { url: "https://cdn.jsdelivr.net/npm/two.js@0.8.17/build/two.min.js", global: "Two" },
-    p5: { url: "https://cdn.jsdelivr.net/npm/p5@1.11.2/lib/p5.min.js", global: "p5" },
     d3: { url: "https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js", global: "d3" },
-    cytoscape: { url: "https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js", global: "cytoscape" },
-    rough: { url: "https://cdn.jsdelivr.net/npm/roughjs@4.6.6/bundled/rough.min.js", global: "rough" },
     three: { module: true, url: "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js" },
-    cannon: { module: true, url: "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js" },
   };
 
   cvm.LIB_CACHE ??= new Map();
@@ -535,842 +1533,1112 @@ if (!CVM.__ui) {
     return promise;
   };
 
-  document.head.insertAdjacentHTML("beforeend", `<style>
-    .cvm-panel {
-      position: fixed;
-      z-index: 99999;
-      width: 320px;
-      max-height: 72vh;
-      overflow: auto;
-      padding: 8px;
-      color: #ddd;
-      background: #222;
-      border: 1px solid #555;
-      font: 12px/1.5 monospace;
-      box-sizing: border-box;
-    }
-    .cvm-graph-panel {
-      width: min(980px, calc(100vw - 360px));
-      height: min(78vh, 720px);
-      max-height: none;
-      overflow: hidden;
-    }
-    .cvm-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-      cursor: move;
-      user-select: none;
-    }
-    .cvm-head button {
-      color: #ddd;
-      background: #333;
-      border: 1px solid #666;
-      padding: 2px 8px;
-      font: inherit;
-      cursor: pointer;
-    }
-    .cvm-row {
-      margin: 4px 0;
-      padding: 4px 6px;
-      background: #333;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      cursor: pointer;
-    }
-    .cvm-row:hover {
-      background: #3f4a5a;
-    }
-    .cvm-path {
-      margin-bottom: 6px;
-      color: #aaa;
-      word-break: break-all;
-    }
-    .cvm-graph {
-      position: relative;
-      height: calc(100% - 46px);
-      min-height: 380px;
-      overflow: auto;
-      background:
-        linear-gradient(#2b2b2b 1px, transparent 1px),
-        linear-gradient(90deg, #2b2b2b 1px, transparent 1px);
-      background-size: 24px 24px;
-      border: 1px solid #444;
-      box-sizing: border-box;
-    }
-    .cvm-graph svg.cvm-lines {
-      position: absolute;
-      left: 0;
-      top: 0;
-      pointer-events: none;
-      overflow: visible;
-    }
-    .cvm-node {
-      position: absolute;
-      width: 270px;
-      height: 380px;
-      padding: 7px 8px;
-      box-sizing: border-box;
-      color: #eee;
-      background: #303642;
-      border: 1px solid #6b7a94;
-      box-shadow: 0 3px 10px rgba(0,0,0,.28);
-      cursor: grab;
-      user-select: none;
-      overflow: hidden;
-    }
-    .cvm-node:hover {
-      border-color: #89b4fa;
-      background: #364052;
-    }
-    .cvm-node.dragging {
-      opacity: .55;
-    }
-    .cvm-node.drop-before {
-      border-left: 4px solid #a6e3a1;
-    }
-    .cvm-node.drop-after {
-      border-right: 4px solid #a6e3a1;
-    }
-    .cvm-node-main {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-    }
-    .cvm-node-icon {
-      width: 28px;
-      height: 28px;
-      flex: none;
-      display: grid;
-      place-items: center;
-      color: #89b4fa;
-    }
-    .cvm-node-icon svg {
-      width: 28px;
-      height: 28px;
-      display: block;
-    }
-    .cvm-node-title {
-      min-width: 0;
-      font-weight: bold;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-    .cvm-node-meta {
-      margin-top: 5px;
-      color: #aaa;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-    .cvm-node-data {
-      margin-top: 3px;
-      color: #a6e3a1;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-    .cvm-node-editor {
-      margin-top: 8px;
-      padding-top: 8px;
-      height: 266px;
-      overflow: auto;
-      border-top: 1px solid #58657a;
-      cursor: default;
-      user-select: text;
-    }
-    .cvm-node-editor input,
-    .cvm-node-editor textarea,
-    .cvm-mini-editor input,
-    .cvm-mini-editor textarea {
-      user-select: text;
-    }
-    .cvm-add-zone {
-      position: absolute;
-      left: 24px;
-      top: 24px;
-      right: 24px;
-      bottom: 24px;
-      display: none;
-      place-items: center;
-      color: #bbb;
-      border: 1px dashed #777;
-      background: rgba(34,34,34,.72);
-      pointer-events: none;
-    }
-    .cvm-graph.drag-target .cvm-add-zone {
-      display: grid;
-    }
-    .cvm-form-row {
-      margin: 8px 0;
-    }
-    .cvm-form-row label {
-      display: block;
-      margin-bottom: 3px;
-      color: #aaa;
-    }
-    .cvm-form-row input,
-    .cvm-form-row textarea {
-      width: 100%;
-      box-sizing: border-box;
-      color: #eee;
-      background: #151515;
-      border: 1px solid #555;
-      padding: 5px;
-      font: inherit;
-    }
-    .cvm-form-row input[type="checkbox"] {
-      width: auto;
-      vertical-align: middle;
-    }
-    .cvm-inline-program {
-      min-height: 88px;
-      max-height: 192px;
-      overflow: auto;
-      padding: 6px;
-      background: #181818;
-      border: 1px solid #444;
-    }
-    .cvm-mini-node {
-      display: block;
-      margin: 5px 0;
-      padding: 6px;
-      color: #eee;
-      background: #333b4a;
-      border: 1px solid #58657a;
-      cursor: grab;
-    }
-    .cvm-mini-node:hover {
-      border-color: #89b4fa;
-    }
-    .cvm-mini-node.drop-before {
-      border-top: 3px solid #a6e3a1;
-    }
-    .cvm-mini-node.drop-after {
-      border-bottom: 3px solid #a6e3a1;
-    }
-    .cvm-mini-main {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .cvm-mini-title {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-    .cvm-mini-remove {
-      color: #f38ba8;
-      cursor: pointer;
-      padding: 0 4px;
-    }
-    .cvm-mini-editor {
-      margin-top: 6px;
-      padding-top: 6px;
-      border-top: 1px solid #58657a;
-      cursor: default;
-      user-select: text;
-    }
-    .cvm-no-param {
-      color: #888;
-      padding: 4px 0;
-    }
-    .cvm-state {
-      color: #a6e3a1;
-    }
-    .cvm-danger {
-      color: #f38ba8 !important;
-    }
-    #cvm-out {
-      position: fixed;
-      left: 50%;
-      top: 14px;
-      z-index: 99998;
-      transform: translateX(-50%);
-      padding: 6px 18px;
-      color: #111;
-      background: #a6e3a1;
-      font: bold 28px system-ui;
-    }
-    .cvm-meter-card {
-      padding: 8px;
-      color: #f4f7ff;
-      background: linear-gradient(135deg, #202633, #2d3340);
-      border: 1px solid #7aa2f7;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 0 18px rgba(122,162,247,.18);
-    }
-    .cvm-meter-title {
-      margin-bottom: 8px;
-      color: #89b4fa;
-      font-weight: bold;
-    }
-    .cvm-meter-gauge {
-      height: 12px;
-      margin: 6px 0 10px;
-      overflow: hidden;
-      background: #111827;
-      border: 1px solid #445;
-    }
-    .cvm-meter-fill {
-      width: 0;
-      height: 100%;
-      background: linear-gradient(90deg, #a6e3a1, #89dceb, #f9e2af);
-    }
-    .cvm-meter-canvas {
-      width: 100%;
-      height: 92px;
-      margin: 6px 0 10px;
-      overflow: hidden;
-      background: #111827;
-      border: 1px solid #445;
-    }
-    .cvm-meter-button {
-      width: 100%;
-      margin-top: 6px;
-      color: #111;
-      background: #89dceb;
-      border: 0;
-      padding: 6px;
-      font: bold 12px monospace;
-      cursor: pointer;
-    }
-    .cvm-meter-pill {
-      display: inline-block;
-      margin: 2px 4px 2px 0;
-      padding: 2px 6px;
-      color: #111;
-      background: #a6e3a1;
-      border-radius: 999px;
-    }
-
-    .cvm-graph.cvm-world-stage {
-      background: transparent;
-      border-color: rgba(122,162,247,.32);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.03), 0 0 38px rgba(137,180,250,.08);
-      --cvm-pan-x: 0px;
-      --cvm-pan-y: 0px;
-    }
-    .cvm-graph.cvm-world-stage svg.cvm-lines,
-    .cvm-graph.cvm-world-stage > .cvm-node {
-      transform: translate(var(--cvm-pan-x), var(--cvm-pan-y));
-      transform-origin: 0 0;
-    }
-    .cvm-root-node {
-      position: absolute;
-      left: 24px;
-      top: 20px;
-      z-index: 4;
-      width: 260px;
-      min-height: 86px;
-      padding: 10px 12px;
-      box-sizing: border-box;
-      color: #eaf2ff;
-      background: rgba(17,24,39,.56);
-      border: 1px solid rgba(137,180,250,.72);
-      box-shadow: 0 0 24px rgba(137,180,250,.16);
-      backdrop-filter: blur(8px);
-      cursor: grab;
-      user-select: none;
-      transform: translate(var(--cvm-pan-x), var(--cvm-pan-y));
-    }
-    .cvm-root-node:active {
-      cursor: grabbing;
-    }
-    .cvm-root-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      font-weight: bold;
-      color: #89dceb;
-    }
-    .cvm-root-sub {
-      margin-top: 7px;
-      color: #cdd6f4;
-      opacity: .82;
-      white-space: normal;
-    }
-    .cvm-root-meter {
-      height: 5px;
-      margin-top: 9px;
-      overflow: hidden;
-      background: rgba(255,255,255,.1);
-    }
-    .cvm-root-meter > i {
-      display: block;
-      height: 100%;
-      width: 100%;
-      background: linear-gradient(90deg, #89dceb, #a6e3a1, #f9e2af);
-    }
-    .cvm-editor-actions {
-      display: inline-flex;
-      gap: 6px;
-      margin-left: auto;
-    }
-    .cvm-editor-actions button {
-      color: #ddd;
-      background: #333;
-      border: 1px solid #666;
-      padding: 2px 8px;
-      font: inherit;
-      cursor: pointer;
-    }
-    .cvm-forge {
-      position: fixed;
-      right: 24px;
-      bottom: 24px;
-      z-index: 100000;
-      width: min(680px, calc(100vw - 48px));
-      max-height: min(82vh, 760px);
-      overflow: auto;
-      box-sizing: border-box;
-      color: #e7ecff;
-      background: rgba(18,22,31,.94);
-      border: 1px solid rgba(137,180,250,.62);
-      box-shadow: 0 16px 70px rgba(0,0,0,.45);
-      font: 12px/1.45 monospace;
-    }
-    .cvm-forge-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 9px 10px;
-      border-bottom: 1px solid rgba(137,180,250,.22);
-      cursor: move;
-      user-select: none;
-    }
-    .cvm-forge-body {
-      padding: 10px;
-    }
-    .cvm-forge-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    .cvm-forge label {
-      display: block;
-      margin: 8px 0 3px;
-      color: #bac2de;
-    }
-    .cvm-forge input,
-    .cvm-forge textarea {
-      width: 100%;
-      box-sizing: border-box;
-      color: #f4f7ff;
-      background: #10141f;
-      border: 1px solid #44506a;
-      padding: 6px;
-      font: inherit;
-    }
-    .cvm-forge textarea {
-      min-height: 116px;
-      resize: vertical;
-    }
-    .cvm-forge .cvm-code {
-      min-height: 210px;
-    }
-    .cvm-forge-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    .cvm-forge-actions button,
-    .cvm-forge-head button {
-      color: #111827;
-      background: #89dceb;
-      border: 0;
-      padding: 6px 10px;
-      font: bold 12px monospace;
-      cursor: pointer;
-    }
-    .cvm-forge-actions button:hover,
-    .cvm-forge-head button:hover {
-      background: #a6e3a1;
-    }
-    .cvm-forge-state {
-      margin-top: 8px;
-      color: #a6e3a1;
-      word-break: break-all;
-    }
-    @media (max-width: 760px) {
-      .cvm-forge-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-  </style>`);
-
-  const dragPanel = (panel, handle) => {
-    let startX = 0;
-    let startY = 0;
-    let panelX = 0;
-    let panelY = 0;
-    let dragging = false;
-
-    handle.onmousedown = (event) => {
-      if (event.target.closest("button,textarea,input")) return;
-
-      dragging = true;
-      startX = event.clientX;
-      startY = event.clientY;
-
-      const rect = panel.getBoundingClientRect();
-      panelX = rect.left;
-      panelY = rect.top;
-
-      panel.style.left = `${panelX}px`;
-      panel.style.top = `${panelY}px`;
-      panel.style.right = "auto";
-
-      event.preventDefault();
-    };
-
-    addEventListener("mousemove", (event) => {
-      if (!dragging) return;
-      panel.style.left = `${panelX + event.clientX - startX}px`;
-      panel.style.top = `${panelY + event.clientY - startY}px`;
-    });
-
-    addEventListener("mouseup", () => {
-      dragging = false;
-    });
-  };
-
-  const makePanel = (title, action, style, extraClass = "") => {
-    const panel = document.createElement("div");
-
-    panel.className = `cvm-panel ${extraClass}`;
-    panel.style.cssText = style;
-    panel.innerHTML = `
-      <div class="cvm-head">
-        <b>${esc(title)}</b>
-        <button>${esc(action)}</button>
-      </div>
-      <div class="cvm-path"></div>
-      <div class="cvm-list"></div>
-    `;
-
-    document.body.appendChild(panel);
-    dragPanel(panel, panel.querySelector(".cvm-head"));
-
-    return {
-      panel,
-      button: panel.querySelector("button"),
-      path: panel.querySelector(".cvm-path"),
-      list: panel.querySelector(".cvm-list"),
-    };
-  };
-
-  const browser = makePanel("文件浏览器", "上级", "left:16px;top:16px");
-  const editor = makePanel(
-    "节点可视化编辑器 HTMLJSstart",
-    "登录",
-    "right:16px;top:16px",
-    "cvm-graph-panel"
-  );
-
-  editor.path.textContent = "当前程序";
-  editor.list.className = "cvm-graph";
-  editor.list.innerHTML = `
-    <svg class="cvm-lines"></svg>
-    <div class="cvm-add-zone">拖入文件节点</div>
-  `;
-
-  const graph = editor.list;
-  const svg = graph.querySelector("svg");
+  return cvm.resume();
+}
+"""
 
 
-  (() => {
-    if (cvm.__editorForge) return;
-    cvm.__editorForge = true;
-
-    graph.classList.add("cvm-world-stage");
-
-    let panX = 0;
-    let panY = 0;
-    let panDrag = null;
-
-    const setPan = () => {
-      graph.style.setProperty("--cvm-pan-x", `${panX}px`);
-      graph.style.setProperty("--cvm-pan-y", `${panY}px`);
-    };
-
-    const rootNode = document.createElement("div");
-    rootNode.className = "cvm-root-node";
-    rootNode.innerHTML = `
-      <div class="cvm-root-title">
-        <span>HTMLJSstart</span>
-        <span class="cvm-root-count">0 nodes</span>
-      </div>
-      <div class="cvm-root-sub">public program root</div>
-      <div class="cvm-root-meter"><i></i></div>
-    `;
-    graph.appendChild(rootNode);
-
-    const updateRootNode = () => {
-      const count = rootNode.querySelector(".cvm-root-count");
-      if (count) count.textContent = `${cvm.PROG?.length || 0} nodes`;
-    };
-
-    rootNode.onmousedown = (event) => {
-      if (event.target.closest("button,input,textarea")) return;
-
-      panDrag = {
-        x: event.clientX,
-        y: event.clientY,
-        panX,
-        panY,
-      };
-
-      event.preventDefault();
-    };
-
-    graph.addEventListener("mousedown", (event) => {
-      if (event.target !== graph) return;
-
-      panDrag = {
-        x: event.clientX,
-        y: event.clientY,
-        panX,
-        panY,
-      };
-
-      event.preventDefault();
-    });
-
-    addEventListener("mousemove", (event) => {
-      if (!panDrag) return;
-
-      panX = panDrag.panX + event.clientX - panDrag.x;
-      panY = panDrag.panY + event.clientY - panDrag.y;
-      setPan();
-    });
-
-    addEventListener("mouseup", () => {
-      panDrag = null;
-    });
-
-    setInterval(updateRootNode, 500);
-    updateRootNode();
-
-    const uploadPublicFile = async (name, data) => {
-      if (!cvm.USER) {
-        const id = prompt("user id");
-        if (!id) throw new Error("need user id");
-        cvm.user(id.trim().toLowerCase());
-      }
-
-      data = bytes(data);
-      const nameHash = await cvm.sha256(name);
-      const fileHash = await cvm.sha256(data);
-
-      await fetch(`${apiBase}/api/upload`, {
-        method: "POST",
-        body: encoder.encode(name),
-      });
-
-      const uploaded = await (await fetch(`${apiBase}/api/upload`, {
-        method: "POST",
-        body: data,
-      })).json();
-
-      if (!uploaded.ok) throw new Error(uploaded.error || "upload failed");
-
-      await fetch(`${apiBase}/api/edge/${cvm.hex(nameHash)}/${uploaded.data.hash}`, {
-        method: "POST",
-      });
-
-      await fetch(`${apiBase}/api/vote/${cvm.USER}/${cvm.hex(nameHash)}/${uploaded.data.hash}`, {
-        method: "POST",
-      });
-
-      return {
-        name,
-        nameHash: cvm.hex(nameHash),
-        fileHash: uploaded.data.hash,
-        directHash: cvm.hex(fileHash),
-      };
-    };
-
-    const publishRoot = async (tag) => {
-      const tagHash = await cvm.sha256(tag);
-
-      await fetch(`${apiBase}/api/edge/${zeroHash}/${cvm.hex(tagHash)}`, {
-        method: "POST",
-      });
-
-      await fetch(`${apiBase}/api/vote/${cvm.USER}/${zeroHash}/${cvm.hex(tagHash)}`, {
-        method: "POST",
-      });
-    };
-
-    const defaultModuleSource = () => `{
+GRAPH_FREE_JS = r"""
+{
   const cvm = CVM;
 
-  // 零参数模块：从 CVM.world / CVM.std 读取状态，执行一个动作。
-  cvm.world ??= {};
+  cvm.layoutNS = () =>
+    `CVM.freeLayout.${cvm.USER || "public"}`;
+
+  cvm.layoutKey = (id) =>
+    `${cvm.layoutNS()}.${id}`;
+
+  cvm.layoutLoad = (id) => {
+    try {
+      const value = JSON.parse(localStorage.getItem(cvm.layoutKey(id)) || "{}");
+      value.nodes ??= {};
+      return value;
+    } catch {
+      return { nodes: {} };
+    }
+  };
+
+  cvm.layoutSave = (id, value) => {
+    value.nodes ??= {};
+    localStorage.setItem(cvm.layoutKey(id), JSON.stringify(value));
+  };
+
+  cvm.defaultNodePos = (index) => ({
+    x: 42 + (index % 3) * 285,
+    y: 54 + Math.floor(index / 3) * 220,
+  });
+
+  cvm.dragInside = (el, handle, getPos, setPos, onMove, skip = "button,input,textarea,select") => {
+    let drag = null;
+
+    handle.onmousedown = (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest(skip)) return;
+
+      const p = getPos();
+
+      drag = {
+        x: event.clientX,
+        y: event.clientY,
+        px: p.x,
+        py: p.y,
+      };
+
+      el.classList.add("dragging");
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    addEventListener("mousemove", (event) => {
+      if (!drag) return;
+
+      const pos = {
+        x: Math.max(-2000, drag.px + event.clientX - drag.x),
+        y: Math.max(-2000, drag.py + event.clientY - drag.y),
+      };
+
+      setPos(pos);
+      onMove?.(pos);
+    });
+
+    addEventListener("mouseup", () => {
+      if (!drag) return;
+      drag = null;
+      el.classList.remove("dragging");
+    });
+  };
+
+  cvm.enableMiddlePan = (el) => {
+    if (el.__cvmMiddlePan) return;
+    el.__cvmMiddlePan = true;
+
+    let pan = null;
+
+    el.addEventListener("mousedown", (event) => {
+      if (event.button !== 1) return;
+
+      pan = {
+        x: event.clientX,
+        y: event.clientY,
+        left: el.scrollLeft,
+        top: el.scrollTop,
+      };
+
+      el.classList.add("middle-panning");
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    addEventListener("mousemove", (event) => {
+      if (!pan) return;
+
+      el.scrollLeft = pan.left - (event.clientX - pan.x);
+      el.scrollTop = pan.top - (event.clientY - pan.y);
+
+      event.preventDefault();
+    });
+
+    addEventListener("mouseup", () => {
+      if (!pan) return;
+
+      pan = null;
+      el.classList.remove("middle-panning");
+    });
+
+    el.addEventListener("auxclick", (event) => {
+      if (event.button === 1) {
+        event.preventDefault();
+      }
+    });
+  };
 
   return cvm.resume();
 }
-`;
+"""
 
-    const defaultMeterSupport = () => `async ({ cvm, body, api }) => {
-  body.innerHTML = \`
-    <div class="cvm-meter-card">
-      <div class="cvm-meter-title">ZERO PARAMETER MODULE</div>
-      <div class="cvm-no-param">这个模块不携带节点参数。</div>
-    </div>
-  \`;
+
+META_OPTIONAL_JS = r"""
+{
+  const cvm = CVM;
+
+  cvm.META_CACHE ??= new Map();
+  cvm.TAG_CACHE ??= new Map();
+
+  cvm.shortHash = (hash) => `${cvm.hex(hash).slice(0, 10)}…`;
+
+  cvm.directText = async (hash) => {
+    try {
+      const raw = await cvm.downloadCached(hash);
+      const text = cvm.textDecoder.decode(raw).replace(/\s+/g, " ").trim();
+      return text;
+    } catch {
+      return "";
+    }
+  };
+
+  cvm.tagOf = async (hash) => {
+    const h = cvm.hex(hash);
+
+    if (cvm.TAG_CACHE.has(h)) return cvm.TAG_CACHE.get(h);
+
+    let text = await cvm.directText(cvm.unhex(h));
+    if (!text) text = cvm.shortHash(h);
+
+    if (text.length > 80) text = text.slice(0, 80);
+
+    cvm.TAG_CACHE.set(h, text);
+    return text;
+  };
+
+  cvm.textByName = async (name) => {
+    try {
+      return cvm.textDecoder.decode(await cvm.gethashhashfile(await cvm.sha256(name)));
+    } catch {
+      return "";
+    }
+  };
+
+  cvm.loadMeta = async (tag) => {
+    if (cvm.META_CACHE.has(tag)) return cvm.META_CACHE.get(tag);
+
+    const meta = {
+      svg: (await cvm.textByName(`${tag}.svg`)).trim(),
+      describe: (await cvm.textByName(`${tag}.describe`)).trim(),
+      metersupport: (await cvm.textByName(`${tag}.metersupport`)).trim(),
+    };
+
+    cvm.META_CACHE.set(tag, meta);
+    return meta;
+  };
+
+  cvm.metaForHash = async (hash) => {
+    const tag = await cvm.tagOf(hash);
+    return {
+      tag,
+      ...(await cvm.loadMeta(tag)),
+    };
+  };
+
+  return cvm.resume();
 }
-`;
+"""
 
-    const defaultSvg = () => `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-  <rect x="9" y="9" width="46" height="46" rx="7" fill="#111827" stroke="#89dceb" stroke-width="4"/>
-  <path d="M20 34h24M32 22v24" stroke="#a6e3a1" stroke-width="6" stroke-linecap="round"/>
-</svg>`;
 
-    const openForge = () => {
-      let forge = document.querySelector(".cvm-forge");
+EDITOR_MODULESETS_JS = r"""
+{
+  const cvm = CVM;
 
-      if (forge) {
-        forge.style.display = "";
+  if (cvm.__freeModuleSetEditorV2) {
+    return cvm.resume();
+  }
+
+  cvm.__freeModuleSetEditorV2 = true;
+
+  document.querySelectorAll(".cvm2-browser,.cvm2-editor,.cvm2-forge").forEach((el) => el.remove());
+
+  const emptyData = new Uint8Array();
+  const zeroHash = "00".repeat(32);
+
+  const state = {
+    browserStack: [zeroHash],
+    frames: new Map(),
+    rendering: false,
+  };
+
+  const saveTimers = new Map();
+
+  const nodeKey = (index, item) =>
+    `${index}:${item.hash}`;
+
+  const safeText = (data) => {
+    try {
+      return cvm.textDecoder.decode(data || emptyData);
+    } catch {
+      return "";
+    }
+  };
+
+  const ensureUser = () => {
+    if (cvm.USER) return cvm.USER;
+
+    const id = prompt("user id");
+    if (!id) throw new Error("need user id");
+
+    return cvm.user(id.trim().toLowerCase());
+  };
+
+  const isSetHash = async (hash) => {
+    try {
+      const file = await cvm.gethashhashfile(cvm.unhex(cvm.hex(hash)));
+      return cvm.isBlockFile(file);
+    } catch {
+      return false;
+    }
+  };
+
+  const parseSetByHash = async (hash) => {
+    const file = await cvm.gethashhashfile(cvm.unhex(cvm.hex(hash)));
+    return cvm.parseBlock(file).map(cvm.item);
+  };
+
+  const uploadPublicFile = async (name, data) => {
+    ensureUser();
+
+    data = cvm.bytes(data);
+
+    await cvm.apiUpload(name);
+
+    const nameHash = await cvm.sha256(name);
+    const fileHash = await cvm.apiUpload(data);
+
+    await cvm.apiEdge(nameHash, fileHash);
+    await cvm.apiVote(cvm.USER, nameHash, fileHash);
+
+    cvm.HC.set(cvm.hex(nameHash), fileHash);
+    cvm.FC.set(cvm.hex(fileHash), data);
+
+    return {
+      name,
+      nameHash: cvm.hex(nameHash),
+      fileHash: cvm.hex(fileHash),
+    };
+  };
+
+  const publishRoot = async (tag) => {
+    ensureUser();
+
+    const tagHash = await cvm.sha256(tag);
+
+    await cvm.apiEdge(zeroHash, tagHash);
+    await cvm.apiVote(cvm.USER, zeroHash, tagHash);
+  };
+
+  const saveRootNow = async () => {
+    ensureUser();
+
+    const root = state.frames.get("root");
+    if (!root) return;
+
+    cvm.PROG = root.prog.map(cvm.item);
+    cvm.ROOT = cvm.buildBlock(cvm.PROG);
+
+    cvm.override(await cvm.sha256("HTMLJSstart"), cvm.ROOT);
+    await cvm.Modify_override();
+  };
+
+  const saveFrameNow = async (frame) => {
+    ensureUser();
+
+    const file = cvm.buildBlock(frame.prog.map(cvm.item));
+
+    cvm.override(cvm.unhex(frame.keyHash), file);
+    await cvm.Modify_override();
+  };
+
+  const scheduleSave = (frame) => {
+    clearTimeout(saveTimers.get(frame.id));
+
+    saveTimers.set(frame.id, setTimeout(async () => {
+      try {
+        if (frame.root) {
+          await saveRootNow();
+        } else {
+          await saveFrameNow(frame);
+        }
+      } catch (err) {
+        console.warn("CVM autosave failed", err);
+        cvm.toast("autosave failed: " + (err.message || err), 2600);
+      }
+    }, 320));
+  };
+
+  const loadRoot = async () => {
+    const keyHash = cvm.hex(await cvm.sha256("HTMLJSstart"));
+    const file = await cvm.gethashhashfile(cvm.unhex(keyHash));
+
+    cvm.PROG = cvm.parseBlock(file).map(cvm.item);
+    cvm.ROOT = cvm.buildBlock(cvm.PROG);
+
+    state.frames.clear();
+
+    state.frames.set("root", {
+      id: "root",
+      keyHash,
+      title: "HTMLJSstart",
+      subtitle: "VM FIRST RUN MODULE SET",
+      prog: cvm.PROG,
+      x: 54,
+      y: 72,
+      root: true,
+    });
+  };
+
+  const makePanel = (className, title, subtitle, actionsHTML = "") => {
+    const panel = document.createElement("div");
+    panel.className = `cvm2-panel ${className}`;
+    panel.innerHTML = `
+      <div class="cvm2-head">
+        <b>${cvm.esc(title)}</b>
+        <small>${cvm.esc(subtitle || "")}</small>
+        <span class="cvm2-tools">${actionsHTML}</span>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+    cvm.dragPanel(panel, panel.querySelector(".cvm2-head"));
+    return panel;
+  };
+
+  const browser = makePanel(
+    "cvm2-browser",
+    "files",
+    "module tree",
+    `<button type="button" class="cvm2-up">上级</button>`
+  );
+
+  browser.insertAdjacentHTML("beforeend", `
+    <div class="cvm2-browser-path"></div>
+    <div class="cvm2-browser-list"></div>
+  `);
+
+  const editor = makePanel(
+    "cvm2-editor",
+    "module set editor",
+    "middle-drag canvas",
+    `
+      <button type="button" class="cvm2-login">登录</button>
+      <button type="button" class="cvm2-new-set">新建模块集</button>
+    `
+  );
+
+  editor.insertAdjacentHTML("beforeend", `
+    <div class="cvm2-stage">
+      <svg class="cvm2-lines"></svg>
+      <div class="cvm2-add-hint">拖入模块</div>
+    </div>
+  `);
+
+  const browserPath = browser.querySelector(".cvm2-browser-path");
+  const browserList = browser.querySelector(".cvm2-browser-list");
+  const stage = editor.querySelector(".cvm2-stage");
+  const svg = editor.querySelector(".cvm2-lines");
+
+  cvm.enableMiddlePan(stage);
+
+  const findFrameEl = (id) =>
+    [...stage.querySelectorAll(".cvm2-frame")].find((el) => el.__frameId === id);
+
+  const findNodeEl = (frameId, index) =>
+    [...stage.querySelectorAll(".cvm2-node")].find((el) => el.__frameId === frameId && el.__index === index);
+
+  const centerOf = (el) => {
+    const sr = stage.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+
+    return {
+      x: r.left - sr.left + stage.scrollLeft + r.width / 2,
+      y: r.top - sr.top + stage.scrollTop + r.height / 2,
+    };
+  };
+
+  const drawPath = (a, b, dashed = false) => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const mid = Math.max(30, Math.abs(b.x - a.x) / 2);
+
+    path.setAttribute("d", `M ${a.x} ${a.y} C ${a.x + mid} ${a.y}, ${b.x - mid} ${b.y}, ${b.x} ${b.y}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "#2a211c");
+    path.setAttribute("stroke-width", dashed ? "1" : "1.4");
+    path.setAttribute("opacity", dashed ? ".42" : ".78");
+
+    if (dashed) {
+      path.setAttribute("stroke-dasharray", "6 5");
+    }
+
+    svg.appendChild(path);
+  };
+
+  const redrawLines = () => {
+    svg.innerHTML = "";
+
+    const w = Math.max(stage.scrollWidth, stage.clientWidth, 3200);
+    const h = Math.max(stage.scrollHeight, stage.clientHeight, 2200);
+
+    svg.setAttribute("width", String(w));
+    svg.setAttribute("height", String(h));
+    svg.style.width = `${w}px`;
+    svg.style.height = `${h}px`;
+
+    for (const frame of state.frames.values()) {
+      for (let i = 1; i < frame.prog.length; i++) {
+        const a = findNodeEl(frame.id, i - 1);
+        const b = findNodeEl(frame.id, i);
+
+        if (a && b) drawPath(centerOf(a), centerOf(b), false);
+      }
+
+      if (frame.parent) {
+        const parentNode = findNodeEl(frame.parent.frameId, frame.parent.index);
+        const frameEl = findFrameEl(frame.id);
+
+        if (parentNode && frameEl) drawPath(centerOf(parentNode), centerOf(frameEl), true);
+      }
+    }
+  };
+
+  const renderRawDataEditor = (body, frame, index, item) => {
+    body.innerHTML = `
+      <label>data text</label>
+      <textarea class="cvm2-data-text" spellcheck="false">${cvm.esc(safeText(item.data || emptyData))}</textarea>
+      <label>data hex</label>
+      <textarea class="cvm2-data-hex" spellcheck="false">${cvm.esc(cvm.hex(item.data || emptyData))}</textarea>
+    `;
+
+    const textInput = body.querySelector(".cvm2-data-text");
+    const hexInput = body.querySelector(".cvm2-data-hex");
+
+    let lock = false;
+
+    const commit = () => {
+      frame.prog[index] = cvm.item(item);
+      scheduleSave(frame);
+      redrawLines();
+    };
+
+    textInput.oninput = () => {
+      if (lock) return;
+
+      lock = true;
+      item.data = cvm.bytes(textInput.value);
+      hexInput.value = cvm.hex(item.data);
+      lock = false;
+
+      commit();
+    };
+
+    hexInput.oninput = () => {
+      if (lock) return;
+
+      lock = true;
+      item.data = cvm.unhex(hexInput.value);
+      textInput.value = safeText(item.data);
+      lock = false;
+
+      commit();
+    };
+  };
+
+  const renderDataEditor = async (body, frame, index, item, meta) => {
+    const commit = async () => {
+      frame.prog[index] = cvm.item(item);
+      scheduleSave(frame);
+      redrawLines();
+    };
+
+    if (meta.metersupport) {
+      try {
+        const fn = eval(`(${meta.metersupport})`);
+
+        await fn({
+          cvm,
+          tag: meta.tag,
+          item,
+          body,
+          state: body,
+          api: {
+            esc: cvm.esc,
+            bytes: cvm.bytes,
+            concat: cvm.concat,
+            u32: cvm.u32,
+            w32: cvm.u32bytes,
+            unhex: cvm.unhex,
+            decoder: cvm.textDecoder,
+            encoder: cvm.textEncoder,
+            emptyData,
+            parseBlockSafe: cvm.parseBlockSafe,
+            commit,
+            lib: cvm.lib,
+          },
+        });
+
+        return;
+      } catch (err) {
+        console.warn("metersupport failed", meta.tag, err);
+        body.innerHTML = `<div style="color:#b33;font-weight:900">metersupport failed</div>`;
+      }
+    }
+
+    renderRawDataEditor(body, frame, index, item);
+  };
+
+  const renderFrame = async (frame) => {
+    const layout = cvm.layoutLoad(frame.id);
+    layout.nodes ??= {};
+
+    if (layout.frame) {
+      frame.x = layout.frame.x ?? frame.x;
+      frame.y = layout.frame.y ?? frame.y;
+    }
+
+    const frameEl = document.createElement("div");
+    frameEl.className = `cvm2-frame ${frame.root ? "" : "expanded"}`;
+    frameEl.__frameId = frame.id;
+    frameEl.style.left = `${frame.x}px`;
+    frameEl.style.top = `${frame.y}px`;
+
+    frameEl.innerHTML = `
+      <div class="cvm2-frame-head" title="${frame.root ? "拖动窗口" : "拖动窗口，双击关闭"}">
+        <span class="cvm2-frame-mark"></span>
+        <span class="cvm2-frame-title">${cvm.esc(frame.title)}</span>
+        <span class="cvm2-frame-sub">${cvm.esc(frame.subtitle || "module set")}</span>
+      </div>
+      <div class="cvm2-frame-body"></div>
+    `;
+
+    stage.appendChild(frameEl);
+
+    const head = frameEl.querySelector(".cvm2-frame-head");
+    const body = frameEl.querySelector(".cvm2-frame-body");
+
+    const saveLayout = () => {
+      layout.frame = {
+        x: frame.x,
+        y: frame.y,
+      };
+      cvm.layoutSave(frame.id, layout);
+    };
+
+    cvm.dragInside(
+      frameEl,
+      head,
+      () => ({ x: frame.x, y: frame.y }),
+      (pos) => {
+        frame.x = pos.x;
+        frame.y = pos.y;
+        frameEl.style.left = `${pos.x}px`;
+        frameEl.style.top = `${pos.y}px`;
+      },
+      () => {
+        saveLayout();
+        redrawLines();
+      }
+    );
+
+    head.ondblclick = () => {
+      if (frame.root) return;
+      state.frames.delete(frame.id);
+      renderEditor();
+    };
+
+    body.ondragover = (event) => {
+      event.preventDefault();
+      frameEl.classList.add("drop");
+    };
+
+    body.ondragleave = (event) => {
+      if (!frameEl.contains(event.relatedTarget)) {
+        frameEl.classList.remove("drop");
+      }
+    };
+
+    body.ondrop = async (event) => {
+      event.preventDefault();
+      frameEl.classList.remove("drop");
+
+      const incomingHash = event.dataTransfer.getData("text/plain");
+      if (!incomingHash) return;
+
+      const rect = body.getBoundingClientRect();
+      const item = {
+        hash: incomingHash,
+        data: emptyData,
+      };
+
+      const index = frame.prog.length;
+      frame.prog.push(item);
+
+      layout.nodes[nodeKey(index, item)] = {
+        x: event.clientX - rect.left - 130,
+        y: event.clientY - rect.top - 70,
+      };
+
+      cvm.layoutSave(frame.id, layout);
+      scheduleSave(frame);
+
+      await renderEditor();
+    };
+
+    for (let index = 0; index < frame.prog.length; index++) {
+      const item = cvm.item(frame.prog[index]);
+      frame.prog[index] = item;
+
+      const meta = await cvm.metaForHash(item.hash);
+      const isSet = await isSetHash(item.hash);
+      const nk = nodeKey(index, item);
+      const pos = layout.nodes[nk] || cvm.defaultNodePos(index);
+
+      layout.nodes[nk] = pos;
+
+      const node = document.createElement("div");
+      node.className = `cvm2-node ${meta.svg ? "has-svg" : ""}`;
+      node.__frameId = frame.id;
+      node.__index = index;
+      node.style.left = `${pos.x}px`;
+      node.style.top = `${pos.y}px`;
+      node.title = isSet ? "双击展开模块集" : "";
+
+      node.innerHTML = `
+        <div class="cvm2-node-main">
+          <div class="cvm2-node-icon">${meta.svg || ""}</div>
+          <div class="cvm2-node-name">${cvm.esc(meta.tag)}</div>
+        </div>
+        <div class="cvm2-node-desc">
+          ${cvm.esc(meta.describe || (isSet ? "module set · double click" : "module"))}
+          <span class="cvm2-chip">${item.hash.slice(0, 8)}</span>
+        </div>
+        <div class="cvm2-data"></div>
+      `;
+
+      body.appendChild(node);
+
+      cvm.dragInside(
+        node,
+        node,
+        () => layout.nodes[nk],
+        (p) => {
+          layout.nodes[nk] = p;
+          node.style.left = `${p.x}px`;
+          node.style.top = `${p.y}px`;
+        },
+        () => {
+          cvm.layoutSave(frame.id, layout);
+          redrawLines();
+        }
+      );
+
+      node.ondblclick = async (event) => {
+        if (event.target.closest("input,textarea,select")) return;
+        if (!isSet) return;
+
+        await openSetFrame(item.hash, {
+          title: meta.tag,
+          parent: {
+            frameId: frame.id,
+            index,
+          },
+          x: frame.x + 880,
+          y: frame.y + 64 + index * 28,
+        });
+      };
+
+      await renderDataEditor(node.querySelector(".cvm2-data"), frame, index, item, meta);
+    }
+
+    cvm.layoutSave(frame.id, layout);
+  };
+
+  async function openSetFrame(keyHash, options = {}) {
+    keyHash = cvm.hex(keyHash);
+    const id = `set:${keyHash}`;
+
+    if (state.frames.has(id)) {
+      cvm.toast("模块集已经展开");
+      return;
+    }
+
+    const prog = await parseSetByHash(keyHash);
+
+    const frame = {
+      id,
+      keyHash,
+      title: options.title || await cvm.tagOf(keyHash),
+      subtitle: "EXPANDED MODULE SET",
+      prog,
+      x: options.x ?? 960,
+      y: options.y ?? 100,
+      parent: options.parent,
+      root: false,
+    };
+
+    state.frames.set(id, frame);
+    await renderEditor();
+  }
+
+  async function renderEditor() {
+    if (state.rendering) return;
+    state.rendering = true;
+
+    try {
+      stage.querySelectorAll(".cvm2-frame").forEach((el) => el.remove());
+      svg.innerHTML = "";
+
+      for (const frame of state.frames.values()) {
+        await renderFrame(frame);
+      }
+
+      redrawLines();
+    } finally {
+      state.rendering = false;
+    }
+  }
+
+  async function renderBrowser() {
+    const current = state.browserStack.at(-1);
+
+    browserPath.textContent = state.browserStack.map((x) => x.slice(0, 8)).join("/");
+    browserList.innerHTML = "";
+
+    for (const child of await cvm.apiChildren(current)) {
+      const tag = await cvm.tagOf(child.hash);
+      const set = await isSetHash(child.hash);
+
+      const row = document.createElement("div");
+      row.className = "cvm2-row";
+      row.draggable = true;
+      row.innerHTML = `
+        ${cvm.esc(tag)}
+        <small>[${child.score}]</small>
+        ${set ? `<span class="cvm2-chip">set</span>` : ""}
+      `;
+
+      row.ondragstart = (event) => {
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("text/plain", child.hash);
+      };
+
+      row.onclick = () => {
+        state.browserStack.push(child.hash);
+        renderBrowser();
+      };
+
+      browserList.appendChild(row);
+    }
+  }
+
+  const openForge = () => {
+    let forge = document.querySelector(".cvm2-forge");
+
+    if (forge) {
+      forge.style.display = "";
+      return;
+    }
+
+    let forgeProg = [];
+
+    forge = document.createElement("div");
+    forge.className = "cvm2-forge";
+    forge.innerHTML = `
+      <div class="cvm2-head">
+        <b>new module set</b>
+        <small>bin file</small>
+        <span class="cvm2-tools">
+          <button type="button" class="cvm2-forge-close">关闭</button>
+        </span>
+      </div>
+      <div class="cvm2-forge-body">
+        <label>模块集 tag，例如 my.bin</label>
+        <input class="cvm2-forge-tag" placeholder="my.bin">
+
+        <label>内部模块，左侧文件浏览器拖入；顺序就是执行顺序</label>
+        <div class="cvm2-forge-list"></div>
+
+        <div class="cvm2-forge-grid">
+          <div>
+            <label>svg，可选</label>
+            <textarea class="cvm2-forge-svg" placeholder="不填则不上传"></textarea>
+          </div>
+          <div>
+            <label>describe，可选</label>
+            <textarea class="cvm2-forge-desc" placeholder="不填则不上传"></textarea>
+          </div>
+        </div>
+
+        <label>metersupport，可选</label>
+        <textarea class="cvm2-forge-meter" placeholder="async ({ cvm, item, body, api }) => { ... }"></textarea>
+
+        <p class="cvm2-forge-state">ready</p>
+
+        <button type="button" class="cvm2-forge-publish">发布到根目录</button>
+        <button type="button" class="cvm2-forge-publish-add">发布并加入 HTMLJSstart</button>
+      </div>
+    `;
+
+    document.body.appendChild(forge);
+    cvm.dragPanel(forge, forge.querySelector(".cvm2-head"));
+
+    const tagInput = forge.querySelector(".cvm2-forge-tag");
+    const svgInput = forge.querySelector(".cvm2-forge-svg");
+    const descInput = forge.querySelector(".cvm2-forge-desc");
+    const meterInput = forge.querySelector(".cvm2-forge-meter");
+    const list = forge.querySelector(".cvm2-forge-list");
+    const forgeState = forge.querySelector(".cvm2-forge-state");
+
+    const renderForge = async () => {
+      list.innerHTML = "";
+
+      if (!forgeProg.length) {
+        list.innerHTML = `<div style="padding:12px;color:#8c8580;font-weight:900">空模块集。把左边文件拖进来。</div>`;
+      }
+
+      for (let i = 0; i < forgeProg.length; i++) {
+        const item = cvm.item(forgeProg[i]);
+        const tag = await cvm.tagOf(item.hash);
+
+        const row = document.createElement("div");
+        row.className = "cvm2-mini";
+        row.draggable = true;
+        row.innerHTML = `
+          <div class="cvm2-mini-name">${i}. ${cvm.esc(tag)}</div>
+          <label>data text</label>
+          <textarea class="cvm2-mini-text" spellcheck="false">${cvm.esc(safeText(item.data || emptyData))}</textarea>
+          <label>data hex</label>
+          <textarea class="cvm2-mini-hex" spellcheck="false">${cvm.esc(cvm.hex(item.data || emptyData))}</textarea>
+        `;
+
+        row.ondragstart = (event) => {
+          event.dataTransfer.setData("application/cvm-forge-index", String(i));
+        };
+
+        row.ondragover = (event) => {
+          event.preventDefault();
+        };
+
+        row.ondrop = async (event) => {
+          event.preventDefault();
+
+          const from = event.dataTransfer.getData("application/cvm-forge-index");
+          const hash = event.dataTransfer.getData("text/plain");
+
+          if (from !== "") {
+            const n = Number(from);
+            const moved = forgeProg.splice(n, 1)[0];
+            forgeProg.splice(i, 0, moved);
+          } else if (hash) {
+            forgeProg.splice(i, 0, {
+              hash,
+              data: emptyData,
+            });
+          }
+
+          await renderForge();
+        };
+
+        const textInput = row.querySelector(".cvm2-mini-text");
+        const hexInput = row.querySelector(".cvm2-mini-hex");
+
+        let lock = false;
+
+        textInput.oninput = () => {
+          if (lock) return;
+
+          lock = true;
+          item.data = cvm.bytes(textInput.value);
+          hexInput.value = cvm.hex(item.data);
+          forgeProg[i] = item;
+          lock = false;
+        };
+
+        hexInput.oninput = () => {
+          if (lock) return;
+
+          lock = true;
+          item.data = cvm.unhex(hexInput.value);
+          textInput.value = safeText(item.data);
+          forgeProg[i] = item;
+          lock = false;
+        };
+
+        list.appendChild(row);
+      }
+    };
+
+    list.ondragover = (event) => {
+      event.preventDefault();
+    };
+
+    list.ondrop = async (event) => {
+      event.preventDefault();
+
+      const from = event.dataTransfer.getData("application/cvm-forge-index");
+      const hash = event.dataTransfer.getData("text/plain");
+
+      if (from !== "") {
+        const n = Number(from);
+        const moved = forgeProg.splice(n, 1)[0];
+        forgeProg.push(moved);
+      } else if (hash) {
+        forgeProg.push({
+          hash,
+          data: emptyData,
+        });
+      }
+
+      await renderForge();
+    };
+
+    const publish = async (add) => {
+      const tag = tagInput.value.trim();
+
+      if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(tag)) {
+        forgeState.textContent = "tag 只能使用 A-Z a-z 0-9 _ . : -，长度 1-64";
         return;
       }
 
-      forge = document.createElement("div");
-      forge.className = "cvm-forge";
-      forge.innerHTML = `
-        <div class="cvm-forge-head">
-          <b>MODULE FORGE</b>
-          <button type="button" class="cvm-close">关闭</button>
-        </div>
-        <div class="cvm-forge-body">
-          <label>模块 tag</label>
-          <input class="cvm-tag" placeholder="myModule">
+      try {
+        forgeState.textContent = "publishing module set...";
 
-          <label>执行 JS</label>
-          <textarea class="cvm-source cvm-code"></textarea>
+        await uploadPublicFile(tag, cvm.buildBlock(forgeProg));
 
-          <div class="cvm-forge-grid">
-            <div>
-              <label>describe</label>
-              <textarea class="cvm-desc"></textarea>
-            </div>
-            <div>
-              <label>svg</label>
-              <textarea class="cvm-svg"></textarea>
-            </div>
-          </div>
-
-          <label>metersupport</label>
-          <textarea class="cvm-meter"></textarea>
-
-          <div class="cvm-forge-actions">
-            <button type="button" class="cvm-publish">发布到根目录</button>
-            <button type="button" class="cvm-publish-add">发布并加入当前程序</button>
-            <button type="button" class="cvm-template">零参数模板</button>
-          </div>
-
-          <div class="cvm-forge-state">ready</div>
-        </div>
-      `;
-
-      document.body.appendChild(forge);
-      dragPanel(forge, forge.querySelector(".cvm-forge-head"));
-
-      const tagInput = forge.querySelector(".cvm-tag");
-      const sourceInput = forge.querySelector(".cvm-source");
-      const descInput = forge.querySelector(".cvm-desc");
-      const svgInput = forge.querySelector(".cvm-svg");
-      const meterInput = forge.querySelector(".cvm-meter");
-      const state = forge.querySelector(".cvm-forge-state");
-
-      sourceInput.value = defaultModuleSource();
-      descInput.value = "零参数公开模块。";
-      svgInput.value = defaultSvg();
-      meterInput.value = defaultMeterSupport();
-
-      forge.querySelector(".cvm-close").onclick = () => {
-        forge.style.display = "none";
-      };
-
-      forge.querySelector(".cvm-template").onclick = () => {
-        sourceInput.value = defaultModuleSource();
-        descInput.value = "零参数公开模块。";
-        svgInput.value = defaultSvg();
-        meterInput.value = defaultMeterSupport();
-      };
-
-      const publish = async (addToProgram) => {
-        const tag = tagInput.value.trim();
-
-        if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(tag)) {
-          state.textContent = "tag 只能使用 A-Z a-z 0-9 _ . : -，长度 1-64";
-          return;
+        if (svgInput.value.trim()) {
+          await uploadPublicFile(`${tag}.svg`, svgInput.value);
         }
 
-        try {
-          state.textContent = "publishing...";
-
-          await uploadPublicFile(tag, sourceInput.value);
-          await uploadPublicFile(`${tag}.describe`, descInput.value || "");
-          await uploadPublicFile(`${tag}.svg`, svgInput.value || "");
-          await uploadPublicFile(`${tag}.metersupport`, meterInput.value || "");
-
-          await publishRoot(tag);
-
-          metaCache.delete(tag);
-          metaCache.delete(`${tag}.describe`);
-          metaCache.delete(`${tag}.svg`);
-          metaCache.delete(`${tag}.metersupport`);
-
-          if (addToProgram) {
-            cvm.PROG.push({
-              hash: cvm.hex(await cvm.sha256(tag)),
-              data: emptyData,
-            });
-
-            await saveNow();
-          }
-
-          await renderBrowser();
-          await renderEditor();
-
-          state.textContent = `published: ${tag}`;
-        } catch (err) {
-          console.warn("CVM publish failed", err);
-          state.textContent = `failed: ${err.message || err}`;
+        if (descInput.value.trim()) {
+          await uploadPublicFile(`${tag}.describe`, descInput.value);
         }
-      };
 
-      forge.querySelector(".cvm-publish").onclick = () => publish(false);
-      forge.querySelector(".cvm-publish-add").onclick = () => publish(true);
+        if (meterInput.value.trim()) {
+          await uploadPublicFile(`${tag}.metersupport`, meterInput.value);
+        }
+
+        await publishRoot(tag);
+
+        cvm.META_CACHE?.delete(tag);
+        cvm.TAG_CACHE?.delete(cvm.hex(await cvm.sha256(tag)));
+
+        if (add) {
+          const root = state.frames.get("root");
+          const item = {
+            hash: cvm.hex(await cvm.sha256(tag)),
+            data: emptyData,
+          };
+
+          root.prog.push(item);
+
+          const layout = cvm.layoutLoad(root.id);
+          layout.nodes[nodeKey(root.prog.length - 1, item)] = cvm.defaultNodePos(root.prog.length - 1);
+          cvm.layoutSave(root.id, layout);
+
+          scheduleSave(root);
+        }
+
+        await renderBrowser();
+        await renderEditor();
+
+        forgeState.textContent = `published: ${tag}`;
+      } catch (err) {
+        console.warn("publish module set failed", err);
+        forgeState.textContent = `failed: ${err.message || err}`;
+      }
     };
 
-    const head = editor.panel.querySelector(".cvm-head");
+    forge.querySelector(".cvm2-forge-close").onclick = () => {
+      forge.style.display = "none";
+    };
 
-    if (!head.querySelector(".cvm-editor-actions")) {
-      const actions = document.createElement("span");
-      actions.className = "cvm-editor-actions";
-      actions.innerHTML = `<button type="button" class="cvm-new-module">新建模块</button>`;
-      head.insertBefore(actions, editor.button);
-      actions.querySelector(".cvm-new-module").onclick = openForge;
+    forge.querySelector(".cvm2-forge-publish").onclick = () => publish(false);
+    forge.querySelector(".cvm2-forge-publish-add").onclick = () => publish(true);
+
+    renderForge();
+  };
+
+  browser.querySelector(".cvm2-up").onclick = () => {
+    if (state.browserStack.length > 1) {
+      state.browserStack.pop();
+      renderBrowser();
     }
+  };
 
-    cvm.openModuleForge = openForge;
-    cvm.publishPublicFile = uploadPublicFile;
-  })();
+  editor.querySelector(".cvm2-login").onclick = async () => {
+    const id = prompt("user id");
+    if (!id) return;
+
+    cvm.user(id.trim().toLowerCase());
+
+    await loadRoot();
+    await renderBrowser();
+    await renderEditor();
+
+    cvm.toast("user loaded");
+  };
+
+  editor.querySelector(".cvm2-new-set").onclick = openForge;
+
+  stage.ondragover = (event) => {
+    if (event.target.closest(".cvm2-frame")) return;
+    event.preventDefault();
+    stage.classList.add("drop");
+  };
+
+  stage.ondragleave = (event) => {
+    if (!stage.contains(event.relatedTarget)) {
+      stage.classList.remove("drop");
+    }
+  };
+
+  stage.ondrop = async (event) => {
+    if (event.target.closest(".cvm2-frame")) return;
+
+    event.preventDefault();
+    stage.classList.remove("drop");
+
+    const hash = event.dataTransfer.getData("text/plain");
+    if (!hash) return;
+
+    const root = state.frames.get("root");
+    if (!root) return;
+
+    const item = {
+      hash,
+      data: emptyData,
+    };
+
+    root.prog.push(item);
+
+    const rootEl = findFrameEl(root.id);
+    const body = rootEl?.querySelector(".cvm2-frame-body");
+    const rect = body?.getBoundingClientRect();
+
+    const layout = cvm.layoutLoad(root.id);
+    layout.nodes[nodeKey(root.prog.length - 1, item)] = rect
+      ? {
+          x: event.clientX - rect.left - 130,
+          y: event.clientY - rect.top - 70,
+        }
+      : cvm.defaultNodePos(root.prog.length - 1);
+
+    cvm.layoutSave(root.id, layout);
+
+    scheduleSave(root);
+    await renderEditor();
+  };
+
+  cvm.openModuleSetForge = openForge;
+  cvm.renderBrowser = renderBrowser;
+  cvm.renderEditor = renderEditor;
+
+  await loadRoot();
+  await renderBrowser();
+  await renderEditor();
+
+  return cvm.resume();
+}
+"""
 
 
-  cvm.out = (text) => {
+MODULES_JS = {
+    "rerun": "CVM.PTR.off=0;return CVM.executeBlock();\n",
+
+    "print": r"""
+{
+  const cvm = CVM;
+  const d = cvm.data ? cvm.data() : new Uint8Array();
+  const dec = cvm.textDecoder || new TextDecoder();
+  const text = d.length ? dec.decode(d) : "hello world";
+
+  if (cvm.out) {
+    cvm.out(text);
+  } else {
     let output = document.getElementById("cvm-out");
 
     if (!output) {
@@ -1380,661 +2648,109 @@ if (!CVM.__ui) {
     }
 
     output.textContent = text;
-  };
-
-  cvm.browserStack = [zeroHash];
-
-  let renderTimer = 0;
-  let saveTimer = 0;
-
-  const scheduleRender = () => {
-    clearTimeout(renderTimer);
-    renderTimer = setTimeout(renderEditor, 20);
-  };
-
-  const persistProgram = async () => {
-    cvm.PROG = cvm.PROG.map(asItem);
-    await cvm.setprog(cvm.PROG);
-
-    try {
-      await cvm.Modify_override();
-    } catch (err) {
-      console.warn("CVM autosave failed", err);
-    }
-  };
-
-  const saveSoon = (rerender = false) => {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      await persistProgram();
-      if (rerender) scheduleRender();
-    }, 180);
-  };
-
-  const saveNow = async () => {
-    clearTimeout(saveTimer);
-    await persistProgram();
-    scheduleRender();
-  };
-
-  const moveItem = (prog, from, to) => {
-    if (from < 0 || to < 0 || from === to) return;
-
-    const it = prog.splice(from, 1)[0];
-    const insertAt = from < to ? to - 1 : to;
-    prog.splice(Math.max(0, Math.min(insertAt, prog.length)), 0, it);
-  };
-
-  const summarizeData = async (tag, data) => {
-    if (tag === "setsize") {
-      if (data.length < 4) return "bad setsize data";
-      return `id=${decoder.decode(data.slice(0, -4))}, size=${u32(data, data.length - 4)}`;
-    }
-
-    if (tag === "getvar" || tag === "setvar") {
-      return `id=${decoder.decode(data) || "(empty)"}`;
-    }
-
-    if (tag === "IF") {
-      return `program nodes=${parseBlockSafe(data).length}`;
-    }
-
-    if (tag === "IFrerun") {
-      return "if std bool then rerun";
-    }
-
-    if (tag === "Runonece" || tag === "Runonce") {
-      return `enabled=${!!data[0]}, program nodes=${parseBlockSafe(data.slice(1)).length}`;
-    }
-
-    return data && data.length ? `data ${data.length} bytes` : "data: empty";
-  };
-
-  const adapterNames = new Set([
-    "setsize",
-    "getvar",
-    "setvar",
-    "IF",
-    "IFrerun",
-    "Runonece",
-    "Runonce",
-  ]);
-
-  const meterSupportCache = new Map();
-
-  async function renderInlineItemEditor(body, item, onChange) {
-    const tag = await tagOf(item.hash);
-    const meta = await loadMeta(tag);
-
-    body.classList.add("cvm-inline-editor");
-
-    body.innerHTML = `
-      <div class="cvm-editor-body"></div>
-      <div class="cvm-form-row">
-        <span class="cvm-state">实时同步</span>
-      </div>
-    `;
-
-    const editorBody = body.querySelector(".cvm-editor-body");
-    const state = body.querySelector(".cvm-state");
-
-    const commit = async () => {
-      state.textContent = "同步中";
-      await onChange();
-
-      clearTimeout(commit.__timer);
-      commit.__timer = setTimeout(() => {
-        state.textContent = "实时同步";
-      }, 240);
-    };
-
-    const meterSource = String(meta.metersupport || "").trim();
-
-    const baseApi = {
-      esc,
-      bytes,
-      concat,
-      u32,
-      w32,
-      unhex,
-      decoder,
-      encoder,
-      emptyData,
-      zeroBlock,
-      parseBlockSafe,
-      renderInlineProgram,
-      commit,
-      lib: cvm.lib,
-    };
-
-    if (meterSource) {
-      try {
-        if (!meterSupportCache.has(tag)) {
-          meterSupportCache.set(tag, eval(`(${meterSource})`));
-        }
-
-        await meterSupportCache.get(tag)({
-          cvm,
-          tag,
-          item,
-          body: editorBody,
-          state,
-          api: baseApi,
-        });
-      } catch (err) {
-        console.warn(`CVM metersupport failed: ${tag}`, err);
-        editorBody.innerHTML = `<div class="cvm-no-param cvm-danger">metersupport 加载失败</div>`;
-      }
-
-      return;
-    }
-
-    if (!adapterNames.has(tag)) {
-      editorBody.innerHTML = `<div class="cvm-no-param">此节点无专用参数。</div>`;
-      return;
-    }
-
-    if (tag === "setsize") {
-      const id = item.data.length >= 4 ? decoder.decode(item.data.slice(0, -4)) : "";
-      const size = item.data.length >= 4 ? u32(item.data, item.data.length - 4) : 0;
-
-      editorBody.innerHTML = `
-        <div class="cvm-form-row">
-          <label>变量 id</label>
-          <input class="cvm-id" value="${esc(id)}">
-        </div>
-        <div class="cvm-form-row">
-          <label>变量大小 size</label>
-          <input class="cvm-size" type="number" min="0" step="1" value="${size}">
-        </div>
-      `;
-
-      const idInput = editorBody.querySelector(".cvm-id");
-      const sizeInput = editorBody.querySelector(".cvm-size");
-
-      const update = async () => {
-        item.data = concat(
-          encoder.encode(idInput.value),
-          w32(Number(sizeInput.value) || 0)
-        );
-
-        await commit();
-      };
-
-      idInput.oninput = update;
-      sizeInput.oninput = update;
-      return;
-    }
-
-    if (tag === "getvar" || tag === "setvar") {
-      editorBody.innerHTML = `
-        <div class="cvm-form-row">
-          <label>变量 id</label>
-          <input class="cvm-id" value="${esc(decoder.decode(item.data || emptyData))}">
-        </div>
-      `;
-
-      const idInput = editorBody.querySelector(".cvm-id");
-
-      idInput.oninput = async () => {
-        item.data = encoder.encode(idInput.value);
-        await commit();
-      };
-
-      return;
-    }
-
-    if (tag === "IFrerun") {
-      editorBody.innerHTML = `
-        <div class="cvm-no-param">
-          无参数。运行时读取 std 第一个布尔值，为真则当前块重新执行。
-        </div>
-      `;
-
-      return;
-    }
-
-    if (tag === "IF") {
-      const nested = parseBlockSafe(item.data);
-
-      editorBody.innerHTML = `
-        <div class="cvm-form-row">
-          <label>IF 内部程序</label>
-          <div class="cvm-if-program"></div>
-        </div>
-      `;
-
-      await renderInlineProgram(editorBody.querySelector(".cvm-if-program"), nested, async () => {
-        item.data = cvm.buildBlock(nested);
-        await commit();
-      });
-
-      return;
-    }
-
-    if (tag === "Runonece" || tag === "Runonce") {
-      let enabled = !!item.data[0];
-      const nested = parseBlockSafe((item.data || emptyData).slice(1));
-
-      editorBody.innerHTML = `
-        <div class="cvm-form-row">
-          <label>
-            <input class="cvm-enabled" type="checkbox" ${enabled ? "checked" : ""}>
-            执行一次
-          </label>
-        </div>
-        <div class="cvm-form-row">
-          <label>Runonce 内部程序</label>
-          <div class="cvm-run-program"></div>
-        </div>
-      `;
-
-      const enabledInput = editorBody.querySelector(".cvm-enabled");
-
-      const saveNested = async () => {
-        enabled = !!enabledInput.checked;
-        item.data = concat(
-          new Uint8Array([enabled ? 1 : 0]),
-          cvm.buildBlock(nested)
-        );
-        await commit();
-      };
-
-      enabledInput.onchange = saveNested;
-
-      await renderInlineProgram(editorBody.querySelector(".cvm-run-program"), nested, saveNested);
-    }
   }
 
-  const renderInlineProgram = async (holder, prog, onChange) => {
-    holder.querySelectorAll?.(".cvm-mini-editor").forEach((editor) => {
-      editor.__cvmCleanup?.();
-    });
-    holder.innerHTML = "";
-    holder.classList.add("cvm-inline-program");
-    holder.__dragKey ??= `application/cvm-mini-index-${Math.random()}`;
-
-    if (!prog.length) {
-      const empty = document.createElement("div");
-      empty.style.color = "#777";
-      empty.textContent = "空程序。可从左侧文件浏览器拖入节点。";
-      holder.appendChild(empty);
-    }
-
-    for (let index = 0; index < prog.length; index++) {
-      const item = asItem(prog[index]);
-      const tag = await tagOf(item.hash);
-      const meta = await loadMeta(tag);
-
-      const row = document.createElement("div");
-      row.className = "cvm-mini-node";
-      row.draggable = true;
-
-      row.innerHTML = `
-        <div class="cvm-mini-main">
-          <div class="cvm-node-icon">${meta.svg || "◇"}</div>
-          <div class="cvm-mini-title">${index}. ${esc(tag)}</div>
-          <div class="cvm-mini-remove">x</div>
-        </div>
-        <div class="cvm-node-data">${esc(await summarizeData(tag, item.data || emptyData))}</div>
-        <div class="cvm-mini-editor"></div>
-      `;
-
-      row.querySelector(".cvm-mini-remove").onclick = async (event) => {
-        event.stopPropagation();
-        prog.splice(index, 1);
-        await onChange();
-        await renderInlineProgram(holder, prog, onChange);
-      };
-
-      row.ondragstart = (event) => {
-        if (event.target.closest("input,textarea,button,.cvm-mini-editor")) {
-          event.preventDefault();
-          return;
-        }
-
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(holder.__dragKey, String(index));
-      };
-
-      row.ondragover = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        const rect = row.getBoundingClientRect();
-        const before = event.clientY < rect.top + rect.height / 2;
-
-        row.classList.toggle("drop-before", before);
-        row.classList.toggle("drop-after", !before);
-      };
-
-      row.ondragleave = () => {
-        row.classList.remove("drop-before", "drop-after");
-      };
-
-      row.ondrop = async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        row.classList.remove("drop-before", "drop-after");
-
-        const miniIndex = event.dataTransfer.getData(holder.__dragKey);
-        const incomingHash = event.dataTransfer.getData("text/plain");
-
-        const rect = row.getBoundingClientRect();
-        const before = event.clientY < rect.top + rect.height / 2;
-        const target = before ? index : index + 1;
-
-        if (miniIndex !== "") {
-          moveItem(prog, Number(miniIndex), target);
-        } else if (incomingHash) {
-          prog.splice(target, 0, { hash: incomingHash, data: emptyData });
-        }
-
-        await onChange();
-        await renderInlineProgram(holder, prog, onChange);
-      };
-
-      holder.appendChild(row);
-
-      await renderInlineItemEditor(
-        row.querySelector(".cvm-mini-editor"),
-        item,
-        async () => {
-          prog[index] = item;
-          await onChange();
-        }
-      );
-    }
-
-    holder.ondragover = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
-    holder.ondrop = async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      const miniIndex = event.dataTransfer.getData(holder.__dragKey);
-      const incomingHash = event.dataTransfer.getData("text/plain");
-
-      if (miniIndex !== "") {
-        moveItem(prog, Number(miniIndex), prog.length);
-      } else if (incomingHash) {
-        prog.push({ hash: incomingHash, data: emptyData });
-      }
-
-      await onChange();
-      await renderInlineProgram(holder, prog, onChange);
-    };
-  };
-
-  async function renderBrowser() {
-    const currentHash = cvm.browserStack.at(-1);
-
-    browser.path.textContent = cvm.browserStack
-      .map((hash) => hash.slice(0, 8))
-      .join("/");
-
-    browser.list.innerHTML = "";
-
-    for (const child of await children(currentHash)) {
-      const row = document.createElement("div");
-
-      row.className = "cvm-row";
-      row.draggable = true;
-      row.textContent = `${await label(child.hash)} [${child.score}]`;
-
-      row.ondragstart = (event) => {
-        event.dataTransfer.effectAllowed = "copy";
-        event.dataTransfer.setData("text/plain", child.hash);
-      };
-
-      row.onclick = () => {
-        cvm.browserStack.push(child.hash);
-        renderBrowser();
-      };
-
-      browser.list.appendChild(row);
-    }
-  }
-
-  async function renderEditor() {
-    graph.querySelectorAll(".cvm-node").forEach((node) => {
-      node.querySelectorAll(".cvm-node-editor,.cvm-mini-editor").forEach((editor) => {
-        editor.__cvmCleanup?.();
-      });
-      node.remove();
-    });
-    svg.innerHTML = "";
-
-    const graphWidth = Math.max(graph.clientWidth, 260);
-    const nodeW = 270;
-    const nodeH = 380;
-    const gapX = 56;
-    const gapY = 56;
-    const cols = Math.max(1, Math.floor((graphWidth - 48) / (nodeW + gapX)));
-    const rows = Math.ceil(Math.max(1, cvm.PROG.length) / cols);
-    const canvasW = Math.max(graphWidth, 48 + cols * (nodeW + gapX));
-    const canvasH = Math.max(graph.clientHeight, 178 + rows * (nodeH + gapY));
-
-    svg.setAttribute("width", String(canvasW));
-    svg.setAttribute("height", String(canvasH));
-    svg.style.width = `${canvasW}px`;
-    svg.style.height = `${canvasH}px`;
-
-    for (let index = 0; index < cvm.PROG.length; index++) {
-      const item = asItem(cvm.PROG[index]);
-      const tag = await tagOf(item.hash);
-      const meta = await loadMeta(tag);
-      const col = index % cols;
-      const row = Math.floor(index / cols);
-      const x = 24 + col * (nodeW + gapX);
-      const y = 154 + row * (nodeH + gapY);
-
-      const node = document.createElement("div");
-      node.className = "cvm-node";
-      node.draggable = true;
-      node.style.left = `${x}px`;
-      node.style.top = `${y}px`;
-
-      node.innerHTML = `
-        <div class="cvm-node-main">
-          <div class="cvm-node-icon">${meta.svg || "◇"}</div>
-          <div class="cvm-node-title">${index}. ${esc(tag)}</div>
-        </div>
-        <div class="cvm-node-meta">${esc(item.hash.slice(0, 16))}</div>
-        <div class="cvm-node-data">${esc(await summarizeData(tag, item.data || emptyData))}</div>
-        <div class="cvm-node-editor"></div>
-      `;
-
-      node.ondragstart = (event) => {
-        if (event.target.closest("input,textarea,button,.cvm-node-editor")) {
-          event.preventDefault();
-          return;
-        }
-
-        node.classList.add("dragging");
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("application/cvm-index", String(index));
-      };
-
-      node.ondragend = () => {
-        node.classList.remove("dragging", "drop-before", "drop-after");
-      };
-
-      node.ondragover = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        const rect = node.getBoundingClientRect();
-        const before = event.clientX < rect.left + rect.width / 2;
-
-        node.classList.toggle("drop-before", before);
-        node.classList.toggle("drop-after", !before);
-      };
-
-      node.ondragleave = () => {
-        node.classList.remove("drop-before", "drop-after");
-      };
-
-      node.ondrop = async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        node.classList.remove("drop-before", "drop-after");
-
-        const incomingIndex = event.dataTransfer.getData("application/cvm-index");
-        const incomingHash = event.dataTransfer.getData("text/plain");
-
-        const rect = node.getBoundingClientRect();
-        const before = event.clientX < rect.left + rect.width / 2;
-        const target = before ? index : index + 1;
-
-        if (incomingIndex !== "") {
-          moveItem(cvm.PROG, Number(incomingIndex), target);
-          await saveNow();
-          return;
-        }
-
-        if (incomingHash) {
-          cvm.PROG.splice(target, 0, { hash: incomingHash, data: emptyData });
-          await saveNow();
-        }
-      };
-
-      graph.appendChild(node);
-
-      await renderInlineItemEditor(
-        node.querySelector(".cvm-node-editor"),
-        item,
-        async () => {
-          cvm.PROG[index] = item;
-          saveSoon(false);
-        }
-      );
-
-      if (index > 0) {
-        const prevCol = (index - 1) % cols;
-        const prevRow = Math.floor((index - 1) / cols);
-        const x1 = 24 + prevCol * (nodeW + gapX) + nodeW;
-        const y1 = 24 + prevRow * (nodeH + gapY) + nodeH / 2;
-        const x2 = x;
-        const y2 = y + nodeH / 2;
-
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        const mid = Math.max(18, Math.abs(x2 - x1) / 2);
-
-        path.setAttribute("d", `M ${x1} ${y1} C ${x1 + mid} ${y1}, ${x2 - mid} ${y2}, ${x2} ${y2}`);
-        path.setAttribute("fill", "none");
-        path.setAttribute("stroke", "#89b4fa");
-        path.setAttribute("stroke-width", "2");
-
-        svg.appendChild(path);
-      }
-    }
-  }
-
-  graph.ondragover = (event) => {
-    if (event.target.closest(".cvm-node-editor,.cvm-mini-editor,.cvm-inline-program,.cvm-mini-node")) {
-      return;
-    }
-
-    event.preventDefault();
-    graph.classList.add("drag-target");
-  };
-
-  graph.ondragleave = (event) => {
-    if (!graph.contains(event.relatedTarget)) {
-      graph.classList.remove("drag-target");
-    }
-  };
-
-  graph.ondrop = async (event) => {
-    if (event.target.closest(".cvm-node-editor,.cvm-mini-editor,.cvm-inline-program,.cvm-mini-node")) {
-      return;
-    }
-
-    event.preventDefault();
-    graph.classList.remove("drag-target");
-
-    const incomingIndex = event.dataTransfer.getData("application/cvm-index");
-    const incomingHash = event.dataTransfer.getData("text/plain");
-
-    if (incomingIndex !== "") {
-      moveItem(cvm.PROG, Number(incomingIndex), cvm.PROG.length);
-      await saveNow();
-      return;
-    }
-
-    if (incomingHash) {
-      cvm.PROG.push({ hash: incomingHash, data: emptyData });
-      await saveNow();
-    }
-  };
-
-  browser.button.onclick = () => {
-    if (cvm.browserStack.length > 1) {
-      cvm.browserStack.pop();
-      renderBrowser();
-    }
-  };
-
-  editor.button.onclick = async () => {
-    const id = prompt("user id");
-    if (!id) return;
-
-    cvm.user(id.trim().toLowerCase());
-
-    try {
-      const file = await cvm.gethashhashfile(await cvm.sha256("HTMLJSstart"));
-      cvm.PROG = cvm.parseBlock(file).map(asItem);
-      cvm.ROOT = cvm.buildBlock(cvm.PROG);
-      await renderEditor();
-    } catch (err) {
-      console.warn("CVM user program load failed", err);
-    }
-  };
-
-  cvm.renderBrowser = renderBrowser;
-  cvm.renderEditor = renderEditor;
-
-  await renderBrowser();
-  await renderEditor();
-}
-
-
-// ============================================================
-// 持续入口
-// ============================================================
-{
-  const cvm = CVM;
-  cvm.PTR.buf = cvm.buildBlock(cvm.PROG);
-  cvm.ROOT = cvm.PTR.buf;
-  cvm.PTR.off = 0;
-  await new Promise((r) => setTimeout(r, 60));
   return cvm.resume();
 }
+""",
 
-"""
+    "setsize": r"""
+{
+  const cvm = CVM;
+  const d = cvm.data();
 
-# ==========================================
-# 2. 基础控制与逻辑模块 (零参数)
-# ==========================================
-MODULES_JS = {
-    "rerun": "CVM.PTR.off=0;return CVM.executeBlock();\n",
-    "print": 'CVM.out("hello world");return CVM.resume();\n',
-    "setsize": "{ const cvm = CVM; const d = cvm.data(); if (d.length >= 4) { const id = d.slice(0, d.length - 4); const size = new DataView(d.buffer, d.byteOffset + d.length - 4, 4).getUint32(0, true); cvm.setVarSize(id, size); } return cvm.resume(); }",
-    "getvar": "{ const cvm = CVM; const id = cvm.data(); const value = cvm.getVar(id); cvm.stdReturn(value); return cvm.resume(); }",
-    "setvar": "{ const cvm = CVM; const id = cvm.data(); const size = cvm.VSZ.get(cvm.varKey(id)) ?? 0; cvm.stdInput(); const value = cvm.stdRead(size); cvm.setVar(id, value); return cvm.resume(); }",
-    "IF": "{ const cvm = CVM; const program = cvm.data(); if (!cvm.stdBool()) return cvm.resume(); return cvm.enterBlock(program); }",
-    "IFrerun": "{ const cvm = CVM; if (cvm.stdBool()) { cvm.PTR.off = 0; return cvm.executeBlock(); } return cvm.resume(); }",
-    "Runonece": "{ const cvm = CVM; const d = cvm.data(); if (!d.length || !d[0]) return cvm.resume(); d[0] = 0; await cvm.persistRoot(); return cvm.enterBlock(d.subarray(1)); }",
-    "Runonce": "{ const cvm = CVM; const d = cvm.data(); if (!d.length || !d[0]) return cvm.resume(); d[0] = 0; await cvm.persistRoot(); return cvm.enterBlock(d.subarray(1)); }",
+  if (d.length >= 4) {
+    const id = d.slice(0, d.length - 4);
+    const size = new DataView(d.buffer, d.byteOffset + d.length - 4, 4).getUint32(0, true);
+    cvm.setVarSize(id, size);
+  }
+
+  return cvm.resume();
+}
+""",
+
+    "getvar": r"""
+{
+  const cvm = CVM;
+  const id = cvm.data();
+  const value = cvm.getVar(id);
+  cvm.stdReturn(value);
+  return cvm.resume();
+}
+""",
+
+    "setvar": r"""
+{
+  const cvm = CVM;
+  const id = cvm.data();
+  const size = cvm.VSZ.get(cvm.varKey(id)) ?? 0;
+  cvm.stdInput();
+  const value = cvm.stdRead(size);
+  cvm.setVar(id, value);
+  return cvm.resume();
+}
+""",
+
+    "IF": r"""
+{
+  const cvm = CVM;
+  const program = cvm.data();
+
+  if (!cvm.stdBool()) {
+    return cvm.resume();
+  }
+
+  return cvm.enterBlock(program);
+}
+""",
+
+    "IFrerun": r"""
+{
+  const cvm = CVM;
+
+  if (cvm.stdBool()) {
+    cvm.PTR.off = 0;
+    return cvm.executeBlock();
+  }
+
+  return cvm.resume();
+}
+""",
+
+    "Runonece": r"""
+{
+  const cvm = CVM;
+  const d = cvm.data();
+
+  if (!d.length || !d[0]) {
+    return cvm.resume();
+  }
+
+  d[0] = 0;
+  await cvm.persistRoot();
+
+  return cvm.enterBlock(d.subarray(1));
+}
+""",
+
+    "Runonce": r"""
+{
+  const cvm = CVM;
+  const d = cvm.data();
+
+  if (!d.length || !d[0]) {
+    return cvm.resume();
+  }
+
+  d[0] = 0;
+  await cvm.persistRoot();
+
+  return cvm.enterBlock(d.subarray(1));
+}
+""",
 }
 
-# ==========================================
-# 3. 物理/游戏模块 (零参数，操作 CVM.world)
-# ==========================================
+
 PHYSICS_JS = {
     "physicsWorld": "{ const cvm = CVM; const Matter = await cvm.lib('matter'); cvm.world ??= {}; const physics = cvm.world.physics ??= {}; physics.defaults ??= { ball: { radius: 24, restitution: 0.86, frictionAir: 0.01, color: '#89dceb' }, gravity: { x: 0, y: 1 } }; if (!physics.engine) { physics.engine = Matter.Engine.create(); physics.engine.gravity.x = physics.defaults.gravity.x; physics.engine.gravity.y = physics.defaults.gravity.y; physics.bodies = new Map(); physics.bounds = []; } return cvm.resume(); }",
     "renderPhysics": "{ const cvm = CVM; const Matter = await cvm.lib('matter'); cvm.world ??= {}; const physics = cvm.world.physics ??= {}; if (!physics.engine) return cvm.resume(); let panel = document.getElementById('cvm-physics-stage'); if (!panel) { panel = document.createElement('div'); panel.id = 'cvm-physics-stage'; panel.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:99997;width:520px;height:300px;background:#111827;border:1px solid #7aa2f7;box-shadow:0 0 24px rgba(122,162,247,.22);overflow:hidden'; document.body.appendChild(panel); } const width = panel.clientWidth || 520, height = panel.clientHeight || 300; if (!physics.boundsReady) { const wallStyle = { fillStyle: '#293241', strokeStyle: '#7aa2f7', lineWidth: 1 }; physics.bounds = [Matter.Bodies.rectangle(width/2, height+10, width, 20, {isStatic:true, render:wallStyle}), Matter.Bodies.rectangle(width/2, -10, width, 20, {isStatic:true, render:wallStyle}), Matter.Bodies.rectangle(-10, height/2, 20, height, {isStatic:true, render:wallStyle}), Matter.Bodies.rectangle(width+10, height/2, 20, height, {isStatic:true, render:wallStyle})]; Matter.Composite.add(physics.engine.world, physics.bounds); physics.boundsReady = true; } if (!physics.render) { physics.render = Matter.Render.create({ element: panel, engine: physics.engine, options: { width, height, wireframes: false, background: '#111827', pixelRatio: window.devicePixelRatio || 1 } }); physics.runner = Matter.Runner.create(); Matter.Render.run(physics.render); Matter.Runner.run(physics.runner, physics.engine); } return cvm.resume(); }",
@@ -2044,37 +2760,578 @@ PHYSICS_JS = {
     "flipGravity": "{ const cvm = CVM; const physics = cvm.world?.physics; if (physics?.engine) { physics.engine.gravity.y = physics.engine.gravity.y >= 0 ? -1 : 1; physics.defaults ??= {}; physics.defaults.gravity = { x: physics.engine.gravity.x, y: physics.engine.gravity.y }; } return cvm.resume(); }",
 }
 
-# ==========================================
-# 4. 元数据 (Meta)
-# ==========================================
-META = {
-    "setsize.describe": "setsize 数据格式：id + uint32 little-endian size。",
-    "getvar.describe": "getvar 数据格式：id。读取变量写入 std。",
-    "setvar.describe": "setvar 数据格式：id。从 std 读取数据写入变量。",
-    "IF.describe": "IF 数据格式：模块程序 block。",
-    "IFrerun.describe": "IFrerun 无数据。std bool 为真则重新执行当前块。",
-    "Runonece.describe": "Runonece 数据格式：bool + 模块程序 block。",
-    "Runonce.describe": "Runonce 是 Runonece 的同义拼写。",
-    "physicsWorld.describe": "零参数模块。创建 CVM.world.physics。",
-    "renderPhysics.describe": "零参数模块。显示 Matter.js 物理舞台。",
-    "spawnBall.describe": "零参数模块。生成一个物理小球。",
-    "kickPhysics.describe": "零参数模块。给动态物体施加随机冲量。",
-    "clearPhysics.describe": "零参数模块。清除动态物体。",
-    "flipGravity.describe": "零参数模块。翻转重力方向。",
-    
-    "physicsWorld.metersupport": "async ({ cvm, body, api }) => { const { esc } = api; cvm.world ??= {}; const physics = cvm.world.physics ??= {}; physics.defaults ??= { ball: { radius: 24, restitution: 0.86, color: '#89dceb' }, gravity: { x: 0, y: 1 } }; const cfg = physics.defaults.ball; const g = physics.defaults.gravity; body.innerHTML = `<div class='cvm-meter-card'><div class='cvm-meter-title'>PHYSICS DEFAULTS</div><label>Radius: <input type='range' class='r' min='8' max='64' value='${cfg.radius}'> <span class='rv'>${cfg.radius}</span></label><label>Bounce: <input type='range' class='b' min='0' max='1' step='0.01' value='${cfg.restitution}'> <span class='bv'>${cfg.restitution}</span></label><label>Gravity Y: <input type='range' class='g' min='-2' max='2' step='0.1' value='${g.y}'> <span class='gv'>${g.y}</span></label><label>Color: <input type='color' class='c' value='${esc(cfg.color)}'></label></div>`; const sync = () => { cfg.radius = Number(body.querySelector('.r').value); cfg.restitution = Number(body.querySelector('.b').value); g.y = Number(body.querySelector('.g').value); cfg.color = body.querySelector('.c').value; body.querySelector('.rv').textContent = cfg.radius; body.querySelector('.bv').textContent = cfg.restitution; body.querySelector('.gv').textContent = g.y; if (physics.engine) physics.engine.gravity.y = g.y; }; body.querySelectorAll('input').forEach(i => i.oninput = sync); }",
-}
 
-# 补充基础 SVG
-for name in ["setsize", "getvar", "setvar", "IF", "IFrerun", "Runonece", "Runonce", "physicsWorld", "renderPhysics", "spawnBall", "kickPhysics", "clearPhysics", "flipGravity"]:
-    META[f"{name}.svg"] = f'<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="8" width="48" height="48" rx="8" fill="#111827" stroke="#89dceb" stroke-width="4"/><text x="32" y="40" font-size="24" fill="#a6e3a1" text-anchor="middle" font-family="monospace">{name[:4]}</text></svg>'
+PRINT_METER = r"""
+async ({ item, body, api }) => {
+  const value = api.decoder.decode(item.data || api.emptyData);
+
+  body.innerHTML = `
+    <label>弹出文本</label>
+    <textarea class="cvm2-print-text" spellcheck="false"></textarea>
+  `;
+
+  const input = body.querySelector(".cvm2-print-text");
+  input.value = value || "hello world";
+
+  input.oninput = () => {
+    item.data = api.encoder.encode(input.value);
+    api.commit();
+  };
+}
+"""
+
+
+SETSIZE_METER = r"""
+async ({ item, body, api }) => {
+  const d = item.data || api.emptyData;
+  const id = d.length >= 4 ? api.decoder.decode(d.slice(0, -4)) : "";
+  const size = d.length >= 4 ? api.u32(d, d.length - 4) : 0;
+
+  body.innerHTML = `
+    <label>变量 id</label>
+    <input class="cvm2-var-id" spellcheck="false">
+    <label>变量大小 uint32</label>
+    <input class="cvm2-var-size" type="number" min="0" step="1">
+  `;
+
+  const idInput = body.querySelector(".cvm2-var-id");
+  const sizeInput = body.querySelector(".cvm2-var-size");
+
+  idInput.value = id;
+  sizeInput.value = String(size);
+
+  const update = () => {
+    item.data = api.concat(
+      api.encoder.encode(idInput.value),
+      api.w32(Number(sizeInput.value) || 0)
+    );
+
+    api.commit();
+  };
+
+  idInput.oninput = update;
+  sizeInput.oninput = update;
+}
+"""
+
+
+VAR_ID_METER = r"""
+async ({ item, body, api, tag }) => {
+  body.innerHTML = `
+    <label>${api.esc(tag)} 变量 id</label>
+    <input class="cvm2-var-id" spellcheck="false">
+  `;
+
+  const input = body.querySelector(".cvm2-var-id");
+  input.value = api.decoder.decode(item.data || api.emptyData);
+
+  input.oninput = () => {
+    item.data = api.encoder.encode(input.value);
+    api.commit();
+  };
+}
+"""
+
+
+DELAY_METER = r"""
+async ({ item, body, api }) => {
+  const d = item.data || api.emptyData;
+  const ms = d.length >= 4 ? api.u32(d, 0) : 80;
+
+  body.innerHTML = `
+    <label>延迟毫秒 uint32</label>
+    <input class="cvm2-delay-ms" type="number" min="0" step="1">
+  `;
+
+  const input = body.querySelector(".cvm2-delay-ms");
+  input.value = String(ms);
+
+  input.oninput = () => {
+    item.data = api.w32(Number(input.value) || 0);
+    api.commit();
+  };
+}
+"""
+
+
+IFRERUN_METER = r"""
+async ({ body }) => {
+  body.innerHTML = `
+    <div style="padding:7px 2px;color:#8c8580;font-weight:900">
+      无节点参数 data。<br>
+      <span style="font-weight:700;font-size:11px">
+        运行时读取 std 第一个 bool，为 true 则重新执行当前模块集。
+      </span>
+    </div>
+  `;
+}
+"""
+
+
+IF_METER = r"""
+async ({ cvm, item, body, api }) => {
+  let prog = api.parseBlockSafe(item.data || api.emptyData);
+
+  const move = (xs, from, to) => {
+    if (from < 0 || to < 0 || from === to) return;
+    const it = xs.splice(from, 1)[0];
+    xs.splice(Math.max(0, Math.min(to, xs.length)), 0, it);
+  };
+
+  const save = () => {
+    item.data = cvm.buildBlock(prog);
+    api.commit();
+  };
+
+  const render = async () => {
+    body.innerHTML = `
+      <label>IF 内部模块集</label>
+      <div class="cvm2-if-list"
+        style="min-height:48px;padding:6px;border:1px dashed rgba(42,33,28,.35);border-radius:10px;background:#fffaf1">
+      </div>
+      <div style="margin-top:5px;color:#8c8580;font-size:11px;font-weight:800">
+        std bool 为 true 时执行。可从左侧拖入模块；拖动行可改变顺序。
+      </div>
+    `;
+
+    const list = body.querySelector(".cvm2-if-list");
+
+    if (!prog.length) {
+      list.innerHTML = `<div style="color:#8c8580;font-weight:900">空内部模块集</div>`;
+    }
+
+    for (let i = 0; i < prog.length; i++) {
+      const rowItem = cvm.item(prog[i]);
+      const tag = await cvm.tagOf(rowItem.hash);
+
+      const row = document.createElement("div");
+      row.draggable = true;
+      row.style.cssText = `
+        margin:4px 0;
+        padding:5px 7px;
+        border:1px solid rgba(42,33,28,.25);
+        border-radius:9px;
+        background:white;
+        cursor:grab;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
+        font-weight:900;
+      `;
+
+      row.textContent = `${i}. ${tag}`;
+
+      row.ondragstart = (event) => {
+        event.dataTransfer.setData("application/cvm-meter-index", String(i));
+      };
+
+      row.ondragover = (event) => {
+        event.preventDefault();
+      };
+
+      row.ondrop = async (event) => {
+        event.preventDefault();
+
+        const from = event.dataTransfer.getData("application/cvm-meter-index");
+        const hash = event.dataTransfer.getData("text/plain");
+
+        if (from !== "") {
+          move(prog, Number(from), i);
+        } else if (hash) {
+          prog.splice(i, 0, { hash, data: api.emptyData });
+        }
+
+        save();
+        await render();
+      };
+
+      list.appendChild(row);
+    }
+
+    list.ondragover = (event) => {
+      event.preventDefault();
+    };
+
+    list.ondrop = async (event) => {
+      event.preventDefault();
+
+      const from = event.dataTransfer.getData("application/cvm-meter-index");
+      const hash = event.dataTransfer.getData("text/plain");
+
+      if (from !== "") {
+        const n = Number(from);
+        const moved = prog.splice(n, 1)[0];
+        prog.push(moved);
+      } else if (hash) {
+        prog.push({ hash, data: api.emptyData });
+      }
+
+      save();
+      await render();
+    };
+  };
+
+  await render();
+}
+"""
+
+
+RUNONCE_METER = r"""
+async ({ cvm, item, body, api, tag }) => {
+  const d = item.data || api.emptyData;
+  let enabled = !!d[0];
+  let prog = api.parseBlockSafe(d.slice(1));
+
+  const move = (xs, from, to) => {
+    if (from < 0 || to < 0 || from === to) return;
+    const it = xs.splice(from, 1)[0];
+    xs.splice(Math.max(0, Math.min(to, xs.length)), 0, it);
+  };
+
+  const save = () => {
+    item.data = api.concat(
+      new Uint8Array([enabled ? 1 : 0]),
+      cvm.buildBlock(prog)
+    );
+
+    api.commit();
+  };
+
+  const render = async () => {
+    body.innerHTML = `
+      <label>
+        <input class="cvm2-run-enabled" type="checkbox" style="width:auto">
+        执行一次
+      </label>
+
+      <label>${api.esc(tag)} 内部模块集</label>
+      <div class="cvm2-run-list"
+        style="min-height:48px;padding:6px;border:1px dashed rgba(42,33,28,.35);border-radius:10px;background:#fffaf1">
+      </div>
+
+      <div style="margin-top:5px;color:#8c8580;font-size:11px;font-weight:800">
+        第一个字节是 enabled，后面是内部模块集 block。
+      </div>
+    `;
+
+    const checkbox = body.querySelector(".cvm2-run-enabled");
+    const list = body.querySelector(".cvm2-run-list");
+
+    checkbox.checked = enabled;
+
+    checkbox.onchange = () => {
+      enabled = checkbox.checked;
+      save();
+    };
+
+    if (!prog.length) {
+      list.innerHTML = `<div style="color:#8c8580;font-weight:900">空内部模块集</div>`;
+    }
+
+    for (let i = 0; i < prog.length; i++) {
+      const rowItem = cvm.item(prog[i]);
+      const name = await cvm.tagOf(rowItem.hash);
+
+      const row = document.createElement("div");
+      row.draggable = true;
+      row.style.cssText = `
+        margin:4px 0;
+        padding:5px 7px;
+        border:1px solid rgba(42,33,28,.25);
+        border-radius:9px;
+        background:white;
+        cursor:grab;
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
+        font-weight:900;
+      `;
+
+      row.textContent = `${i}. ${name}`;
+
+      row.ondragstart = (event) => {
+        event.dataTransfer.setData("application/cvm-meter-index", String(i));
+      };
+
+      row.ondragover = (event) => {
+        event.preventDefault();
+      };
+
+      row.ondrop = async (event) => {
+        event.preventDefault();
+
+        const from = event.dataTransfer.getData("application/cvm-meter-index");
+        const hash = event.dataTransfer.getData("text/plain");
+
+        if (from !== "") {
+          move(prog, Number(from), i);
+        } else if (hash) {
+          prog.splice(i, 0, { hash, data: api.emptyData });
+        }
+
+        save();
+        await render();
+      };
+
+      list.appendChild(row);
+    }
+
+    list.ondragover = (event) => {
+      event.preventDefault();
+    };
+
+    list.ondrop = async (event) => {
+      event.preventDefault();
+
+      const from = event.dataTransfer.getData("application/cvm-meter-index");
+      const hash = event.dataTransfer.getData("text/plain");
+
+      if (from !== "") {
+        const n = Number(from);
+        const moved = prog.splice(n, 1)[0];
+        prog.push(moved);
+      } else if (hash) {
+        prog.push({ hash, data: api.emptyData });
+      }
+
+      save();
+      await render();
+    };
+  };
+
+  await render();
+}
+"""
+
+
+PHYSICSWORLD_METER = r"""
+async ({ cvm, body, api }) => {
+  const { esc } = api;
+
+  cvm.world ??= {};
+  const physics = cvm.world.physics ??= {};
+
+  physics.defaults ??= {
+    ball: { radius: 24, restitution: 0.86, frictionAir: 0.01, color: '#89dceb' },
+    gravity: { x: 0, y: 1 }
+  };
+
+  const cfg = physics.defaults.ball;
+  const g = physics.defaults.gravity;
+
+  body.innerHTML = `
+    <label>Radius</label>
+    <input type="range" class="r" min="8" max="64" value="${cfg.radius}">
+    <label>Bounce</label>
+    <input type="range" class="b" min="0" max="1" step="0.01" value="${cfg.restitution}">
+    <label>Gravity Y</label>
+    <input type="range" class="g" min="-2" max="2" step="0.1" value="${g.y}">
+    <label>Color</label>
+    <input type="color" class="c" value="${esc(cfg.color)}">
+  `;
+
+  const sync = () => {
+    cfg.radius = Number(body.querySelector(".r").value);
+    cfg.restitution = Number(body.querySelector(".b").value);
+    g.y = Number(body.querySelector(".g").value);
+    cfg.color = body.querySelector(".c").value;
+
+    if (physics.engine) {
+      physics.engine.gravity.y = g.y;
+    }
+  };
+
+  body.querySelectorAll("input").forEach((input) => {
+    input.oninput = sync;
+  });
+}
+"""
+
+
+START_BIN_ITEMS = [
+    "cvm.core.codec",
+    "cvm.core.block",
+    "cvm.core.memory",
+    "cvm.net.api",
+    "cvm.store.named",
+    "cvm.exec.block",
+    "cvm.dom.base",
+    "cvm.graph.free",
+    "cvm.meta.optional",
+    "cvm.editor.moduleSets",
+    ("cvm.flow.delay", le32(80)),
+]
+
+HTMLJSSTART_ITEMS = [
+    "start.loader",
+    "start.bin",
+    "rerun",
+]
+
+BASE_BIN_ITEMS = [
+    "setsize",
+    "getvar",
+    "setvar",
+    "IF",
+    "IFrerun",
+    "Runonce",
+]
+
+PHYSICS_BIN_ITEMS = [
+    "physicsWorld",
+    "renderPhysics",
+    "spawnBall",
+    "kickPhysics",
+    "clearPhysics",
+    "flipGravity",
+]
+
+
+def make_net_api_js(base: str) -> str:
+    return NET_API_TEMPLATE.replace("__CONFIGURED_BASE__", json.dumps(base.rstrip("/")))
+
+
+def build_files(base: str):
+    files = {}
+
+    # 新启动系统：start.loader -> start.bin -> 通用基础模块。
+    files["start.loader"] = LOADER_JS
+    files["start"] = LOADER_JS
+    files["cvm.core.codec"] = CORE_CODEC_JS
+    files["cvm.core.block"] = CORE_BLOCK_JS
+    files["cvm.core.memory"] = CORE_MEMORY_JS
+    files["cvm.net.api"] = make_net_api_js(base)
+    files["cvm.store.named"] = STORE_NAMED_JS
+    files["cvm.exec.block"] = EXEC_BLOCK_JS
+    files["cvm.flow.delay"] = FLOW_DELAY_JS
+    files["cvm.dom.base"] = DOM_BASE_JS
+    files["cvm.graph.free"] = GRAPH_FREE_JS
+    files["cvm.meta.optional"] = META_OPTIONAL_JS
+    files["cvm.editor.moduleSets"] = EDITOR_MODULESETS_JS
+
+    # 基础模块。
+    files.update(MODULES_JS)
+
+    # 物理模块。
+    files.update(PHYSICS_JS)
+
+    # 模块集文件。
+    files["start.bin"] = block(START_BIN_ITEMS)
+    files["HTMLJSstart"] = block(HTMLJSSTART_ITEMS)
+    files["base.bin"] = block(BASE_BIN_ITEMS)
+    files["physics.bin"] = block(PHYSICS_BIN_ITEMS)
+
+    # 描述。
+    describes = {
+        "HTMLJSstart.describe": "VM 首次运行模块集入口。",
+        "start.loader.describe": "最小启动器。安装 block/JS 混合执行器，然后进入 start.bin。",
+        "start.describe": "start.loader 的兼容别名。",
+        "start.bin.describe": "启动模块集，由通用基础模块组成。",
+        "base.bin.describe": "基础逻辑模块集。",
+        "physics.bin.describe": "物理/游戏模块集。",
+
+        "cvm.core.codec.describe": "通用编码模块：bytes、hex、unhex、u32、concat、sleep。",
+        "cvm.core.block.describe": "通用模块集 block 编解码。",
+        "cvm.core.memory.describe": "std 参数缓存和变量内存。",
+        "cvm.net.api.describe": "HTTP API 封装。",
+        "cvm.store.named.describe": "按名字 hash 获取/覆盖文件，支持用户私有覆盖。",
+        "cvm.exec.block.describe": "block/JS 混合执行器。",
+        "cvm.dom.base.describe": "DOM/CSS/UI 基础工具和库加载器。",
+        "cvm.graph.free.describe": "自由节点布局、节点拖动、鼠标中键平移。",
+        "cvm.meta.optional.describe": "可选 svg / describe / metersupport 元数据加载。",
+        "cvm.editor.moduleSets.describe": "自由节点模块集编辑器。",
+        "cvm.flow.delay.describe": "等待 data 中的 uint32 毫秒后继续执行。",
+
+        "rerun.describe": "将当前 block 指针归零并重新执行。",
+        "print.describe": "输出节点 data 文本；data 为空时输出 hello world。",
+        "setsize.describe": "data 格式：变量 id + uint32 little-endian size。",
+        "getvar.describe": "data 格式：变量 id。读取变量写入 std。",
+        "setvar.describe": "data 格式：变量 id。从 std 读取数据写入变量。",
+        "IF.describe": "data 格式：内部模块集 block。std bool 为 true 时执行。",
+        "IFrerun.describe": "无 data。std bool 为 true 时重新执行当前模块集。",
+        "Runonce.describe": "data 格式：enabled byte + 内部模块集 block。",
+        "Runonece.describe": "Runonce 的旧拼写兼容。",
+
+        "physicsWorld.describe": "创建 CVM.world.physics 和 Matter.js engine。",
+        "renderPhysics.describe": "显示 Matter.js 物理舞台。",
+        "spawnBall.describe": "生成一个物理小球。",
+        "kickPhysics.describe": "给动态物体随机冲量。",
+        "clearPhysics.describe": "清除动态物体。",
+        "flipGravity.describe": "翻转重力方向。",
+    }
+    files.update(describes)
+
+    # SVG 可选，这里给常用模块补默认图标。
+    svg_names = [
+        "HTMLJSstart", "start.loader", "start", "start.bin", "base.bin", "physics.bin",
+        "cvm.core.codec", "cvm.core.block", "cvm.core.memory", "cvm.net.api",
+        "cvm.store.named", "cvm.exec.block", "cvm.flow.delay", "cvm.dom.base",
+        "cvm.graph.free", "cvm.meta.optional", "cvm.editor.moduleSets",
+        "rerun", "print", "setsize", "getvar", "setvar", "IF", "IFrerun",
+        "Runonce", "Runonece", "physicsWorld", "renderPhysics", "spawnBall",
+        "kickPhysics", "clearPhysics", "flipGravity",
+    ]
+    for name in svg_names:
+        files[f"{name}.svg"] = svg_for(name)
+
+    # metersupport：真正决定节点 data 怎么显示/编辑。
+    files["print.metersupport"] = PRINT_METER
+    files["setsize.metersupport"] = SETSIZE_METER
+    files["getvar.metersupport"] = VAR_ID_METER
+    files["setvar.metersupport"] = VAR_ID_METER
+    files["IF.metersupport"] = IF_METER
+    files["IFrerun.metersupport"] = IFRERUN_METER
+    files["Runonce.metersupport"] = RUNONCE_METER
+    files["Runonece.metersupport"] = RUNONCE_METER
+    files["cvm.flow.delay.metersupport"] = DELAY_METER
+    files["physicsWorld.metersupport"] = PHYSICSWORLD_METER
+
+    # 无节点参数的模块也给明确 data UI，避免全都显示 raw data。
+    no_data_names = [
+        "HTMLJSstart",
+        "start.loader",
+        "start",
+        "start.bin",
+        "base.bin",
+        "physics.bin",
+        "cvm.core.codec",
+        "cvm.core.block",
+        "cvm.core.memory",
+        "cvm.net.api",
+        "cvm.store.named",
+        "cvm.exec.block",
+        "cvm.dom.base",
+        "cvm.graph.free",
+        "cvm.meta.optional",
+        "cvm.editor.moduleSets",
+        "rerun",
+        "renderPhysics",
+        "spawnBall",
+        "kickPhysics",
+        "clearPhysics",
+        "flipGravity",
+    ]
+
+    for name in no_data_names:
+        files.setdefault(f"{name}.metersupport", no_data_meter(name))
+
+    # 统一转 bytes。
+    out = {}
+    for name, data in files.items():
+      if isinstance(data, bytes):
+          out[name] = data
+      else:
+          out[name] = str(data).encode()
+
+    return out
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=BASE_DEFAULT)
-    ap.add_argument("--id", default="id.bin")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base", default=BASE_DEFAULT)
+    parser.add_argument("--id", default="id.bin")
+    parser.add_argument("--write-index", default="", help="可选：写出修正后的 index.html")
+    args = parser.parse_args()
 
     api = API(args.base)
     user = get_or_create_id(api, args.id)
@@ -2082,36 +3339,63 @@ def main():
     print(f"\n服务器: {args.base}")
     print(f"用户ID: {user}\n")
 
-    # 1. 上传核心启动文件
-    put(api, user, "start", START_JS.encode())
+    if args.write_index:
+        Path(args.write_index).write_text(make_index_html(args.base), encoding="utf-8")
+        print(f"[+] wrote index: {args.write_index}")
 
-    # 2. 上传基础逻辑模块
-    for name, src in MODULES_JS.items():
-        put(api, user, name, src.encode())
+    files = build_files(args.base)
 
-    # 3. 上传物理模块
-    for name, src in PHYSICS_JS.items():
-        put(api, user, name, src.encode())
+    for name, data in files.items():
+        put_if_changed(api, user, name, data)
 
-    # 4. 上传元数据
-    for name, src in META.items():
-        put(api, user, name, src.encode())
-
-    # 5. 构建并上传 HTMLJSstart 入口块
-    put(api, user, "HTMLJSstart", block(["start", "rerun"]))
-
-    # 6. 构建并上传模块集 (.bin)
-    put(api, user, "base.bin", block(["setsize", "getvar", "setvar", "IF", "IFrerun", "Runonece"]))
-    put(api, user, "physics.bin", block(["physicsWorld", "renderPhysics", "spawnBall", "kickPhysics", "clearPhysics", "flipGravity"]))
-
-    # 7. 挂载到根目录 (Root)
     print("\n挂载根目录...")
-    root_items = ["start", "HTMLJSstart", "base.bin", "physics.bin"] + list(MODULES_JS.keys()) + list(PHYSICS_JS.keys())
-    for name in root_items:
-        root(api, user, name)
 
-    print("\n✅ 完整系统初始化完成！")
-    print("打开浏览器访问服务器，即可进入 Stable Studio 编辑器。")
+    root_items = [
+        "HTMLJSstart",
+        "start.loader",
+        "start",
+        "start.bin",
+        "base.bin",
+        "physics.bin",
+
+        "cvm.core.codec",
+        "cvm.core.block",
+        "cvm.core.memory",
+        "cvm.net.api",
+        "cvm.store.named",
+        "cvm.exec.block",
+        "cvm.flow.delay",
+        "cvm.dom.base",
+        "cvm.graph.free",
+        "cvm.meta.optional",
+        "cvm.editor.moduleSets",
+
+        "rerun",
+        "print",
+        "setsize",
+        "getvar",
+        "setvar",
+        "IF",
+        "IFrerun",
+        "Runonce",
+        "Runonece",
+
+        "physicsWorld",
+        "renderPhysics",
+        "spawnBall",
+        "kickPhysics",
+        "clearPhysics",
+        "flipGravity",
+    ]
+
+    for name in root_items:
+        mount_root(api, user, name)
+
+    print("\n✅ CVM 单文件完整部署完成")
+    print("入口结构：HTMLJSstart -> start.loader -> start.bin -> 通用模块")
+    print("编辑器：自由节点；鼠标中键平移；节点左键拖动；数据直接显示；模块集双击展开")
+    print("新建：创建模块集文件；svg / describe / metersupport 均可选")
+
 
 if __name__ == "__main__":
     main()

@@ -50,7 +50,7 @@ Object.assign(CVM, {
 });
 
 (async () => {
-  const startFileData = await downloadFile(await getfirstchild(await sha256("HTMLJSstart")));
+  const startFileData = await downloadFile(await getfirstchild(await sha256("start")));
 
   CVM.PTR = {
     buf: startFileData,

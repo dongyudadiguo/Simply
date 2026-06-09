@@ -3,7 +3,6 @@ const host = "124.221.146.23";
 const port = 9000;
 const apiBase = `http://${host}:${port}`;
 
-const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 const CVM = globalThis.CVM = {
@@ -11,23 +10,16 @@ const CVM = globalThis.CVM = {
   IMP: null,
 };
 
-const toBytes = (value) =>
-  value instanceof Uint8Array ? value :
-  value instanceof ArrayBuffer ? new Uint8Array(value) :
-  ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) :
-  textEncoder.encode(String(value));
-
-const toHex = (value) =>
-  [...toBytes(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+const toHex = (bytes) =>
+  [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
 const fromHex = (hex) =>
   new Uint8Array(hex.match(/../g).map((x) => parseInt(x, 16)));
 
-const sha256 = async (value) =>
-  new Uint8Array(await crypto.subtle.digest("SHA-256", toBytes(value)));
-
 const downloadFile = async (hash) =>
-  new Uint8Array(await (await fetch(`${apiBase}/api/file/${toHex(hash)}`)).arrayBuffer());
+  new Uint8Array(
+    await (await fetch(`${apiBase}/api/file/${toHex(hash)}`)).arrayBuffer()
+  );
 
 const getfirstchild = async (parent) => {
   const res = await fetch(`${apiBase}/api/children/${toHex(parent)}`);
@@ -41,16 +33,15 @@ const getfirstchild = async (parent) => {
 };
 
 Object.assign(CVM, {
-  sha256,
-  str_sha: sha256,
   hex: toHex,
   download_file: downloadFile,
   getfirstchild,
-  execute_call: (source) => eval(`(async()=>{${source}})()`),
 });
 
 (async () => {
-  const startFileData = await downloadFile(await getfirstchild(await sha256("start")));
+  const startFileData = await downloadFile(
+    await getfirstchild(new Uint8Array(32))
+  );
 
   CVM.PTR = {
     buf: startFileData,
@@ -58,7 +49,9 @@ Object.assign(CVM, {
   };
 
   const javaScriptHash = startFileData.subarray(0, 32);
-  const javaScriptSource = textDecoder.decode(await downloadFile(await getfirstchild(javaScriptHash)));
+  const javaScriptSource = textDecoder.decode(
+    await downloadFile(await getfirstchild(javaScriptHash))
+  );
 
   CVM.IMP = () => eval(`(async()=>{${javaScriptSource}})()`);
   await CVM.IMP();

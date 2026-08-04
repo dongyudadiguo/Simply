@@ -1,0 +1,94 @@
+// 此文件不可修改
+#include <winsock2.h>                  
+#include <ws2tcpip.h>                  
+#include <windows.h>                   
+#include <wincrypt.h>                  
+#include <stdio.h>                     
+#include <stdlib.h>                    
+#include <string.h>                    
+#pragma comment(lib, "ws2_32.lib")    
+#pragma comment(lib, "advapi32.lib")  
+
+typedef unsigned char u8;              
+typedef unsigned u32;                  
+typedef void (*Fn)(void);              
+
+__declspec(dllexport) SOCKET conn;    
+__declspec(dllexport) Fn imp;         
+
+static void rd(void *buf, u32 n)       
+{
+    u8 *p = (u8 *)buf;                 
+    while (n) {                        
+        int r = recv(conn, (char *)p, (int)n, 0); 
+        p += r;                        
+        n -= (u32)r;                   
+    }
+}
+
+static void wr(const void *buf, u32 n)  
+{
+    const u8 *p = (const u8 *)buf;     
+    while (n) {                        
+        int s = send(conn, (const char *)p, (int)n, 0); 
+        p += s;                        
+        n -= (u32)s;                   
+    }
+}
+
+typedef struct payload {
+    u8 *data;
+    u32 size;
+} payload;
+
+static Fn try_dll(payload key){
+    HCRYPTPROV prov;
+    CryptAcquireContextA(&prov, 0, 0, PROV_RSA_AES, CRYPT_VERIFYCONTEXT);
+    HCRYPTHASH hash;
+    CryptCreateHash(prov, CALG_SHA_256, 0, 0, &hash);
+    CryptHashData(hash, (BYTE *)key.data, key.size, 0);
+    DWORD len = 32;
+    u8 digest[32];
+    CryptGetHashParam(hash, HP_HASHVAL, digest, &len, 0);
+    CryptDestroyHash(hash);
+    CryptReleaseContext(prov, 0);
+    char path[69];            
+    for (u32 i = 0; i < 32; ++i)
+        sprintf(path + i * 2,     "%02x", digest[i]);
+    strcat(path, ".dll");
+    return (Fn)GetProcAddress(LoadLibraryA(path), "run");
+}
+
+payload first(payload *key){
+    conn = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); 
+    struct sockaddr_in address = {0};  
+    address.sin_family = AF_INET;      
+    address.sin_port = htons(8000);    
+    inet_pton(AF_INET, "127.0.0.1", &address.sin_addr); 
+    connect(conn, (struct sockaddr *)&address, sizeof(address)); 
+    u8 op = 2;
+    wr(&op, 1);                        
+     wr(&key->size, 4);                  
+    if (key->size) wr(key->data, key->size);   
+    payload payload;
+    rd(&payload.size, 4);               
+    payload.data = (u8 *)malloc(payload.size ? payload.size : 1); 
+    if (payload.size) rd(payload.data, payload.size); 
+    closesocket(conn);                 
+    return payload;
+}
+
+int main(){
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    payload key = {0, 0};
+    for (;;) {
+        payload first_payload = first(&key);
+        key = (payload){first_payload.data + 4, *(u32 *)first_payload.data};
+        imp = try_dll(key);
+        if (imp) {
+            break;
+        }
+    }
+    for (;;) imp();
+}

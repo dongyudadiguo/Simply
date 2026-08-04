@@ -25,6 +25,12 @@ def fetch(key):                              # 服务端 op=2：按 key 取数�
         s.sendall(b"\x02" + struct.pack("<I", len(key)) + key)
         return recv_all(s, struct.unpack("<I", recv_all(s, 4))[0])
 
+
+def vote(key, idx):                          # 服务端 op=1：给某条数据投票（平票时票数高者胜）
+    with socket.create_connection((HOST, PORT)) as s:
+        s.sendall(b"\x01" + struct.pack("<I", len(key)) + key + struct.pack("<I", idx))
+        return struct.unpack("<I", recv_all(s, 4))[0]
+
 def get_id():
     if os.path.exists(ID_FILE):              # 已有 id 直接用
         return open(ID_FILE, "rb").read()

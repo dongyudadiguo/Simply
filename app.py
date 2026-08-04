@@ -567,7 +567,7 @@ class App:
         self.inline_edit(node)
 
     # ---------- 列表视图（节点样式：块=卡片，内含多个 token 行） ----------
-    LRH, TITLE, ROW = 52, 40, 34
+    LRH, TITLE, ROW = 52, 40, 38
     def toggle_view(self):
         self.close_inline()
         self.view_mode = "list" if self.view_mode == "graph" else "graph"
@@ -612,16 +612,18 @@ class App:
 
     def _draw_token_row(self, node, block, y, w, indent):
         sel = (self.sel is node)
-        poly = self.rrect(8, y, w - 8, y + self.ROW, 8)
-        self.listc.create_polygon(poly, fill=NODE, outline=(SEL if sel else "#33405e"), width=2)
+        if sel:
+            self.listc.create_rectangle(8, y, w - 8, y + self.ROW, fill="#233052", outline=SEL, width=1)
         icon, color = icon_of(node["name"])
-        cx = 30 + indent * 18
+        cx = 34 + indent * 20
         self.draw_icon(icon, color, cx, y + self.ROW / 2 - 2, cv=self.listc)
         dt = node["data"] if node["data"] else ("零data" if node["name"] == "net" else "")
         txt = node["name"] + ("  |  " + dt if dt else "")
-        if len(txt) > 44: txt = txt[:43] + "..."
-        self.listc.create_text(cx + 22, y + self.ROW / 2, anchor="w", text=txt, fill=TEXT,
-                               font=("Microsoft YaHei UI", 9))
+        if len(txt) > 48: txt = txt[:47] + "..."
+        self.listc.create_text(cx + 24, y + self.ROW / 2, anchor="w", text=txt,
+                               fill=(TEXT if not sel else "#ffffff"),
+                               font=("Microsoft YaHei UI", 10))
+        self.listc.create_line(8, y + self.ROW - 1, w - 8, y + self.ROW - 1, fill="#20263c")
         self.list_hit.append((y, y + self.ROW, node, block))
 
     def list_click(self, e):

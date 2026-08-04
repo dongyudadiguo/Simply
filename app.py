@@ -181,6 +181,7 @@ class App:
         self.vm = VM(root, self.log)
         self.build_ui()
         self.load()
+        self.fit()               # 首屏自动适应：让整块卡片可见
         self.refresh_viewer()
         self.after_loop()
 
@@ -334,15 +335,19 @@ class App:
     def fit(self):
         if not self.nodes:
             self.zoom, self.ox, self.oy = 1.0, 60, 40; self.redraw(); return
-        xs = [n["x"] for n in self.ordered()]; ys = [n["y"] for n in self.ordered()]
+        xs0 = min(n["x"] - (self.BW if n.get("children") else NW) / 2 for n in self.nodes)
+        xs1 = max(n["x"] + (self.BW if n.get("children") else NW) / 2 for n in self.nodes)
+        ys0 = min(n["y"] - self.block_height(n) / 2 for n in self.nodes)
+        ys1 = max(n["y"] + self.block_height(n) / 2 for n in self.nodes)
         w, h = self.c.winfo_width(), self.c.winfo_height()
         if w < 10: w, h = 900, 500
-        z = min((w - 80) / (max(xs) - min(xs) + NW), (h - 80) / (max(ys) - min(ys) + NH), 1.5)
+        z = min((w - 80) / (xs1 - xs0), (h - 80) / (ys1 - ys0), 1.5)
         z = max(0.2, z)
         self.zoom = z
-        self.ox = w / 2 - z * (min(xs) + max(xs)) / 2
-        self.oy = h / 2 - z * (min(ys) + max(ys)) / 2
+        self.ox = w / 2 - z * (xs0 + xs1) / 2
+        self.oy = h / 2 - z * (ys0 + ys1) / 2
         self.redraw()
+
     def on_pan_start(self, e):
         self.pan = (e.x, e.y)
     def on_pan(self, e):

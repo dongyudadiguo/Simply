@@ -1,11 +1,10 @@
-# app.py —— Simply Token 节点图编辑器（峰值版，参考 JUST editor.py）
-# 多节点 Canvas 图 + 缩放/平移 + SVG 图标（复用 JUST icons/*.svg 路径）
-# + 网络节点/服务器查看器（默认打开 零data=空key）+ 编辑大提升（按Y排序、投票确认保存、自动刷新）
+# app.py —— Simply Token 节点图编辑器（峰值版 v3，参考 JUST editor.py + Singularity 自举编辑器）
+# 多节点树形图(children/firstchild) + 缩放(平滑)/平移 + SVG 图标(JUST+Singularity 复用)
+# + 网络节点/服务器查看器(零data) + 内联编辑 + 投票确认保存 + 自动刷新
 import copy, json, math, os, random, re, struct, tkinter as tk
 from tkinter import simpledialog, scrolledtext
 import boot_dll
 
-# ---------- 块编解码（与旧版兼容） ----------
 def encode(tokens):
     out = b""
     for name, data in tokens:
@@ -41,7 +40,6 @@ def guess_template():
         ("print", "小了"), ("jmp", "main"),
     ]
 
-# ---------- SVG path 解析（支持 JUST 图标用到的 M/L/H/V/Z） ----------
 def parse_path(d):
     toks = re.findall(r"[MLHVZmlhvz]|-?\d*\.?\d+(?:[eE][-+]?\d+)?", d)
     subs, pts, i = [], [], 0
@@ -71,14 +69,21 @@ def parse_path(d):
     if pts: subs.append((pts, False))
     return subs
 
-# SVG 图标：JUST icons/*.svg 的 path 数据（viewBox 24x24，描边色即类别色）
+# SVG 图标：JUST icons/ + Singularity icons/ 的 path 数据（viewBox 24x24，描边色=类别色）
 ICONS = {
-    "varread":   ["M4 12 L16 12 M12 8 L16 12 L12 16 M18 6 L18 18"],
-    "varwrite":  ["M8 12 L20 12 M12 8 L8 12 L12 16 M4 6 L4 18"],
-    "varset":    ["M8 8 L16 8 L16 16 L8 16 Z M12 5 L12 8 M12 16 L12 19"],
-    "cond":      ["M12 3 L21 12 L12 21 L3 12 Z"],
-    "condreexec":["M12 3 L21 12 L12 21 L3 12 Z M12 8 L12 12 L15 12"],
-    "runbyhand": ["M8 5 L8 19 L18 12 Z"],
+    "varread":   ["M4 12 L16 12 M12 8 L16 12 L12 16 M18 6 L18 18"],          # #c8e0a0 读变量
+    "varwrite":  ["M8 12 L20 12 M12 8 L8 12 L12 16 M4 6 L4 18"],             # #c8e0a0 写变量
+    "varset":    ["M12 3 L12 3 M8 8 L16 8 L16 16 L8 16 Z M12 12 L12 12"],    # #e8c878 设置
+    "cond":      ["M12 3 L21 12 L12 21 L3 12 Z"],                            # #d080e0 条件/比较
+    "jump":      ["M5 12 L15 12 M11 8 L15 12 L11 16 M18 6 L18 18"],          # #5ec8e8 跳转
+    "exec":      ["M8 5 L8 19 L19 12 Z"],                                    # #5ec8e8 执行/输出
+    "key":       ["M3 8 L21 8 L21 16 L3 16 Z"],                              # #e0a050 输入
+    "const":     ["M7 7 L17 7 L17 17 L7 17 Z"],                              # #7fb8d8 常量/整数
+    "f32":       ["M6 16 L10 8 L14 16 M8 13 L12 13"],                        # #7fb8d8 数字
+    "add":       ["M12 5 L12 19 M5 12 L19 12"],                              # #5ec8e8 +
+    "sub":       ["M5 12 L19 12"],                                           # #5ec8e8 -
+    "mul":       ["M6 6 L18 18 M18 6 L6 18"],                                # #5ec8e8 x
+    "div":       ["M6 18 L18 6 M12 5 L12 5 M12 19 L12 19"],                  # #5ec8e8 /
     "net":       ["M12 3 L18.36 5.36 L21 12 L18.36 18.64 L12 21 L5.64 18.64 L3 12 L5.64 5.36 Z",
                   "M3 12 H21 M12 3 L12 21 M12 5 L18.5 7.1 L21.3 12 L18.5 16.9 L12 19 L5.5 16.9 L2.7 12 L5.5 7.1 Z"],
     "label":     ["M6 3 V21 M6 3 H17 L13 7 L17 11 H6 Z"],
@@ -89,11 +94,17 @@ def icon_of(name):
     if name == "end": return "end", "#ff9e64"
     if name == "read": return "varread", "#c8e0a0"
     if name == "set": return "varset", "#e8c878"
-    if name in ("int", "inc"): return "varwrite", "#c8e0a0"
-    if name == "ifz": return "cond", "#d080e0"
-    if name in ("jmp", "nop"): return "condreexec", "#e090d0"
-    if name in ("print", "input"): return "runbyhand", "#80c8f0"
-    if name in ("add", "sub", "mul", "div", "rand", "eq", "gt", "lt"): return "varwrite", "#9ece6a"
+    if name in ("int",): return "const", "#7fb8d8"
+    if name == "inc": return "add", "#5ec8e8"
+    if name in ("rand", "div"): return "div", "#5ec8e8"
+    if name == "add": return "add", "#5ec8e8"
+    if name == "sub": return "sub", "#5ec8e8"
+    if name == "mul": return "mul", "#5ec8e8"
+    if name in ("eq", "gt", "lt", "ifz"): return "cond", "#d080e0"
+    if name == "jmp": return "jump", "#5ec8e8"
+    if name == "nop": return "add", "#5ec8e8"
+    if name == "print": return "exec", "#5ec8e8"
+    if name == "input": return "key", "#e0a050"
     return "label", "#73daca"
 
 # ---------- 迷你 VM（值栈 + 变量表，input 可注入） ----------
@@ -165,11 +176,40 @@ class App:
         self.zoom, self.ox, self.oy = 1.0, 60, 40
         self.undo_stack, self.pan = [], None
         self.dirty = False
+        self.inline = None
         self.vm = VM(root, self.log)
         self.build_ui()
         self.load()
         self.refresh_viewer()
         self.after_loop()
+
+    # ---------- 树形辅助 ----------
+    def new_node(self, name, data="", x=0, y=0):
+        return {"name": name, "data": data, "x": x, "y": y, "children": [], "collapsed": False}
+
+    def visible(self, node):
+        """深度优先展开顺序（跳过折叠子树）"""
+        out = [node]
+        if not node.get("collapsed"):
+            for c in sorted(node.get("children", []), key=lambda n: (n["y"], id(n))):
+                out += self.visible(c)
+        return out
+
+    def ordered(self):
+        """执行/保存顺序 = 根按 Y 排序 + 每棵子树深度优先"""
+        out = []
+        for n in sorted(self.nodes, key=lambda n: (n["y"], id(n))):
+            out += self.visible(n)
+        return out
+
+    def flatten_tokens(self):
+        return [(n["name"], n["data"]) for n in self.ordered()]
+
+    def subtree(self, node):
+        out = [node]
+        for c in node.get("children", []):
+            out += self.subtree(c)
+        return out
 
     # ---------- 界面 ----------
     def build_ui(self):
@@ -182,8 +222,8 @@ class App:
         btn("保存到服务器", self.save); btn("加载", self.load); btn("运行", self.run)
         btn("猜数字", self.load_template, ghost=True); btn("自动布局", self.auto_layout, ghost=True)
         btn("撤销", self.undo, ghost=True)
-        btn("放大", lambda: self.zoom_at(1.25, self.c.winfo_width()/2, self.c.winfo_height()/2), ghost=True)
-        btn("缩小", lambda: self.zoom_at(0.8, self.c.winfo_width()/2, self.c.winfo_height()/2), ghost=True)
+        btn("放大", lambda: self.zoom_btn(1.25), ghost=True)
+        btn("缩小", lambda: self.zoom_btn(0.8), ghost=True)
         btn("适应", self.fit, ghost=True)
         self.status = tk.Label(bar, text="", bg=PANEL, fg="#7fd6a0"); self.status.pack(side="right", padx=8)
 
@@ -227,7 +267,7 @@ class App:
     def log(self, s):
         self.out.insert("end", s + "\n"); self.out.see("end")
 
-    # ---------- 视图变换（缩放/平移） ----------
+    # ---------- 视图变换（平滑缩放/平移） ----------
     def W2S(self, x, y): return x * self.zoom + self.ox, y * self.zoom + self.oy
     def S2W(self, x, y): return (x - self.ox) / self.zoom, (y - self.oy) / self.zoom
     def zoom_at(self, f, sx, sy):
@@ -235,12 +275,22 @@ class App:
         self.zoom = max(0.2, min(3.0, self.zoom * f))
         self.ox, self.oy = sx - wx * self.zoom, sy - wy * self.zoom
         self.redraw()
+    def zoom_btn(self, f):
+        self.zoom_at(f, self.c.winfo_width() / 2, self.c.winfo_height() / 2)
     def on_wheel(self, e):
-        self.zoom_at(1.1 if e.delta > 0 else 1 / 1.1, e.x, e.y)
+        f = 1.12 if e.delta > 0 else 1 / 1.12
+        self._zt = self.zoom * f
+        self._zc = (e.x, e.y)
+        self._zoom_step()
+    def _zoom_step(self):
+        if abs(self._zt - self.zoom) < 0.001:
+            return
+        self.zoom_at(self._zt / self.zoom * 0.35 + 0.65, self._zc[0], self._zc[1])
+        self.root.after(14, self._zoom_step)
     def fit(self):
         if not self.nodes:
             self.zoom, self.ox, self.oy = 1.0, 60, 40; self.redraw(); return
-        xs = [n["x"] for n in self.nodes]; ys = [n["y"] for n in self.nodes]
+        xs = [n["x"] for n in self.ordered()]; ys = [n["y"] for n in self.ordered()]
         w, h = self.c.winfo_width(), self.c.winfo_height()
         if w < 10: w, h = 900, 500
         z = min((w - 80) / (max(xs) - min(xs) + NW), (h - 80) / (max(ys) - min(ys) + NH), 1.5)
@@ -266,12 +316,26 @@ class App:
 
     # ---------- 节点交互 ----------
     def node_at(self, wx, wy):
-        for n in reversed(self.nodes):
+        for n in reversed(self.ordered()):
             if abs(wx - n["x"]) <= NW / 2 and abs(wy - n["y"]) <= NH / 2:
                 return n
         return None
+    def hit_collapse(self, wx, wy):
+        for n in reversed(self.ordered()):
+            if n.get("children"):
+                bx, by = self.W2S(n["x"] + NW / 2 - 14, n["y"] + NH / 2 - 12)
+                if abs(wx - (n["x"] + NW / 2 - 14)) <= 9 and abs(wy - (n["y"] + NH / 2 - 12)) <= 9:
+                    return n
+        return None
     def on_lpress(self, e):
+        self.close_inline()
         wx, wy = self.S2W(e.x, e.y)
+        n = self.hit_collapse(wx, wy)
+        if n:
+            self.snapshot()
+            n["collapsed"] = not n.get("collapsed", False)
+            self.dirty = True
+            self.redraw(); return
         n = self.node_at(wx, wy)
         if n:
             self.sel = n; self._drag = (wx - n["x"], wy - n["y"])
@@ -287,7 +351,12 @@ class App:
         self._drag = None
     def on_double(self, e):
         n = self.node_at(*self.S2W(e.x, e.y))
-        if n: self.edit_node(n)
+        if n:
+            self.sel = n; self.redraw()
+            if n["name"] == "net":
+                self.net_dialog(n)
+            else:
+                self.inline_edit(n)
     def snapshot(self):
         self.undo_stack.append(copy.deepcopy(self.nodes))
         if len(self.undo_stack) > 60: self.undo_stack.pop(0)
@@ -296,29 +365,95 @@ class App:
             self.nodes = self.undo_stack.pop()
             self.sel = None; self.dirty = True
             self.redraw(); self.status.config(text="已撤销")
-    def add_node(self, name, data=""):
+    def add_node(self, name, data="", parent=None):
         self.snapshot()
         x, y = self.S2W(self.c.winfo_width() / 2, self.c.winfo_height() / 2)
-        n = len(self.nodes)
-        self.nodes.append({"name": name, "data": data,
-                           "x": round(x) + (n % 5) * 30, "y": round(y) + (n % 4) * 26})
-        self.sel = self.nodes[-1]; self.dirty = True
+        n = len(self.ordered())
+        node = self.new_node(name, data, round(x) + (n % 5) * 30, round(y) + (n % 4) * 26)
+        if parent is not None:
+            parent.setdefault("children", []).append(node)
+            parent["collapsed"] = False
+        else:
+            self.nodes.append(node)
+        self.sel = node; self.dirty = True
         self.redraw()
     def del_node(self):
         if self.sel is None: return
-        self.snapshot(); self.nodes.remove(self.sel)
+        self.snapshot()
+        def remove(parents, node):
+            for p in parents:
+                if node in p.get("children", []):
+                    p["children"].remove(node); return True
+            return False
+        if self.sel in self.nodes:
+            self.nodes.remove(self.sel)
+        else:
+            for p in self.ordered():
+                if remove([p], self.sel): break
         self.sel = None; self.dirty = True
         self.redraw()
     def dup_node(self):
         if self.sel is None: return
         self.snapshot()
         c = copy.deepcopy(self.sel); c["y"] += NH + 20
-        self.nodes.append(c); self.sel = c; self.dirty = True
+        def parent_of(node):
+            for p in self.ordered():
+                if node in p.get("children", []): return p
+            return None
+        p = parent_of(self.sel)
+        if p: p["children"].append(c)
+        else: self.nodes.append(c)
+        self.sel = c; self.dirty = True
         self.redraw()
+    def add_child(self):
+        if self.sel is None: return
+        self.add_node("nop", "", parent=self.sel)
+    def toggle_collapse(self):
+        if self.sel and self.sel.get("children"):
+            self.snapshot()
+            self.sel["collapsed"] = not self.sel.get("collapsed", False)
+            self.dirty = True
+            self.redraw()
 
-    # 执行/保存顺序 = 按 Y 排序（JUST 同款），连线自动重建
-    def ordered(self):
-        return sorted(self.nodes, key=lambda n: (n["y"], self.nodes.index(n)))
+    # ---------- 内联编辑（typein：在节点上直接打字） ----------
+    def close_inline(self):
+        if self.inline:
+            try:
+                self.inline.destroy()
+            except Exception:
+                pass
+            self.inline = None
+    def inline_edit(self, node):
+        self.close_inline()
+        ex, ey = self.W2S(node["x"] - NW / 2 + 48, node["y"] - 8)
+        ent = tk.Entry(self.root, bg="#0f1420", fg="#7ec3ff", insertbackground="#fff",
+                       relief="flat", highlightthickness=1, highlightbackground=SEL,
+                       font=("Consolas", 10))
+        ent.place(x=ex - 4, y=ey - 4, width=int(NW * self.zoom * 0.78), height=22)
+        ent.insert(0, node["name"])
+        ent.focus_set(); ent.select_range(0, "end")
+        state = {"stage": 0, "name": "", "data": ""}
+        def commit():
+            if state["stage"] == 0:
+                state["name"] = ent.get().strip() or "nop"
+                state["stage"] = 1
+                ent.delete(0, "end")
+                ent.insert(0, node["data"])
+                ent.config(fg="#f0c674")
+                ent.select_range(0, "end")
+            else:
+                state["data"] = ent.get()
+                self.snapshot()
+                node["name"] = state["name"]
+                node["data"] = state["data"]
+                self.dirty = True
+                self.close_inline()
+                self.redraw()
+        ent.bind("<Return>", lambda e: commit())
+        ent.bind("<Tab>", lambda e: (commit(), "break")[1])
+        ent.bind("<Escape>", lambda e: self.close_inline())
+        ent.bind("<FocusOut>", lambda e: self.close_inline())
+        self.inline = ent
 
     # ---------- 右键菜单 ----------
     def show_menu(self, e):
@@ -326,9 +461,12 @@ class App:
         n = self.node_at(wx, wy)
         m = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=TEXT, activebackground=SEL)
         if n:
-            m.add_command(label="编辑…", command=lambda: self.edit_node(n))
+            m.add_command(label="内联编辑…", command=lambda: self.inline_edit(n))
+            if n.get("children"):
+                m.add_command(label=("展开" if n.get("collapsed") else "折叠") + "子树", command=self.toggle_collapse)
+            m.add_command(label="添加子节点", command=self.add_child)
             m.add_command(label="复制", command=self.dup_node)
-            m.add_command(label="删除", command=self.del_node)
+            m.add_command(label="删除（含子树）", command=self.del_node)
             if n["name"] == "net":
                 m.add_separator()
                 m.add_command(label="打开网络节点…", command=lambda: self.net_dialog(n))
@@ -354,33 +492,17 @@ class App:
         finally:
             m.grab_release()
 
-    # ---------- 编辑节点 ----------
+    # 编辑节点（旧弹窗保留给非内联场景）
     def edit_node(self, node):
         if node["name"] == "net":
             self.net_dialog(node); return
-        win = tk.Toplevel(self.root); win.title("编辑节点")
-        win.configure(bg=PANEL); win.resizable(False, False)
-        tk.Label(win, text="token", bg=PANEL, fg=TEXT).grid(row=0, column=0, padx=6, pady=6)
-        e1 = tk.Entry(win, width=14); e1.insert(0, node["name"]); e1.grid(row=0, column=1, padx=6)
-        tk.Label(win, text="data", bg=PANEL, fg=TEXT).grid(row=1, column=0, padx=6)
-        e2 = tk.Entry(win, width=30); e2.insert(0, node["data"]); e2.grid(row=1, column=1, padx=6)
-        def ok():
-            self.snapshot()
-            node["name"] = e1.get().strip() or "nop"
-            node["data"] = e2.get()
-            self.dirty = True
-            self.redraw(); win.destroy()
-        def dele():
-            self.snapshot(); self.nodes.remove(node); self.sel = None
-            self.dirty = True; self.redraw(); win.destroy()
-        tk.Button(win, text="确定", command=ok, bg="#2f6fdd", fg="#fff", relief="flat").grid(row=2, column=0, padx=6, pady=8)
-        tk.Button(win, text="删除", command=dele, bg="#5a2a33", fg="#fff", relief="flat").grid(row=2, column=1, sticky="w", padx=6)
+        self.inline_edit(node)
 
     # ---------- 服务器查看器（网络节点，默认开 零data=空key） ----------
     def viewer_groups(self):
         keys = [b""]
         if self.key: keys.append(self.key)
-        for n in self.nodes:
+        for n in self.ordered():
             d = n["data"].encode("utf-8")
             if d and d not in keys: keys.append(d)
         groups = []
@@ -461,8 +583,7 @@ class App:
                 self.snapshot()
                 x, y = self.S2W(self.c.winfo_width() / 2, self.c.winfo_height() / 2)
                 for i, (nm, dt) in enumerate(toks):
-                    self.nodes.append({"name": nm, "data": dt,
-                                       "x": round(x) + (i % 6) * 30, "y": round(y) + (i // 6) * 30})
+                    self.nodes.append(self.new_node(nm, dt, round(x) + (i % 6) * 30, round(y) + (i // 6) * 30))
                 node["data"] = ent.get().strip()
                 self.dirty = True; self.redraw()
                 status.config(text="已载入 %d 个 token 到编辑器" % len(toks))
@@ -474,24 +595,29 @@ class App:
                      ("载入编辑器", load_into_editor), ("设为节点key", setkey), ("关闭", win.destroy)]:
             tk.Button(bot, text=t, command=c, bg="#26314d", fg="#fff", relief="flat").pack(side="left", padx=3)
 
-    # ---------- 布局 ----------
+    # ---------- 布局（树形：子节点缩进） ----------
     def auto_layout(self):
         if not self.nodes: return
         self.snapshot()
         w = self.c.winfo_width() or 900
-        cols = max(1, int((w - 80) / (NW + 40)))
-        for i, n in enumerate(self.nodes):
-            n["x"] = 40 + (i % cols) * (NW + 40)
-            n["y"] = 40 + (i // cols) * (NH + 40)
+        y = 40
+        def place(node, d):
+            nonlocal y
+            node["x"] = 40 + d * 30
+            node["y"] = y
+            y += NH + 40
+            for c in node.get("children", []):
+                place(c, d + 1)
+        for n in self.nodes:
+            place(n, 0)
         self.fit()
-        self.status.config(text="已自动布局 %d 个节点" % len(self.nodes))
+        self.status.config(text="已树形布局 %d 个节点" % len(self.ordered()))
 
     def load_template(self):
         self.snapshot()
         self.nodes = []
         for i, (nm, dt) in enumerate(guess_template()):
-            self.nodes.append({"name": nm, "data": dt, "x": 40 + (i % 5) * (NW + 40),
-                               "y": 40 + (i // 5) * (NH + 40)})
+            self.nodes.append(self.new_node(nm, dt, 40 + (i % 5) * (NW + 40), 40 + (i // 5) * (NH + 40)))
         self.sel = None; self.dirty = True
         self.fit()
         self.status.config(text="已载入猜数字示例（28 节点）")
@@ -502,7 +628,7 @@ class App:
             try: self.key = boot_dll.get_id()
             except Exception as e:
                 self.status.config(text="保存失败: " + str(e)); return
-        payload = encode([(n["name"], n["data"]) for n in self.ordered()])
+        payload = encode(self.flatten_tokens())
         try:
             idx = boot_dll.upload(self.key, payload)
             ok = False
@@ -538,11 +664,10 @@ class App:
             toks = guess_template()
             self.nodes = []
             for i, (nm, dt) in enumerate(toks):
-                self.nodes.append({"name": nm, "data": dt, "x": 40 + (i % 5) * (NW + 40),
-                                   "y": 40 + (i // 5) * (NH + 40)})
+                self.nodes.append(self.new_node(nm, dt, 40 + (i % 5) * (NW + 40), 40 + (i // 5) * (NH + 40)))
             self.save()
             return
-        cur = [(n["name"], n["data"]) for n in self.nodes]
+        cur = self.flatten_tokens()
         if cur == toks:
             self.redraw()
             return
@@ -551,17 +676,21 @@ class App:
             saved = json.load(open(STATE, encoding="utf-8"))["nodes"]
         except Exception:
             saved = None
-        seq = [(n["name"], n["data"]) for n in (saved or [])]
-        if saved and seq == toks:
+        def flat_seq(nodes):
+            out = []
+            for n in nodes:
+                out.append((n["name"], n["data"]))
+                out += flat_seq(n.get("children", []))
+            return out
+        if saved is not None and flat_seq(saved) == toks:
             self.nodes = saved
         else:
             self.nodes = []
             for i, (nm, dt) in enumerate(toks):
-                self.nodes.append({"name": nm, "data": dt, "x": 40 + (i % 5) * (NW + 40),
-                                   "y": 40 + (i // 5) * (NH + 40)})
+                self.nodes.append(self.new_node(nm, dt, 40 + (i % 5) * (NW + 40), 40 + (i // 5) * (NH + 40)))
         self.sel = None; self.dirty = False
         self.redraw()
-        self.status.config(text="已加载，共 %d 个节点" % len(self.nodes))
+        self.status.config(text="已加载，共 %d 个节点" % len(self.ordered()))
 
     def after_loop(self):
         if not self.dirty:
@@ -570,8 +699,8 @@ class App:
 
     def run(self):
         self.out.delete("1.0", "end")
-        toks = [(n["name"], n["data"]) for n in self.ordered()]
-        self.log("--- 运行 %d 个节点（按 Y 排序）---" % len(toks))
+        toks = self.flatten_tokens()
+        self.log("--- 运行 %d 个节点（树形深度优先）---" % len(toks))
         self.vm.run(toks)
         self.status.config(text="运行结束，共 %d 步" % self.vm.steps)
 
@@ -618,12 +747,12 @@ class App:
                 ax = x2_ + 9 * math.cos(ang + k * 2.6)
                 ay = y2_ + 9 * math.sin(ang + k * 2.6)
                 self.c.create_line(x2_, y2_, ax, ay, fill=EDGE, width=2)
-        for n in self.nodes:
+        for n in self.ordered():
             self.draw_node(n)
         if self.dirty:
-            self.status.config(text="%d 节点 | 缩放 %.2fx | 未保存" % (len(self.nodes), self.zoom))
+            self.status.config(text="%d 节点 | 缩放 %.2fx | 未保存" % (len(self.ordered()), self.zoom))
         else:
-            self.status.config(text="%d 节点 | 缩放 %.2fx" % (len(self.nodes), self.zoom))
+            self.status.config(text="%d 节点 | 缩放 %.2fx" % (len(self.ordered()), self.zoom))
 
     def draw_node(self, n):
         x1, y1 = self.W2S(n["x"] - NW / 2, n["y"] - NH / 2)
@@ -642,6 +771,14 @@ class App:
         dt = n["data"] if n["data"] else ("零data" if n["name"] == "net" else "(空)")
         if len(dt) > 16: dt = dt[:15] + "…"
         self.c.create_text(dx, dy, anchor="w", text=dt, fill=DIM, font=("Microsoft YaHei UI", 8))
+        if n.get("children"):
+            bx, by = self.W2S(n["x"] + NW / 2 - 16, n["y"] + NH / 2 - 14)
+            self.c.create_oval(bx - 8, by - 8, bx + 8, by + 8, fill="#26314d", outline=SEL)
+            self.c.create_text(bx, by, text=("+" if n.get("collapsed") else "-"), fill=TEXT,
+                               font=("Microsoft YaHei UI", 10, "bold"))
+            if n.get("collapsed"):
+                self.c.create_text(self.W2S(n["x"] + NW / 2 - 30, n["y"] - 20), anchor="e",
+                                   text="%d 子节点" % len(self.subtree(n)), fill=DIM, font=("Microsoft YaHei UI", 8))
 
 if __name__ == "__main__":
     root = tk.Tk()

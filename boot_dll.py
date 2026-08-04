@@ -1,9 +1,10 @@
-# boot_dll.py —— 启动引导（由 boot_dll.c 简化为纯 Python）
-# 逻辑：生成/读取机器 id -> 首次上传引导块 -> 取 key -> 按 sha256 加载 dll 并运行
-import ctypes, hashlib, os, socket, struct, time
+# boot_dll.py —— 启动引导（纯 Python，加载 .py 插件）
+# 逻辑：生成/读取机器 id -> 首次上传引导块 -> 取 key -> 按 sha256 加载 .py 插件并运行
+import hashlib, importlib.util, os, socket, struct, time
 
 HOST, PORT = "127.0.0.1", 8000
 ID_FILE = "id.bin"
+HERE = os.path.dirname(os.path.abspath(__file__))   # 插件和本文件放一起
 
 def recv_all(s, n):                          # 精确读满 n 字节
     data = b""
@@ -36,8 +37,12 @@ def get_id():
     upload(new_id, block)
     return new_id
 
-def load_run(key):                           # key 的 sha256 十六进制就是 dll 文件名
-    return ctypes.WinDLL(hashlib.sha256(key).hexdigest() + ".dll").run
+def load_run(key):                           # key 的 sha256 十六进制就是插件文件名
+    path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")
+    spec = importlib.util.spec_from_file_location("boot_plugin", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)             # 每次重新执行插件文件
+    return mod.run
 
 def run():
     key = get_id()
@@ -48,7 +53,7 @@ def run():
             f = load_run(key)
             break
         except Exception:
-            time.sleep(1)                    # 没数据/没 dll 就等一会再试
+            time.sleep(1)                    # 没数据/没插件就等一会再试
     while True:
         f()
 

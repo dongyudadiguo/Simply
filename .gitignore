@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# 运行时/状态文件（不入库）
+.agent/_state.pkl
+.agent/input.json
+.agent/.ae_runners/
+id.bin

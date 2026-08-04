@@ -179,6 +179,7 @@ class App:
         self.inline = None
         self.view_mode = "graph"
         self.list_btn = None
+        self.sel_block = None
         self.vm = VM(root, self.log)
         self.build_ui()
         self.load()
@@ -188,6 +189,13 @@ class App:
     # ---------- 树形辅助 ----------
     def new_node(self, name, data="", x=0, y=0):
         return {"name": name, "data": data, "x": x, "y": y, "children": [], "collapsed": False}
+
+    def wrap_block(self, title, tokens, x=40, y=40):
+        """一个块节点 = 标题 + 多个 token 子节点（Singularity 风格）"""
+        blk = self.new_node(title, "", x, y)
+        for i, (nm, dt) in enumerate(tokens):
+            blk["children"].append(self.new_node(nm, dt, x + 20, y + (i + 1) * (NH + 20)))
+        return blk
 
     def visible(self, node):
         """深度优先展开顺序（跳过折叠子树）"""
@@ -558,8 +566,8 @@ class App:
             self.net_dialog(node); return
         self.inline_edit(node)
 
-    # ---------- 列表视图（节点样式：每行=迷你节点，图标+类别色） ----------
-    LRH = 52
+    # ---------- 列表视图（节点样式：块=卡片，内含多个 token 行） ----------
+    LRH, TITLE, ROW = 52, 40, 34
     def toggle_view(self):
         self.close_inline()
         self.view_mode = "list" if self.view_mode == "graph" else "graph"
@@ -570,51 +578,62 @@ class App:
             self.redraw()
         self._pack_main()
 
-    def list_items(self):
-        out = []
-        def walk(nodes, d):
-            for n in sorted(nodes, key=lambda x: (x["y"], id(x))):
-                out.append((n, d))
-                if not n.get("collapsed"):
-                    walk(n.get("children", []), d + 1)
-        walk(self.nodes, 0)
-        return out
-
     def list_refresh(self):
-        self.list_items_cache = self.list_items()
         self.listc.delete("all")
         w = self.listc.winfo_width() or 420
-        h = len(self.list_items_cache) * self.LRH + 8
-        self.listc.configure(scrollregion=(0, 0, w, h))
-        for i, (n, d) in enumerate(self.list_items_cache):
-            y = i * self.LRH + 4
-            sel = (i == self.list_sel_idx)
-            poly = self.rrect(8, y, w - 8, y + self.LRH - 8, 10)
-            self.listc.create_polygon(poly, fill=NODE, outline=(SEL if sel else "#33405e"), width=2)
-            icon, color = icon_of(n["name"])
-            cx = 32 + d * 18
-            self.draw_icon(icon, color, cx, y + self.LRH / 2 - 2, cv=self.listc)
-            self.listc.create_text(cx + 22, y + 13, anchor="w", text=n["name"], fill=TEXT,
-                                   font=("Microsoft YaHei UI", 10, "bold"))
-            dt = n["data"] if n["data"] else ("零data" if n["name"] == "net" else "(空)")
-            if len(dt) > 42: dt = dt[:41] + "..."
-            self.listc.create_text(cx + 22, y + 31, anchor="w", text=dt, fill=DIM,
-                                   font=("Microsoft YaHei UI", 9))
-            if n.get("children"):
-                mark = ("%d -" % len(n["children"])) if not n.get("collapsed") else ("%d +" % len(n["children"]))
-                self.listc.create_text(w - 24, y + self.LRH / 2, text=mark, fill=DIM,
-                                       font=("Microsoft YaHei UI", 8))
+        self.list_hit = []
+        y = 6
+        for r in sorted(self.nodes, key=lambda x: (x["y"], id(x))):
+            if r.get("children"):
+                self._draw_block(r, y, w)
+                y += self.TITLE + (0 if r.get("collapsed") else len(r["children"]) * self.ROW) + 10
+            else:
+                self._draw_token_row(r, None, y, w, 0)
+                y += self.LRH + 4
+        self.listc.configure(scrollregion=(0, 0, w, max(y, self.listc.winfo_height())))
+
+    def _draw_block(self, blk, y, w):
+        sel = (self.sel is blk)
+        poly = self.rrect(8, y, w - 8, y + self.TITLE, 10)
+        self.listc.create_polygon(poly, fill="#20263c", outline=(SEL if sel else "#3d4a73"), width=2)
+        self.draw_icon("label", "#73daca", 30, y + self.TITLE / 2 - 2, cv=self.listc)
+        self.listc.create_text(52, y + self.TITLE / 2 - 3, anchor="w", text=blk["name"], fill="#e8eaf0",
+                               font=("Microsoft YaHei UI", 10, "bold"))
+        self.listc.create_text(52, y + self.TITLE / 2 + 10, anchor="w",
+                               text="%d tokens" % len(blk["children"]), fill=DIM,
+                               font=("Microsoft YaHei UI", 8))
+        mark = "%d -" % len(blk["children"]) if not blk.get("collapsed") else "%d +" % len(blk["children"])
+        self.listc.create_text(w - 24, y + self.TITLE / 2, text=mark, fill="#7fd6a0",
+                               font=("Microsoft YaHei UI", 9, "bold"))
+        self.list_hit.append((y, y + self.TITLE, blk, blk))
+        if blk.get("collapsed"): return
+        for i, c in enumerate(sorted(blk["children"], key=lambda x: (x["y"], id(x)))):
+            self._draw_token_row(c, blk, y + self.TITLE + i * self.ROW, w, 1)
+
+    def _draw_token_row(self, node, block, y, w, indent):
+        sel = (self.sel is node)
+        poly = self.rrect(8, y, w - 8, y + self.ROW, 8)
+        self.listc.create_polygon(poly, fill=NODE, outline=(SEL if sel else "#33405e"), width=2)
+        icon, color = icon_of(node["name"])
+        cx = 30 + indent * 18
+        self.draw_icon(icon, color, cx, y + self.ROW / 2 - 2, cv=self.listc)
+        dt = node["data"] if node["data"] else ("零data" if node["name"] == "net" else "")
+        txt = node["name"] + ("  |  " + dt if dt else "")
+        if len(txt) > 44: txt = txt[:43] + "..."
+        self.listc.create_text(cx + 22, y + self.ROW / 2, anchor="w", text=txt, fill=TEXT,
+                               font=("Microsoft YaHei UI", 9))
+        self.list_hit.append((y, y + self.ROW, node, block))
 
     def list_click(self, e):
-        i = (e.y - 4) // self.LRH
-        if 0 <= i < len(self.list_items_cache):
-            self.list_sel_idx = i
-            n, d = self.list_items_cache[i]
-            self.sel = n
-            self.e_name.delete(0, "end"); self.e_name.insert(0, n["name"])
-            self.e_data.delete(0, "end"); self.e_data.insert(0, n["data"])
-            self.list_refresh()
-            self.status.config(text="选中: %s（深度 %d）" % (n["name"], d))
+        for y0, y1, node, block in self.list_hit:
+            if y0 <= e.y <= y1:
+                self.sel, self.sel_block = node, block
+                self.e_name.delete(0, "end"); self.e_name.insert(0, node["name"])
+                self.e_data.delete(0, "end"); self.e_data.insert(0, node["data"])
+                self.list_refresh()
+                kind = "块" if node is block and node.get("children") else ("块内" if block else "根")
+                self.status.config(text="选中: %s（%s）" % (node["name"], kind))
+                return
 
     def list_wheel(self, e):
         self.listc.yview_scroll(-1 if e.delta > 0 else 1, "units")
@@ -623,53 +642,52 @@ class App:
         self.snapshot()
         nm = self.e_name.get().strip() or "nop"
         dt = self.e_data.get()
-        y = max([n["y"] for n in self.ordered()] or [0]) + NH + 20
-        self.nodes.append(self.new_node(nm, dt, 40, y))
+        if self.sel_block is not None:
+            node = self.new_node(nm, dt, self.sel_block["x"] + 20, 0)
+            self.sel_block["children"].append(node)
+            self.sel_block["collapsed"] = False
+            self.sel = node
+        else:
+            y = max([n["y"] for n in self.ordered()] or [0]) + NH + 20
+            node = self.new_node(nm, dt, 40, y)
+            self.nodes.append(node)
+            self.sel, self.sel_block = node, None
         self.dirty = True
         self.list_refresh(); self.redraw()
 
     def list_update(self):
-        if self.list_sel_idx is None: return
+        if self.sel is None: return
         self.snapshot()
-        n, _ = self.list_items_cache[self.list_sel_idx]
-        n["name"] = self.e_name.get().strip() or "nop"
-        n["data"] = self.e_data.get()
+        self.sel["name"] = self.e_name.get().strip() or "nop"
+        self.sel["data"] = self.e_data.get()
         self.dirty = True
         self.list_refresh(); self.redraw()
 
     def list_delete(self):
-        if self.list_sel_idx is None: return
+        if self.sel is None: return
         self.snapshot()
-        n, _ = self.list_items_cache[self.list_sel_idx]
-        if n in self.nodes:
-            self.nodes.remove(n)
+        if self.sel_block is not None:
+            self.sel_block["children"].remove(self.sel)
         else:
-            for p in self.ordered():
-                if n in p.get("children", []):
-                    p["children"].remove(n); break
-        self.sel = None; self.list_sel_idx = None; self.dirty = True
+            self.nodes.remove(self.sel)
+        self.sel = None; self.sel_block = None; self.dirty = True
         self.list_refresh(); self.redraw()
 
     def list_move(self, d):
-        items = self.list_items_cache
-        if self.list_sel_idx is None: return
-        idx = self.list_sel_idx; j = idx + d
-        if not (0 <= j < len(items)): return
-        na, da = items[idx]; nb, db = items[j]
-        if da != db:
-            self.status.config(text="只能在同层之间移动"); return
-        def parent_of(node):
-            for p in self.ordered():
-                if node in p.get("children", []): return p
-            return None
-        pa, pb = (None if na in self.nodes else parent_of(na)), (None if nb in self.nodes else parent_of(nb))
-        if pa is not pb:
-            self.status.config(text="只能在同父节点之间移动"); return
-        self.snapshot()
-        na["y"], nb["y"] = nb["y"], na["y"]
+        if self.sel is None: return
+        if self.sel_block is not None:
+            kids = self.sel_block["children"]
+            i = kids.index(self.sel); j = i + d
+            if not (0 <= j < len(kids)): return
+            self.snapshot()
+            kids[i]["y"], kids[j]["y"] = kids[j]["y"], kids[i]["y"]
+        else:
+            i = self.nodes.index(self.sel); j = i + d
+            if not (0 <= j < len(self.nodes)): return
+            self.snapshot()
+            self.nodes[i]["y"], self.nodes[j]["y"] = self.nodes[j]["y"], self.nodes[i]["y"]
         self.dirty = True
         self.list_refresh(); self.redraw()
-        self.list_sel_idx = j
 
     # ---------- 服务器查看器（网络节点，默认开 零data=空key） ----------
     def viewer_groups(self):
@@ -788,12 +806,10 @@ class App:
 
     def load_template(self):
         self.snapshot()
-        self.nodes = []
-        for i, (nm, dt) in enumerate(guess_template()):
-            self.nodes.append(self.new_node(nm, dt, 40 + (i % 5) * (NW + 40), 40 + (i // 5) * (NH + 40)))
+        self.nodes = [self.wrap_block("猜数字", guess_template())]
         self.sel = None; self.dirty = True
         self.fit()
-        self.status.config(text="已载入猜数字示例（28 节点）")
+        self.status.config(text="已载入猜数字示例：1 个块 / 28 个 token")
 
     # ---------- 服务器存取 ----------
     def save(self):
@@ -834,11 +850,14 @@ class App:
         except Exception:
             toks = []
         if toks == [("editor", ""), ("rerun", "")]:
-            toks = guess_template()
-            self.nodes = []
-            for i, (nm, dt) in enumerate(toks):
-                self.nodes.append(self.new_node(nm, dt, 40 + (i % 5) * (NW + 40), 40 + (i // 5) * (NH + 40)))
+            self.nodes = [self.wrap_block("猜数字", guess_template())]
             self.save()
+            return
+        if toks == guess_template():
+            self.nodes = [self.wrap_block("猜数字", toks)]
+            self.sel = None; self.dirty = False
+            self.redraw()
+            self.status.config(text="已加载：1 个块 / %d 个 token（猜数字）" % len(toks))
             return
         cur = self.flatten_tokens()
         if cur == toks:

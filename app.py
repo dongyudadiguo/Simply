@@ -177,6 +177,8 @@ class App:
         self.undo_stack, self.pan = [], None
         self.dirty = False
         self.inline = None
+        self.view_mode = "graph"
+        self.list_btn = None
         self.vm = VM(root, self.log)
         self.build_ui()
         self.load()
@@ -225,6 +227,7 @@ class App:
         btn("放大", lambda: self.zoom_btn(1.25), ghost=True)
         btn("缩小", lambda: self.zoom_btn(0.8), ghost=True)
         btn("适应", self.fit, ghost=True)
+        self.list_btn = btn("列表视图", self.toggle_view, ghost=True)
         self.status = tk.Label(bar, text="", bg=PANEL, fg="#7fd6a0"); self.status.pack(side="right", padx=8)
 
         main = tk.Frame(self.root, bg=PANEL); main.pack(fill="both", expand=True)
@@ -259,6 +262,22 @@ class App:
         self.root.bind("<Control-s>", lambda e: self.save())
         self.root.bind("<Control-r>", lambda e: self.run())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # 列表视图（v1 风格 token 列表，与图形共用同一份节点）
+        self.listf = tk.Frame(self.root, bg=PANEL)
+        lr = tk.Frame(self.listf, bg=PANEL); lr.pack(fill="x", padx=6, pady=4)
+        tk.Label(lr, text="token:", bg=PANEL, fg=TEXT).pack(side="left")
+        self.e_name = tk.Entry(lr, width=12); self.e_name.pack(side="left", padx=3)
+        tk.Label(lr, text="data:", bg=PANEL, fg=TEXT).pack(side="left")
+        self.e_data = tk.Entry(lr, width=34); self.e_data.pack(side="left", padx=3)
+        for t, c in [("添加", self.list_add), ("更新", self.list_update), ("删除", self.list_delete),
+                     ("上移", lambda: self.list_move(-1)), ("下移", lambda: self.list_move(1))]:
+            tk.Button(lr, text=t, command=c, bg="#26314d", fg="#fff", relief="flat").pack(side="left", padx=2)
+        self.listbox = tk.Listbox(self.listf, bg="#0f1420", fg=TEXT, selectbackground=SEL,
+                                  selectforeground="#0b0b12", font=("Consolas", 11),
+                                  activestyle="none", borderwidth=0, highlightthickness=0)
+        self.listbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.listbox.bind("<<ListboxSelect>>", self.list_select)
 
         self.out = scrolledtext.ScrolledText(self.root, height=7, bg="#0d0f16", fg="#9ece6a",
                                              insertbackground="#9ece6a", font=("Consolas", 10))
@@ -497,6 +516,101 @@ class App:
         if node["name"] == "net":
             self.net_dialog(node); return
         self.inline_edit(node)
+
+    # ---------- 列表视图（v1 风格：token 列表，与图形共用节点） ----------
+    def toggle_view(self):
+        self.close_inline()
+        if self.view_mode == "graph":
+            self.view_mode = "list"
+            self.c.pack_forget()
+            self.listf.pack(fill="both", expand=True)
+            self.list_btn.config(text="图形视图")
+            self.list_refresh()
+        else:
+            self.view_mode = "graph"
+            self.listf.pack_forget()
+            self.c.pack(fill="both", expand=True)
+            self.list_btn.config(text="列表视图")
+            self.redraw()
+
+    def list_items(self):
+        out = []
+        def walk(nodes, d):
+            for n in sorted(nodes, key=lambda x: (x["y"], id(x))):
+                out.append((n, d))
+                if not n.get("collapsed"):
+                    walk(n.get("children", []), d + 1)
+        walk(self.nodes, 0)
+        return out
+
+    def list_refresh(self):
+        self.listbox.delete(0, "end")
+        for n, d in self.list_items():
+            self.listbox.insert("end", ("  " * d) + n["name"] + ("  |  " + n["data"] if n["data"] else ""))
+
+    def list_select(self, e=None):
+        i = self.listbox.curselection()
+        if not i: return
+        n, d = self.list_items()[i[0]]
+        self.sel = n
+        self.e_name.delete(0, "end"); self.e_name.insert(0, n["name"])
+        self.e_data.delete(0, "end"); self.e_data.insert(0, n["data"])
+        self.status.config(text="选中: %s（深度 %d）" % (n["name"], d))
+
+    def list_add(self):
+        self.snapshot()
+        nm = self.e_name.get().strip() or "nop"
+        dt = self.e_data.get()
+        y = max([n["y"] for n in self.ordered()] or [0]) + NH + 20
+        self.nodes.append(self.new_node(nm, dt, 40, y))
+        self.dirty = True
+        self.list_refresh(); self.redraw()
+
+    def list_update(self):
+        i = self.listbox.curselection()
+        if not i: return
+        self.snapshot()
+        n, _ = self.list_items()[i[0]]
+        n["name"] = self.e_name.get().strip() or "nop"
+        n["data"] = self.e_data.get()
+        self.dirty = True
+        self.list_refresh(); self.redraw()
+
+    def list_delete(self):
+        i = self.listbox.curselection()
+        if not i: return
+        self.snapshot()
+        n, _ = self.list_items()[i[0]]
+        if n in self.nodes:
+            self.nodes.remove(n)
+        else:
+            for p in self.ordered():
+                if n in p.get("children", []):
+                    p["children"].remove(n); break
+        self.sel = None; self.dirty = True
+        self.list_refresh(); self.redraw()
+
+    def list_move(self, d):
+        items = self.list_items()
+        i = self.listbox.curselection()
+        if not i: return
+        idx = i[0]; j = idx + d
+        if not (0 <= j < len(items)): return
+        na, da = items[idx]; nb, db = items[j]
+        if da != db:
+            self.status.config(text="只能在同层之间移动"); return
+        def parent_of(node):
+            for p in self.ordered():
+                if node in p.get("children", []): return p
+            return None
+        pa, pb = (None if na in self.nodes else parent_of(na)), (None if nb in self.nodes else parent_of(nb))
+        if pa is not pb:
+            self.status.config(text="只能在同父节点之间移动"); return
+        self.snapshot()
+        na["y"], nb["y"] = nb["y"], na["y"]
+        self.dirty = True
+        self.list_refresh(); self.redraw()
+        self.listbox.selection_set(j)
 
     # ---------- 服务器查看器（网络节点，默认开 零data=空key） ----------
     def viewer_groups(self):

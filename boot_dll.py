@@ -15,21 +15,32 @@ def recv_all(s, n):                          # 精确读满 n 字节
     return data
 
 def upload(key, data):                       # 服务端 op=3：上传数据
-    with socket.create_connection((HOST, PORT)) as s:
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
         s.sendall(b"\x03" + struct.pack("<I", len(key)) + key +
                   struct.pack("<I", len(data)) + data)
         return struct.unpack("<I", recv_all(s, 4))[0]
 
 def fetch(key):                              # 服务端 op=2：按 key 取数据
-    with socket.create_connection((HOST, PORT)) as s:
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
         s.sendall(b"\x02" + struct.pack("<I", len(key)) + key)
         return recv_all(s, struct.unpack("<I", recv_all(s, 4))[0])
 
 
 def vote(key, idx):                          # 服务端 op=1：给某条数据投票（平票时票数高者胜）
-    with socket.create_connection((HOST, PORT)) as s:
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
         s.sendall(b"\x01" + struct.pack("<I", len(key)) + key + struct.pack("<I", idx))
         return struct.unpack("<I", recv_all(s, 4))[0]
+
+def list_keys():                       # 服务端 op=4：列出所有 key
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
+        s.sendall(b"\x04")
+        n = struct.unpack("<I", recv_all(s, 4))[0]
+        out = []
+        for _ in range(n):
+            k = recv_all(s, struct.unpack("<I", recv_all(s, 4))[0])
+            c = struct.unpack("<I", recv_all(s, 4))[0]
+            out.append((k, c))
+        return out
 
 def get_id():
     if os.path.exists(ID_FILE):              # 已有 id 直接用

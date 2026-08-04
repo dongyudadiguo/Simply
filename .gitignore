@@ -7,3 +7,4 @@ __pycache__/
 .agent/input.json
 .agent/.ae_runners/
 id.bin
+app_state.json

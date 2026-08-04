@@ -620,10 +620,17 @@ class App(QMainWindow):
         self.out_dock.setVisible(not self.out_dock.isVisible())
 
 def main():
-    import sys
+    import sys, ctypes
     app = QApplication(sys.argv)
     w = App()
     w.show()
+    # Qt6 在部分环境下 show() 不设置 WS_VISIBLE，强制显示（tkinter 无此问题）
+    try:
+        hwnd = int(w.winId())
+        ctypes.windll.user32.ShowWindow(hwnd, 5)      # SW_SHOW
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
     sys.exit(app.exec())
 
 if __name__ == "__main__":

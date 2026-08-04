@@ -217,33 +217,50 @@ class App:
     def build_ui(self):
         self.root.configure(bg=PANEL)
         bar = tk.Frame(self.root, bg=PANEL); bar.pack(fill="x")
-        def btn(t, c, ghost=False):
-            b = tk.Button(bar, text=t, command=c, bg=("#26314d" if ghost else "#2f6fdd"),
-                          fg="#fff", relief="flat", activebackground="#3f7fee", padx=9)
+        tk.Label(bar, text="Simply", bg=PANEL, fg="#7aa2f7",
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=3)
+        def btn(t, c, primary=False):
+            b = tk.Button(bar, text=t, command=c, bg=("#2f6fdd" if primary else "#1f2335"),
+                          fg="#fff", relief="flat", activebackground="#3f7fee", padx=9,
+                          bd=0, highlightthickness=0)
             b.pack(side="left", padx=2, pady=3); return b
-        btn("保存到服务器", self.save); btn("加载", self.load); btn("运行", self.run)
-        btn("猜数字", self.load_template, ghost=True); btn("自动布局", self.auto_layout, ghost=True)
-        btn("撤销", self.undo, ghost=True)
-        btn("放大", lambda: self.zoom_btn(1.25), ghost=True)
-        btn("缩小", lambda: self.zoom_btn(0.8), ghost=True)
-        btn("适应", self.fit, ghost=True)
-        self.list_btn = btn("列表视图", self.toggle_view, ghost=True)
+        btn("保存", self.save, primary=True)
+        btn("运行", self.run)
+        self.list_btn = btn("列表视图", self.toggle_view)
+        self.mbtn = tk.Menubutton(bar, text="\u2630", bg="#1f2335", fg="#fff", relief="flat",
+                                  activebackground="#3f7fee", padx=10, bd=0)
+        mm = tk.Menu(self.mbtn, tearoff=0, bg=PANEL, fg=TEXT, activebackground=SEL)
+        mm.add_command(label="加载", command=self.load)
+        mm.add_separator()
+        mm.add_command(label="载入猜数字示例", command=self.load_template)
+        mm.add_command(label="自动布局", command=self.auto_layout)
+        mm.add_command(label="撤销", command=self.undo)
+        mm.add_separator()
+        mm.add_command(label="放大", command=lambda: self.zoom_btn(1.25))
+        mm.add_command(label="缩小", command=lambda: self.zoom_btn(0.8))
+        mm.add_command(label="适应视图", command=self.fit)
+        mm.add_separator()
+        mm.add_command(label="服务器 data 查看器", command=self.toggle_side)
+        mm.add_command(label="输出面板", command=self.toggle_out)
+        self.mbtn.config(menu=mm)
+        self.mbtn.pack(side="left", padx=2, pady=3)
         self.status = tk.Label(bar, text="", bg=PANEL, fg="#7fd6a0"); self.status.pack(side="right", padx=8)
 
         main = tk.Frame(self.root, bg=PANEL); main.pack(fill="both", expand=True)
-        side = tk.Frame(main, bg="#131926", width=250); side.pack(side="left", fill="y")
-        side.pack_propagate(False)
-        tk.Label(side, text="服务器 data（双击添加）", bg="#1a2233", fg="#b9c7e4",
+        # 左侧查看器（默认隐藏）
+        self.side = tk.Frame(main, bg="#131926", width=250)
+        tk.Label(self.side, text="服务器 data（双击添加）", bg="#1a2233", fg="#b9c7e4",
                  font=("Microsoft YaHei UI", 9, "bold")).pack(fill="x")
-        self.viewer = tk.Listbox(side, bg="#0f1420", fg=TEXT, selectbackground=SEL,
+        self.viewer = tk.Listbox(self.side, bg="#0f1420", fg=TEXT, selectbackground=SEL,
                                  selectforeground="#0b0b12", font=("Consolas", 9),
                                  activestyle="none", borderwidth=0, highlightthickness=0)
         self.viewer.pack(fill="both", expand=True, padx=4, pady=4)
         self.viewer.bind("<Double-Button-1>", self.viewer_add)
-        tk.Button(side, text="刷新查看器", command=self.refresh_viewer, bg="#26314d", fg="#fff",
+        tk.Button(self.side, text="刷新", command=self.refresh_viewer, bg="#26314d", fg="#fff",
                   relief="flat").pack(fill="x", padx=4, pady=(0, 4))
-        self.vstatus = tk.Label(side, text="", bg="#131926", fg="#8fa3c8",
+        self.vstatus = tk.Label(self.side, text="", bg="#131926", fg="#8fa3c8",
                                 font=("Microsoft YaHei UI", 8)); self.vstatus.pack(fill="x", padx=4, pady=2)
+        self.side_visible = False
 
         self.c = tk.Canvas(main, bg=BG, highlightthickness=0)
         self.c.pack(fill="both", expand=True)
@@ -279,9 +296,31 @@ class App:
         self.listbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         self.listbox.bind("<<ListboxSelect>>", self.list_select)
 
+        # 输出面板（默认隐藏）
         self.out = scrolledtext.ScrolledText(self.root, height=7, bg="#0d0f16", fg="#9ece6a",
                                              insertbackground="#9ece6a", font=("Consolas", 10))
-        self.out.pack(fill="x")
+        self.out_visible = False
+
+    # ---------- 布局打包（侧栏/输出按开关重排） ----------
+    def _pack_main(self):
+        for w in (self.side, self.listf, self.c, self.out):
+            w.pack_forget()
+        if self.side_visible:
+            self.side.pack(side="left", fill="y")
+        if self.view_mode == "list":
+            self.listf.pack(fill="both", expand=True)
+        else:
+            self.c.pack(fill="both", expand=True)
+        if self.out_visible:
+            self.out.pack(fill="x")
+
+    def toggle_side(self):
+        self.side_visible = not self.side_visible
+        self._pack_main()
+
+    def toggle_out(self):
+        self.out_visible = not self.out_visible
+        self._pack_main()
 
     def log(self, s):
         self.out.insert("end", s + "\n"); self.out.see("end")
@@ -520,18 +559,13 @@ class App:
     # ---------- 列表视图（v1 风格：token 列表，与图形共用节点） ----------
     def toggle_view(self):
         self.close_inline()
-        if self.view_mode == "graph":
-            self.view_mode = "list"
-            self.c.pack_forget()
-            self.listf.pack(fill="both", expand=True)
-            self.list_btn.config(text="图形视图")
+        self.view_mode = "list" if self.view_mode == "graph" else "graph"
+        self.list_btn.config(text="图形视图" if self.view_mode == "list" else "列表视图")
+        if self.view_mode == "list":
             self.list_refresh()
         else:
-            self.view_mode = "graph"
-            self.listf.pack_forget()
-            self.c.pack(fill="both", expand=True)
-            self.list_btn.config(text="列表视图")
             self.redraw()
+        self._pack_main()
 
     def list_items(self):
         out = []
@@ -812,6 +846,9 @@ class App:
         self.root.after(3000, self.after_loop)
 
     def run(self):
+        if not self.out_visible:
+            self.out_visible = True
+            self._pack_main()
         self.out.delete("1.0", "end")
         toks = self.flatten_tokens()
         self.log("--- 运行 %d 个节点（树形深度优先）---" % len(toks))

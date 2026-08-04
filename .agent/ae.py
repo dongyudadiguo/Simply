@@ -22,8 +22,9 @@ def _save(ns):
     for k, v in ns.items():
         if k.startswith("__"): continue
         try:
-            pickle.dumps(v)
-            out[k] = v
+            b = pickle.dumps(v)
+            if len(b) <= 65536:      # 跳过 >64KB 大对象，防 _state.pkl 膨胀拖慢每次调用
+                out[k] = v
         except Exception:
             pass
     with open(STATE_FILE, "wb") as f:
@@ -42,7 +43,13 @@ while True:
     except Exception:
         buf.write(traceback.format_exc())
     _save(NS)
-    sys.stdout.write(buf.getvalue() + SENTINEL + "\\n")
+    out = buf.getvalue()
+    try:
+        enc = sys.stdout.encoding or "utf-8"
+        out = out.encode(enc, "replace").decode(enc)
+    except Exception:
+        pass
+    sys.stdout.write(out + SENTINEL + "\\n")
     sys.stdout.flush()
 """
 

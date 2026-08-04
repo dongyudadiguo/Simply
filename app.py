@@ -290,11 +290,13 @@ class App:
         for t, c in [("添加", self.list_add), ("更新", self.list_update), ("删除", self.list_delete),
                      ("上移", lambda: self.list_move(-1)), ("下移", lambda: self.list_move(1))]:
             tk.Button(lr, text=t, command=c, bg="#26314d", fg="#fff", relief="flat").pack(side="left", padx=2)
-        self.listbox = tk.Listbox(self.listf, bg="#0f1420", fg=TEXT, selectbackground=SEL,
-                                  selectforeground="#0b0b12", font=("Consolas", 11),
-                                  activestyle="none", borderwidth=0, highlightthickness=0)
-        self.listbox.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        self.listbox.bind("<<ListboxSelect>>", self.list_select)
+        self.list_sel_idx = None
+        self.list_items_cache = []
+        self.listc = tk.Canvas(self.listf, bg="#0f1420", highlightthickness=0)
+        self.listc.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.listc.bind("<Button-1>", self.list_click)
+        self.listc.bind("<Double-Button-1>", lambda e: self.list_click(e))
+        self.listc.bind("<MouseWheel>", self.list_wheel)
 
         # 输出面板（默认隐藏）
         self.out = scrolledtext.ScrolledText(self.root, height=7, bg="#0d0f16", fg="#9ece6a",
@@ -556,7 +558,8 @@ class App:
             self.net_dialog(node); return
         self.inline_edit(node)
 
-    # ---------- 列表视图（v1 风格：token 列表，与图形共用节点） ----------
+    # ---------- 列表视图（节点样式：每行=迷你节点，图标+类别色） ----------
+    LRH = 52
     def toggle_view(self):
         self.close_inline()
         self.view_mode = "list" if self.view_mode == "graph" else "graph"
@@ -578,18 +581,43 @@ class App:
         return out
 
     def list_refresh(self):
-        self.listbox.delete(0, "end")
-        for n, d in self.list_items():
-            self.listbox.insert("end", ("  " * d) + n["name"] + ("  |  " + n["data"] if n["data"] else ""))
+        self.list_items_cache = self.list_items()
+        self.listc.delete("all")
+        w = self.listc.winfo_width() or 420
+        h = len(self.list_items_cache) * self.LRH + 8
+        self.listc.configure(scrollregion=(0, 0, w, h))
+        for i, (n, d) in enumerate(self.list_items_cache):
+            y = i * self.LRH + 4
+            sel = (i == self.list_sel_idx)
+            poly = self.rrect(8, y, w - 8, y + self.LRH - 8, 10)
+            self.listc.create_polygon(poly, fill=NODE, outline=(SEL if sel else "#33405e"), width=2)
+            icon, color = icon_of(n["name"])
+            cx = 32 + d * 18
+            self.draw_icon(icon, color, cx, y + self.LRH / 2 - 2, cv=self.listc)
+            self.listc.create_text(cx + 22, y + 13, anchor="w", text=n["name"], fill=TEXT,
+                                   font=("Microsoft YaHei UI", 10, "bold"))
+            dt = n["data"] if n["data"] else ("零data" if n["name"] == "net" else "(空)")
+            if len(dt) > 42: dt = dt[:41] + "..."
+            self.listc.create_text(cx + 22, y + 31, anchor="w", text=dt, fill=DIM,
+                                   font=("Microsoft YaHei UI", 9))
+            if n.get("children"):
+                mark = ("%d -" % len(n["children"])) if not n.get("collapsed") else ("%d +" % len(n["children"]))
+                self.listc.create_text(w - 24, y + self.LRH / 2, text=mark, fill=DIM,
+                                       font=("Microsoft YaHei UI", 8))
 
-    def list_select(self, e=None):
-        i = self.listbox.curselection()
-        if not i: return
-        n, d = self.list_items()[i[0]]
-        self.sel = n
-        self.e_name.delete(0, "end"); self.e_name.insert(0, n["name"])
-        self.e_data.delete(0, "end"); self.e_data.insert(0, n["data"])
-        self.status.config(text="选中: %s（深度 %d）" % (n["name"], d))
+    def list_click(self, e):
+        i = (e.y - 4) // self.LRH
+        if 0 <= i < len(self.list_items_cache):
+            self.list_sel_idx = i
+            n, d = self.list_items_cache[i]
+            self.sel = n
+            self.e_name.delete(0, "end"); self.e_name.insert(0, n["name"])
+            self.e_data.delete(0, "end"); self.e_data.insert(0, n["data"])
+            self.list_refresh()
+            self.status.config(text="选中: %s（深度 %d）" % (n["name"], d))
+
+    def list_wheel(self, e):
+        self.listc.yview_scroll(-1 if e.delta > 0 else 1, "units")
 
     def list_add(self):
         self.snapshot()
@@ -601,34 +629,31 @@ class App:
         self.list_refresh(); self.redraw()
 
     def list_update(self):
-        i = self.listbox.curselection()
-        if not i: return
+        if self.list_sel_idx is None: return
         self.snapshot()
-        n, _ = self.list_items()[i[0]]
+        n, _ = self.list_items_cache[self.list_sel_idx]
         n["name"] = self.e_name.get().strip() or "nop"
         n["data"] = self.e_data.get()
         self.dirty = True
         self.list_refresh(); self.redraw()
 
     def list_delete(self):
-        i = self.listbox.curselection()
-        if not i: return
+        if self.list_sel_idx is None: return
         self.snapshot()
-        n, _ = self.list_items()[i[0]]
+        n, _ = self.list_items_cache[self.list_sel_idx]
         if n in self.nodes:
             self.nodes.remove(n)
         else:
             for p in self.ordered():
                 if n in p.get("children", []):
                     p["children"].remove(n); break
-        self.sel = None; self.dirty = True
+        self.sel = None; self.list_sel_idx = None; self.dirty = True
         self.list_refresh(); self.redraw()
 
     def list_move(self, d):
-        items = self.list_items()
-        i = self.listbox.curselection()
-        if not i: return
-        idx = i[0]; j = idx + d
+        items = self.list_items_cache
+        if self.list_sel_idx is None: return
+        idx = self.list_sel_idx; j = idx + d
         if not (0 <= j < len(items)): return
         na, da = items[idx]; nb, db = items[j]
         if da != db:
@@ -644,7 +669,7 @@ class App:
         na["y"], nb["y"] = nb["y"], na["y"]
         self.dirty = True
         self.list_refresh(); self.redraw()
-        self.listbox.selection_set(j)
+        self.list_sel_idx = j
 
     # ---------- 服务器查看器（网络节点，默认开 零data=空key） ----------
     def viewer_groups(self):
@@ -870,11 +895,12 @@ class App:
         arc(x2 - r, y2 - r, 0, 90); arc(x1 + r, y2 - r, 90, 180)
         return pts
 
-    def draw_icon(self, icon, color, cx, cy):
+    def draw_icon(self, icon, color, cx, cy, cv=None):
+        cv = cv or self.c
         for d in ICONS[icon]:
             for pts, closed in parse_path(d):
                 p = [(cx + (px - 12) * 0.85, cy + (py - 12) * 0.85) for px, py in pts]
-                self.c.create_line(p, fill=color, width=2, capstyle="round", joinstyle="round")
+                cv.create_line(p, fill=color, width=2, capstyle="round", joinstyle="round")
 
     def redraw(self):
         self.c.delete("all")

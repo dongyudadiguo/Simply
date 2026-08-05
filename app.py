@@ -322,8 +322,12 @@ class App(QMainWindow):
                              "未保存" if self.dirty else ""))
 
     def sync_positions(self):
-        for n, tn in self._items.items():
-            try: n["x"], n["y"] = tn.pos()
+        for n in self.nodes:
+            tn = self._items.get(id(n))
+            if tn is None: continue
+            try: n['x'], n['y'] = tn.pos()
+            except Exception: pass
+            try: n['data'] = tn.get_property('data') or n['data']
             except Exception: pass
 
     def _on_double_click(self, node):
@@ -438,7 +442,7 @@ class App(QMainWindow):
                 self.snapshot()
                 c = (100.0, 100.0)
                 for i, (nm, dt) in enumerate(toks):
-                    self.nodes.append(new_node(nm, dt, c.x() + (i % 6) * 30, c.y() + (i // 6) * 30))
+                    self.nodes.append(new_node(nm, dt, c[0] + (i % 6) * 30, c[1] + (i // 6) * 30))
                 node["data"] = ekey.text(); self.dirty = True; self.refresh_graph()
                 status.setText("已载入 %d 个 token 到编辑器" % len(toks))
             except Exception:
@@ -591,39 +595,15 @@ class App(QMainWindow):
 
     # ---------- 运行/开关 ----------
 
-    def run(self, nodes, max_steps=1000, trace=True):
-        """nodes: 根节点树（每个节点含 name/data/children）"""
-        self.reset()
-        stack = [[list(nodes), 0]]          # 调用栈：父帧即返回标记
-        while stack and self.steps < max_steps:
-            self.steps += 1
-            frame = stack[-1]
-            lst, idx = frame
-            if idx >= len(lst):
-                # 层级结束：弹返回标记，自动回上层
-                stack.pop()
-                if trace and stack:
-                    self.out('← 块结束，返回上层（弹返回标记，深度 %d）' % len(stack))
-                continue
-            node = lst[idx]
-            frame[1] = idx + 1
-            name, data = node['name'], node['data']
-            if node.get('children'):
-                # 层级推进：压返回标记（父帧已记好下一位置）
-                stack.append([list(node['children']), 0])
-                self.depth = max(self.depth, len(stack))
-                if trace:
-                    self.out('→ 进入 %s（压返回标记，深度 %d）' % (name or '块', len(stack)))
-                continue
-            act = self.exec(name, data, stack)
-            if act == 'end':
-                stack.clear()
-            elif act == 'ret':
-                if trace:
-                    self.out('← ret 返回（弹返回标记，深度 %d）' % max(1, len(stack) - 1))
-                stack.pop()
-        if self.steps >= max_steps:
-            self.out('(达到步数上限，已停止)')
+    def run(self):
+        if not self.out_dock.isVisible():
+            self.out_dock.setVisible(True)
+        self.out.clear()
+        toks = flatten(self.nodes)
+        self.out.append("--- 运行 %d 个 token（树形层级 + 返回标记）---" % len(toks))
+        self.vm.out = self.out.append
+        self.vm.run(self.nodes)      # 树形层级执行（带返回标记）
+        self.status.setText("运行结束，共 %d 步，最大层级 %d" % (self.vm.steps, self.vm.depth))
 
     def toggle_side(self):
         self.side.setVisible(not self.side.isVisible())

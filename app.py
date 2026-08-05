@@ -220,6 +220,7 @@ class App(QMainWindow):
         self.g = NodeGraph(); self.g.register_node(TokNode)
         self.g.set_background_color(15, 18, 24)   # #0f1218 Singularity 深色
         self.view = self.g.widget; self._items = {}
+        self.setCentralWidget(self.view)   # 关键：把图挂到窗口中央
         self.g.node_double_clicked.connect(self.dbl)
         self.g.nodes_deleted.connect(self.deled)
         self._ui()
@@ -422,6 +423,9 @@ class App(QMainWindow):
         self.side = QDockWidget("服务器 data（双击添加）", self)
         self.side.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.listw = QListWidget()
+        self.listw.setStyleSheet("QListWidget{background:#131926;color:#b9c7e4;border:none;font-family:Consolas;}"
+                                  "QListWidget::item{padding:2px 4px;}"
+                                  "QListWidget::item:selected{background:#26314d;}")
         self.listw.itemDoubleClicked.connect(lambda _: self.add_viewer())
         self.side.setWidget(self.listw)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.side)

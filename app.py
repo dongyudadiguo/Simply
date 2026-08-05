@@ -44,23 +44,6 @@ def guess_template():
         ("print", "小了"), ("jmp", "main"),
     ]
 
-# ---------- SVG 图标（QSvgRenderer 渲染，零手写解析） ----------
-ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
-ICON_MAP = {"read": "var_read_payload", "set": "var_set_payload", "int": "const_payload",
-            "inc": "add", "add": "add", "sub": "sub", "mul": "mul", "div": "div",
-            "rand": "f32_const", "eq": "cond_payload", "gt": "cond_payload", "lt": "cond_payload",
-            "ifz": "cond_payload", "jmp": "jump_payload", "nop": "key_pressed",
-            "print": "exec", "input": "key_down", "net": "globe", "end": "end"}
-_icon_cache = {}
-def icon_pix(name, size=22):
-    key = (name, size)
-    if key not in _icon_cache:
-        f = os.path.join(ICON_DIR, ICON_MAP.get(name, "label") + ".svg")
-        pm = QPixmap(size, size); pm.fill(Qt.transparent)
-        p = QPainter(pm); QSvgRenderer(f).render(p); p.end()
-        _icon_cache[key] = pm
-    return _icon_cache[key]
-
 # ---------- 数据模型 ----------
 def new_node(name, data="", x=0.0, y=0.0):
     return {"name": name, "data": data, "x": x, "y": y, "children": [], "collapsed": False}
@@ -71,10 +54,6 @@ def wrap_block(title, tokens, x=40.0, y=40.0):
         blk["children"].append(new_node(nm, dt, x + 20, y + (i + 1) * 60))
     return blk
 
-def block_height(node):
-    if not node.get("children"): return 64
-    if node.get("collapsed"): return 40
-    return 40 + len(node["children"]) * 34
 
 def ordered(nodes):
     out = []
@@ -92,6 +71,25 @@ def flatten(nodes):
 # ---------- 迷你 VM（与旧版一致，input 可注入） ----------
 class VM:
     """树形 VM：层级推进自动压返回标记，块结束/ret 自动弹标记返回上层（参考 Singularity vmstate/vmexec）"""
+    # 数据驱动指令表（一行一指令）
+    OPS = {
+        'int':   lambda v, d: v.vars.setdefault(d, 0),
+        'set':   lambda v, d: v.vars.__setitem__(d, v.pop()),
+        'read':  lambda v, d: v.stack.append(v.vars.get(d, 0)),
+        'inc':   lambda v, d: v.vars.__setitem__(d, v.vars.get(d, 0) + 1),
+        'add':   lambda v, d: v.stack.append(v.pop() + v.pop()),
+        'sub':   lambda v, d: v.stack.append((lambda a, b: b - a)(v.pop(), v.pop())),
+        'mul':   lambda v, d: v.stack.append(v.pop() * v.pop()),
+        'div':   lambda v, d: v.stack.append((lambda a, b: b // a if a else 0)(v.pop(), v.pop())),
+        'rand':  lambda v, d: v.stack.append(random.randint(1, int(d or 100))),
+        'eq':    lambda v, d: v.stack.append(1 if v.pop() == v.pop() else 0),
+        'gt':    lambda v, d: v.stack.append((lambda a, b: 1 if b > a else 0)(v.pop(), v.pop())),
+        'lt':    lambda v, d: v.stack.append((lambda a, b: 1 if b < a else 0)(v.pop(), v.pop())),
+        'print': lambda v, d: v.out(d if d else str(v.pop())),
+        'input': lambda v, d: v.stack.append(next(v._inject) if v._inject else v._ask_int()),
+        'nop':   lambda v, d: None,
+    }
+
     def __init__(self, out=print):
         self.out = out
         self.reset()
@@ -140,65 +138,24 @@ class VM:
                 return i
         return -1
     def exec(self, name, data, stack):
-        v = self.vars
-        if   name == 'int':   v.setdefault(data, 0)
-        elif name == 'set':   v[data] = self.pop()
-        elif name == 'read':  self.stack.append(v.get(data, 0))
-        elif name == 'inc':   v[data] = v.get(data, 0) + 1
-        elif name == 'add':   a, b = self.pop(), self.pop(); self.stack.append(b + a)
-        elif name == 'sub':   a, b = self.pop(), self.pop(); self.stack.append(b - a)
-        elif name == 'mul':   a, b = self.pop(), self.pop(); self.stack.append(b * a)
-        elif name == 'div':   a, b = self.pop(), self.pop(); self.stack.append(b // a if a else 0)
-        elif name == 'rand':  self.stack.append(random.randint(1, int(data or 100)))
-        elif name == 'eq':    a, b = self.pop(), self.pop(); self.stack.append(1 if b == a else 0)
-        elif name == 'gt':    a, b = self.pop(), self.pop(); self.stack.append(1 if b > a else 0)
-        elif name == 'lt':    a, b = self.pop(), self.pop(); self.stack.append(1 if b < a else 0)
-        elif name == 'print':
-            self.out(data if data else str(self.pop()))
-        elif name == 'input':
-            if self._inject is not None:
-                try: val = next(self._inject)
-                except StopIteration: val = 0
-            else:
-                val, ok = QInputDialog.getInt(None, '输入', '请输入数字')
-                val = val if ok else 0
-            self.stack.append(val)
-        elif name == 'ifz':
-            if self.pop() == 0:
-                i = self._find(data, stack[-1][0])
-                if i >= 0: stack[-1][1] = i
-                else: self.out('(跳转目标不存在: ' + data + ')')
-        elif name == 'jmp':
-            i = self._find(data, stack[-1][0])
-            if i >= 0: stack[-1][1] = i
-            else: self.out('(跳转目标不存在: ' + data + ')')
-        elif name == 'ret':
-            return 'ret' if len(stack) > 1 else 'end'
-        elif name == 'end':
-            return 'end'
-        elif name == 'nop':
-            pass
+        fn = self.OPS.get(name)
+        if fn: return fn(self, data)
+        if name == 'ifz':
+            if self.pop() == 0: self._jump(data, stack)
+        elif name == 'jmp': self._jump(data, stack)
+        elif name == 'ret': return 'ret' if len(stack) > 1 else 'end'
+        elif name == 'end': return 'end'
         return None
-
-def prefix_ci_us(name, query):
-    """忽略下划线 + 忽略大小写的前缀匹配：'varread' 也能匹配 'var_read'"""
-    if not query: return False
-    i = j = 0
-    while i < len(name) and j < len(query):
-        x, y = name[i], query[j]
-        if x == '_': i += 1; continue
-        if y == '_': j += 1; continue
-        if x.lower() != y.lower(): return False
-        i += 1; j += 1
-    return j == len(query)
-
-BASE_TOKENS = ['int', 'set', 'read', 'inc', 'add', 'sub', 'mul', 'div', 'rand',
-               'eq', 'gt', 'lt', 'ifz', 'jmp', 'end', 'nop', 'print', 'input',
-               'main', 'notwin', 'loop', 'exit', 'net', '块']
+    def _jump(self, target, stack):
+        i = self._find(target, stack[-1][0])
+        if i >= 0: stack[-1][1] = i
+        else: self.out('(跳转目标不存在: ' + target + ')')
+    def _ask_int(self):
+        val, ok = QInputDialog.getInt(None, '输入', '请输入数字')
+        return val if ok else 0
 
 def collect_completions(nodes):
-    """补全来源：零大小 data 节点（data==''）的名字（参考 Singularity tag 图）。
-    优先级 = 父data优先级 × 位置(1起) × 大小(父data字节数)，返回按优先级降序的名字"""
+    """补全来源：零大小 data 节点（data==''）的名字；优先级=父data优先级×位置×大小"""
     prios = {}
     def walk(ns, parent_prio):
         for i, n in enumerate(ns):

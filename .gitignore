@@ -13,3 +13,7 @@ app_state.json
 _completion_test*
 _qt_test*
 app_err.log
+*.bak_ngq
+_bg_test*
+_ngq_test*
+_pip_install.log

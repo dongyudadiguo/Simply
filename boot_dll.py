@@ -31,9 +31,9 @@ def vote(key, idx):                          # 服务端 op=1：给某条数据�
         s.sendall(b"\x01" + struct.pack("<I", len(key)) + key + struct.pack("<I", idx))
         return struct.unpack("<I", recv_all(s, 4))[0]
 
-def list_keys():                       # 服务端 op=4：列出所有 key
+def list_keys():                       # 服务端 op=4：列出所有 key（需先发空 key 让服务端读完参数）
     with socket.create_connection((HOST, PORT), timeout=3) as s:
-        s.sendall(b"\x04")
+        s.sendall(b"\x04" + struct.pack("<I", 0))
         n = struct.unpack("<I", recv_all(s, 4))[0]
         out = []
         for _ in range(n):

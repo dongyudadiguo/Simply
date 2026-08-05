@@ -8,3 +8,8 @@ __pycache__/
 .agent/.ae_runners/
 id.bin
 app_state.json
+
+# 测试/临时残留（不入库）
+_completion_test*
+_qt_test*
+app_err.log

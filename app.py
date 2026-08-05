@@ -3,10 +3,10 @@
 # 块节点=大卡片内含多个 token 行；服务器存取/投票/查看器逻辑不变
 import copy, json, math, os, random, struct
 from PySide6.QtWidgets import (QApplication, QMainWindow, QCompleter, QGraphicsView, QGraphicsScene,
-    QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QDockWidget, QListWidget,
+    QGraphicsItem, QGraphicsLineItem, QDockWidget, QListWidget, QListWidgetItem,
     QToolBar, QMenu, QLabel, QTextEdit, QLineEdit, QDialog, QFormLayout, QHBoxLayout,
-    QVBoxLayout, QWidget, QPushButton, QMessageBox, QDialogButtonBox, QInputDialog)
-from PySide6.QtGui import QPen, QBrush, QColor, QFont, QPainterPath, QPainter, QPixmap, QAction, QTransform
+    QVBoxLayout, QPushButton, QDialogButtonBox, QInputDialog)
+from PySide6.QtGui import QPen, QColor, QFont, QPainter, QPixmap, QAction
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QStringListModel
 from PySide6.QtSvg import QSvgRenderer
 import boot_dll
@@ -91,13 +91,6 @@ def ordered(nodes):
 
 def flatten(nodes):
     return [(n["name"], n["data"]) for n in ordered(nodes)]
-
-def subtree(n):
-    out = [n]
-    for c in n.get("children", []):
-        out += subtree(c)
-    return out
-
 
 # ---------- 迷你 VM（与旧版一致，input 可注入） ----------
 class VM:
@@ -492,8 +485,7 @@ class App(QMainWindow):
             bw = BW if b.get("children") else 200
             pa = QPointF(a["x"] + aw / 2, a["y"])
             pb = QPointF(b["x"] - bw / 2, b["y"])
-            path = QPainterPath(pa); path.lineTo(pb)
-            e = QGraphicsPathItem(path)
+            e = QGraphicsLineItem(pa.x(), pa.y(), pb.x(), pb.y())
             e.setPen(QPen(EDGE, 2))
             self.scene.addItem(e); self.edge_items.append(e)
 
@@ -562,17 +554,13 @@ class App(QMainWindow):
             self.dirty = True; self.refresh_graph()
 
     def edit_block(self, node):
-        d = QDialog(self); d.setWindowTitle("编辑块")
-        f = QFormLayout(d)
-        e1 = CompleteLineEdit(node["name"], lambda: collect_completions(self.nodes))
-        f.addRow("块名", e1)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(d.accept); bb.rejected.connect(d.reject)
-        f.addRow(bb)
-        if d.exec() == QDialog.Accepted:
+        # 轮子：QInputDialog 单行输入
+        name, ok = QInputDialog.getText(self, "编辑块", "块名", text=node["name"])
+        if ok and name.strip():
             self.snapshot()
-            node["name"] = e1.text().strip() or "块"
+            node["name"] = name.strip() or "块"
             self.dirty = True; self.refresh_graph()
+
 
     def snapshot(self):
         self.undo_stack.append(copy.deepcopy(self.nodes))
@@ -608,61 +596,56 @@ class App(QMainWindow):
             name = e.text().strip()
             if name: self.add_node(name, "", parent=parent)
     def net_dialog(self, node):
-        """网络节点：查看/浏览服务器 key，可载入编辑器或设为节点 key（对应历史版 599a843）"""
-        d = QDialog(self); d.setWindowTitle("网络节点 - 查看服务器")
-        d.resize(600, 440)
+        """网络节点：查看/浏览服务器 key（QListWidgetItem+UserRole 存结构化数据）"""
+        d = QDialog(self); d.setWindowTitle("网络节点 - 查看服务器"); d.resize(600, 440)
         lay = QVBoxLayout(d)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("key:"))
-        ekey = QLineEdit(node.get("data", ""))
-        ekey.setPlaceholderText("key（留空 = 零data 空key）")
-        row.addWidget(ekey, 1)
-        lay.addLayout(row)
-        lb = QListWidget()
-        lay.addWidget(lb, 1)
-        status = QLabel(""); status.setStyleSheet("color:#8fa3c8;")
-        lay.addWidget(status)
+        row = QHBoxLayout(); row.addWidget(QLabel("key:"))
+        ekey = QLineEdit(node.get("data", "")); ekey.setPlaceholderText("key（留空 = 零data 空key）")
+        row.addWidget(ekey, 1); lay.addLayout(row)
+        lb = QListWidget(); lay.addWidget(lb, 1)
+        status = QLabel(""); status.setStyleSheet("color:#8fa3c8;"); lay.addWidget(status)
+        def add(txt, payload=None):
+            it = QListWidgetItem(txt)
+            if payload is not None: it.setData(Qt.UserRole, payload)
+            lb.addItem(it)
         def refresh():
             lb.clear()
             k = ekey.text().encode("utf-8")
             try:
                 toks = decode(boot_dll.fetch(k)) if k else []
-                if not toks: lb.addItem("(空块)")
+                if not toks: add("(空块)")
                 for nm, dt in toks:
-                    lb.addItem(nm + ("  |  " + dt if dt else ""))
+                    add(nm + ("  |  " + dt if dt else ""), ("tok", nm, dt))
                 status.setText("已取回 %d 个 token" % len(toks))
             except Exception:
-                lb.addItem("(服务器无此 key 的数据)")
-                status.setText("key 无数据")
+                add("(服务器无此 key 的数据)"); status.setText("key 无数据")
         def browse():
             lb.clear()
             try:
                 keys = boot_dll.list_keys()
-                if not keys: lb.addItem("(服务器为空)")
+                if not keys: add("(服务器为空)")
                 for k, c in keys:
-                    lb.addItem("[%d条] %s" % (c, k.decode("utf-8", "replace") or "<空 key>"))
+                    add("[%d条] %s" % (c, k.decode("utf-8", "replace") or "<空 key>"),
+                        ("key", k.decode("utf-8", "replace")))
                 status.setText("共 %d 个 key" % len(keys))
             except Exception as ex:
                 status.setText("浏览失败: %s" % ex)
         def use_selected():
             it = lb.currentItem()
             if not it: return
-            txt = it.text()
-            if " | " in txt: txt = txt.split(" | ", 1)[0]
-            if txt.startswith("[") and "条] " in txt: txt = txt.split("] ", 1)[1]
-            ekey.setText(txt); refresh()
+            p = it.data(Qt.UserRole)
+            ekey.setText(p[1] if p else it.text())
+            refresh()
         def load_into_editor():
             k = ekey.text().encode("utf-8")
             try:
                 toks = decode(boot_dll.fetch(k)) if k else []
-                if not toks:
-                    status.setText("空块，无法载入"); return
+                if not toks: status.setText("空块，无法载入"); return
                 self.snapshot()
                 c = self.view.mapToScene(self.view.viewport().rect().center())
                 for i, (nm, dt) in enumerate(toks):
                     self.nodes.append(new_node(nm, dt, c.x() + (i % 6) * 30, c.y() + (i // 6) * 30))
-                node["data"] = ekey.text()
-                self.dirty = True; self.refresh_graph()
+                node["data"] = ekey.text(); self.dirty = True; self.refresh_graph()
                 status.setText("已载入 %d 个 token 到编辑器" % len(toks))
             except Exception:
                 status.setText("载入失败：服务器无此 key")
@@ -674,6 +657,7 @@ class App(QMainWindow):
             b = QPushButton(t); b.clicked.connect(fn); btns.addWidget(b)
         lay.addLayout(btns)
         d.exec()
+
 
     def del_node(self, node):
         self.snapshot()
@@ -719,14 +703,16 @@ class App(QMainWindow):
             label = "<空 key> 零data" if not k else k.decode("utf-8", "replace")[:20]
             self.listw.addItem("\u25b8 " + label + "（" + str(len(toks)) + "）")
             for nm, dt in toks:
-                self.listw.addItem("   " + nm + ("  |  " + dt if dt else ""))
+                it = QListWidgetItem("   " + nm + ("  |  " + dt if dt else ""))
+                it.setData(Qt.UserRole, (nm, dt))
+                self.listw.addItem(it)
         self.listw.addItem("---- %d 组 ----" % len(self.viewer_groups()))
 
     def viewer_add(self):
         it = self.listw.currentItem()
-        if it and " | " in it.text():
-            tok, dat = it.text().strip().split(" | ", 1)
-            self.add_node(tok, dat)
+        p = it.data(Qt.UserRole) if it else None
+        if p:
+            self.add_node(*p)
 
     # ---------- 布局 ----------
     def auto_layout(self):

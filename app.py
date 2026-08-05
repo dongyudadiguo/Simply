@@ -1,498 +1,291 @@
-# app.py —— Simply Token 节点图编辑器（NodeGraphQt 轮子版）
-# 节点显示/缩放/平移/连线/右键菜单全用 NodeGraphQt 库；数据/VM/补全/网络/存取逻辑不变
+# app.py —— Simply Token 节点图编辑器（最小实现：NodeGraphQt + QCompleter，逻辑不变）
 import copy, json, os, random, struct
-from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QListWidget,
-    QToolBar, QMenu, QLabel, QTextEdit, QLineEdit, QDialog, QFormLayout, QHBoxLayout,
-    QVBoxLayout, QPushButton, QDialogButtonBox, QInputDialog, QListWidgetItem)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QListWidget, QToolBar,
+    QMenu, QLabel, QTextEdit, QLineEdit, QDialog, QVBoxLayout, QFormLayout, QPushButton,
+    QDialogButtonBox, QInputDialog, QListWidgetItem, QCompleter)
 from PySide6.QtCore import Qt, QTimer, QStringListModel
 from PySide6.QtGui import QAction
 from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget
 import boot_dll
 
-def encode(tokens):
-    out = b""
-    for name, data in tokens:
-        nb, db = name.encode(), data.encode()
-        out += struct.pack("<I", len(nb)) + nb + struct.pack("<I", len(db)) + db
-    return out + b"\x00\x00\x00\x00"
+STATE = "app_state.json"
+
+# ---------- 服务器协议 ----------
+def encode(ts):
+    o = b""
+    for n, d in ts:
+        nb, db = n.encode(), d.encode()
+        o += struct.pack("<I", len(nb)) + nb + struct.pack("<I", len(db)) + db
+    return o + b"\x00\x00\x00\x00"
 
 def decode(blk):
-    tokens, i = [], 0
+    ts, i = [], 0
     while i + 4 <= len(blk):
-        n = struct.unpack("<I", blk[i:i + 4])[0]; i += 4
-        if n == 0: break
-        name = blk[i:i + n].decode("utf-8", "replace"); i += n
+        n = struct.unpack("<I", blk[i:i+4])[0]; i += 4
+        if not n: break
+        name = blk[i:i+n].decode("utf-8", "replace"); i += n
         if i + 4 > len(blk): break
-        d = struct.unpack("<I", blk[i:i + 4])[0]; i += 4
-        data = blk[i:i + d].decode("utf-8", "replace"); i += d
-        tokens.append((name, data))
-    return tokens
+        d = struct.unpack("<I", blk[i:i+4])[0]; i += 4
+        ts.append((name, blk[i:i+d].decode("utf-8", "replace"))); i += d
+    return ts
 
-def guess_template():
-    return [
-        ("int", "target"), ("int", "guess"), ("int", "tries"),
-        ("rand", "100"), ("set", "target"),
-        ("print", "已生成 1-100 的随机数，开始猜吧！"),
-        ("main", ""),
-        ("inc", "tries"), ("input", ""), ("set", "guess"),
-        ("read", "guess"), ("read", "target"), ("eq", ""), ("ifz", "notwin"),
-        ("print", "猜中了！用了 "), ("read", "tries"), ("print", ""), ("end", ""),
-        ("notwin", ""),
-        ("read", "guess"), ("read", "target"), ("gt", ""), ("ifz", "lower"),
-        ("print", "大了"), ("jmp", "main"),
-        ("lower", ""),
-        ("print", "小了"), ("jmp", "main"),
-    ]
+GUESS = [("int","target"),("int","guess"),("int","tries"),("rand","100"),("set","target"),
+         ("print","已生成 1-100 的随机数，开始猜吧！"),("main",""),("inc","tries"),("input",""),
+         ("set","guess"),("read","guess"),("read","target"),("eq",""),("ifz","notwin"),
+         ("print","猜中了！用了 "),("read","tries"),("print",""),("end",""),("notwin",""),
+         ("read","guess"),("read","target"),("gt",""),("ifz","lower"),("print","大了"),
+         ("jmp","main"),("lower",""),("print","小了"),("jmp","main")]
 
 # ---------- 数据模型 ----------
-def new_node(name, data="", x=0.0, y=0.0):
-    return {"name": name, "data": data, "x": x, "y": y, "children": [], "collapsed": False}
+def node(n, d="", x=0.0, y=0.0, kids=None):
+    return {"name": n, "data": d, "x": x, "y": y, "children": kids or []}
 
-def wrap_block(title, tokens, x=40.0, y=40.0):
-    blk = new_node(title, "", x, y)
-    for i, (nm, dt) in enumerate(tokens):
-        blk["children"].append(new_node(nm, dt, x + 20, y + (i + 1) * 60))
-    return blk
+def wrap(title, ts):
+    b = node(title, "", 40, 40)
+    b["children"] = [node(n, d, 60, 100 + i * 60) for i, (n, d) in enumerate(ts)]
+    return b
 
-
-def ordered(nodes):
+def ordered(ns):
     out = []
     def vis(n):
-        out.append(n)                 # collapsed 只是视图状态，不影响保存/执行顺序
-        for c in sorted(n.get("children", []), key=lambda x: (x["y"], id(x))):
-            vis(c)
-    for n in sorted(nodes, key=lambda x: (x["y"], id(x))):
-        vis(n)
+        out.append(n)
+        for c in sorted(n.get("children", []), key=lambda x: (x["y"], id(x))): vis(c)
+    for n in sorted(ns, key=lambda x: (x["y"], id(x))): vis(n)
     return out
 
-def flatten(nodes):
-    return [(n["name"], n["data"]) for n in ordered(nodes)]
+def flatten(ns): return [(n["name"], n["data"]) for n in ordered(ns)]
 
-# ---------- 迷你 VM（与旧版一致，input 可注入） ----------
-class VM:
-    """树形 VM：层级推进自动压返回标记，块结束/ret 自动弹标记返回上层（参考 Singularity vmstate/vmexec）"""
-    # 数据驱动指令表（一行一指令）
-    OPS = {
-        'int':   lambda v, d: v.vars.setdefault(d, 0),
-        'set':   lambda v, d: v.vars.__setitem__(d, v.pop()),
-        'read':  lambda v, d: v.stack.append(v.vars.get(d, 0)),
-        'inc':   lambda v, d: v.vars.__setitem__(d, v.vars.get(d, 0) + 1),
-        'add':   lambda v, d: v.stack.append(v.pop() + v.pop()),
-        'sub':   lambda v, d: v.stack.append((lambda a, b: b - a)(v.pop(), v.pop())),
-        'mul':   lambda v, d: v.stack.append(v.pop() * v.pop()),
-        'div':   lambda v, d: v.stack.append((lambda a, b: b // a if a else 0)(v.pop(), v.pop())),
-        'rand':  lambda v, d: v.stack.append(random.randint(1, int(d or 100))),
-        'eq':    lambda v, d: v.stack.append(1 if v.pop() == v.pop() else 0),
-        'gt':    lambda v, d: v.stack.append((lambda a, b: 1 if b > a else 0)(v.pop(), v.pop())),
-        'lt':    lambda v, d: v.stack.append((lambda a, b: 1 if b < a else 0)(v.pop(), v.pop())),
-        'print': lambda v, d: v.out(d if d else str(v.pop())),
-        'input': lambda v, d: v.stack.append(next(v._inject) if v._inject else v._ask_int()),
-        'nop':   lambda v, d: None,
-    }
+# ---------- 输入补全（Singularity str_prefix_ci_us + QCompleter 轮子） ----------
+def prefix(name, q):
+    if not q: return False
+    i = j = 0
+    while i < len(name) and j < len(q):
+        if name[i] == "_": i += 1; continue
+        if q[j] == "_": j += 1; continue
+        if name[i].lower() != q[j].lower(): return False
+        i += 1; j += 1
+    return j == len(q)
 
-    def __init__(self, out=print):
-        self.out = out
-        self.reset()
-    def reset(self):
-        self.vars, self.stack, self.steps, self.depth = {}, [], 0, 0
-        self._inject = None
-    def pop(self):
-        return self.stack.pop() if self.stack else 0
-    def run(self, nodes, max_steps=1000, trace=True):
-        """nodes: 根节点树（每个节点含 name/data/children）"""
-        self.reset()
-        stack = [[list(nodes), 0]]          # 调用栈：父帧即返回标记
-        while stack and self.steps < max_steps:
-            self.steps += 1
-            frame = stack[-1]
-            lst, idx = frame
-            if idx >= len(lst):
-                # 层级结束：弹返回标记，自动回上层
-                stack.pop()
-                if trace and stack:
-                    self.out('← 块结束，返回上层（弹返回标记，深度 %d）' % len(stack))
-                continue
-            node = lst[idx]
-            frame[1] = idx + 1
-            name, data = node['name'], node['data']
-            if node.get('children'):
-                # 层级推进：压返回标记（父帧已记好下一位置）
-                stack.append([list(node['children']), 0])
-                self.depth = max(self.depth, len(stack))
-                if trace:
-                    self.out('→ 进入 %s（压返回标记，深度 %d）' % (name or '块', len(stack)))
-                continue
-            act = self.exec(name, data, stack)
-            if act == 'end':
-                stack.clear()
-            elif act == 'ret':
-                if trace:
-                    self.out('← ret 返回（弹返回标记，深度 %d）' % max(1, len(stack) - 1))
-                stack.pop()
-        if self.steps >= max_steps:
-            self.out('(达到步数上限，已停止)')
-    def _find(self, target, nodes):
-        """在当前层节点里找标签"""
-        for i, n in enumerate(nodes):
-            if n['name'] == target:
-                return i
-        return -1
-    def exec(self, name, data, stack):
-        fn = self.OPS.get(name)
-        if fn: return fn(self, data)
-        if name == 'ifz':
-            if self.pop() == 0: self._jump(data, stack)
-        elif name == 'jmp': self._jump(data, stack)
-        elif name == 'ret': return 'ret' if len(stack) > 1 else 'end'
-        elif name == 'end': return 'end'
-        return None
-    def _jump(self, target, stack):
-        i = self._find(target, stack[-1][0])
-        if i >= 0: stack[-1][1] = i
-        else: self.out('(跳转目标不存在: ' + target + ')')
-    def _ask_int(self):
-        val, ok = QInputDialog.getInt(None, '输入', '请输入数字')
-        return val if ok else 0
+BASE = ["int","set","read","inc","add","sub","mul","div","rand","eq","gt","lt",
+        "ifz","jmp","ret","end","nop","print","input","main","notwin","loop","exit","net","块"]
 
-def collect_completions(nodes):
-    """补全来源：零大小 data 节点（data==''）的名字；优先级=父data优先级×位置×大小"""
+def completions(nodes):
     prios = {}
-    def walk(ns, parent_prio):
+    def walk(ns, pp):
         for i, n in enumerate(ns):
-            pos = i + 1
-            data = n.get('data', '')
-            psize = len(data.encode('utf-8')) if data else 0
-            child_prio = parent_prio * pos * max(1, psize)   # 父data优先级 × 位置 × 大小
-            if data == '' and n.get('name'):
-                prios[n['name']] = max(prios.get(n['name'], 0), child_prio)
-            if n.get('children'):
-                walk(n['children'], child_prio)
+            d = n["data"]
+            cp = pp * (i + 1) * max(1, len(d.encode()) if d else 0)   # 父data优先级×位置×大小
+            if not d and n["name"]: prios[n["name"]] = max(prios.get(n["name"], 0), cp)
+            if n["children"]: walk(n["children"], cp)
     walk(nodes, 1.0)
-    if not prios:
-        return list(BASE_TOKENS)      # 文档无零大小data时退回基础表
-    return [k for k, _ in sorted(prios.items(), key=lambda x: -x[1])]
+    return sorted(prios, key=lambda k: -prios[k]) or list(BASE)
 
-class CompleteLineEdit(QLineEdit):
-    """输入补全：QCompleter 轮子（弹窗跟随光标/上下键/回车/Esc 全内置）+ 预过滤 + 空格插入"""
-    def __init__(self, text='', source=None):
+class CompleteEdit(QLineEdit):
+    def __init__(self, text="", source=None):
         super().__init__(text)
-        self._source = source or (lambda: BASE_TOKENS)
-        self._model = QStringListModel(self)
-        self._comp = QCompleter(self._model, self)
-        self._comp.setCaseSensitivity(Qt.CaseInsensitive)
-        self._comp.setCompletionMode(QCompleter.PopupCompletion)
-        self.setCompleter(self._comp)
-        self.textChanged.connect(self._refresh)
-    def _refresh(self, q):
-        if not q:
-            self._comp.popup().hide(); return
-        # 预过滤（prefix_ci_us 忽略下划线+大小写），优先级顺序保留，QCompleter 只负责弹窗
-        self._model.setStringList([n for n in self._source() if prefix_ci_us(n, q)][:64])
-        self._comp.complete()
+        self._src = source or (lambda: BASE)
+        self._m = QStringListModel(self)
+        self._c = QCompleter(self._m, self)
+        self._c.setCompletionMode(QCompleter.PopupCompletion)
+        self.setCompleter(self._c)
+        self.textChanged.connect(self._r)
+    def _r(self, q):
+        if not q: self._c.popup().hide(); return
+        self._m.setStringList([n for n in self._src() if prefix(n, q)][:64])
+        self._c.complete()
     def keyPressEvent(self, e):
-        # 空格插入当前补全
-        if e.key() == Qt.Key_Space and self._comp.popup().isVisible():
-            txt = self._comp.currentCompletion()
-            if txt:
-                self.setText(txt)
-                self.setCursorPosition(len(txt))
-                return
+        if e.key() == Qt.Key_Space and self._c.popup().isVisible():
+            t = self._c.currentCompletion()
+            if t: self.setText(t); self.setCursorPosition(len(t)); return
         super().keyPressEvent(e)
 
+# ---------- VM（树形层级 + 返回标记，数据驱动 OPS） ----------
+class VM:
+    def __init__(self, out=print): self.out = out; self.reset()
+    def reset(self): self.vars, self.stack, self.steps, self.depth = {}, [], 0, 0; self._inject = None
+    def pop(self): return self.stack.pop() if self.stack else 0
+    OPS = {
+        "int":   lambda v, d: v.vars.setdefault(d, 0),
+        "set":   lambda v, d: v.vars.__setitem__(d, v.pop()),
+        "read":  lambda v, d: v.stack.append(v.vars.get(d, 0)),
+        "inc":   lambda v, d: v.vars.__setitem__(d, v.vars.get(d, 0) + 1),
+        "add":   lambda v, d: v.stack.append(v.pop() + v.pop()),
+        "sub":   lambda v, d: v.stack.append((lambda a, b: b - a)(v.pop(), v.pop())),
+        "mul":   lambda v, d: v.stack.append(v.pop() * v.pop()),
+        "div":   lambda v, d: v.stack.append((lambda a, b: b // a if a else 0)(v.pop(), v.pop())),
+        "rand":  lambda v, d: v.stack.append(random.randint(1, int(d or 100))),
+        "eq":    lambda v, d: v.stack.append(1 if v.pop() == v.pop() else 0),
+        "gt":    lambda v, d: v.stack.append((lambda a, b: 1 if b > a else 0)(v.pop(), v.pop())),
+        "lt":    lambda v, d: v.stack.append((lambda a, b: 1 if b < a else 0)(v.pop(), v.pop())),
+        "print": lambda v, d: v.out(d if d else str(v.pop())),
+        "input": lambda v, d: v.stack.append(next(v._inject) if v._inject else v._ask()),
+        "nop":   lambda v, d: None,
+    }
 
-# ---------- NodeGraphQt 节点（库渲染，零手写绘制） ----------
-class NodeListWidget(NodeBaseWidget):
-    """把 QListWidget 包装成 NodeGraphQt 可挂载的节点部件"""
+    def run(self, nodes, max_steps=1000, trace=True):
+        self.reset()
+        st = [[list(nodes), 0]]                                  # 调用栈：父帧即返回标记
+        while st and self.steps < max_steps:
+            self.steps += 1
+            f = st[-1]; lst, i = f
+            if i >= len(lst):                                   # 层级结束：弹返回标记回上层
+                st.pop()
+                if trace and st: self.out("← 块结束，返回上层（弹返回标记，深度 %d）" % len(st))
+                continue
+            n = lst[i]; f[1] = i + 1
+            if n["children"]:                                   # 层级推进：压返回标记
+                st.append([list(n["children"]), 0]); self.depth = max(self.depth, len(st))
+                if trace: self.out("→ 进入 %s（压返回标记，深度 %d）" % (n["name"] or "块", len(st)))
+                continue
+            act = self.exec(n["name"], n["data"], st)
+            if act == "end": st.clear()
+            elif act == "ret":
+                if trace: self.out("← ret 返回（弹返回标记，深度 %d）" % max(1, len(st) - 1))
+                st.pop()
+        if self.steps >= max_steps: self.out("(达到步数上限，已停止)")
+    def exec(self, name, data, st):
+        fn = self.OPS.get(name)
+        if fn: return fn(self, data)
+        if name == "ifz":
+            if self.pop() == 0: self._jump(data, st)
+        elif name == "jmp": self._jump(data, st)
+        elif name == "ret": return "ret" if len(st) > 1 else "end"
+        elif name == "end": return "end"
+        return None
+    def _jump(self, t, st):
+        i = self._find(t, st[-1][0])
+        if i >= 0: st[-1][1] = i
+        else: self.out("(跳转目标不存在: " + t + ")")
+    def _find(self, t, ns):
+        for i, n in enumerate(ns):
+            if n["name"] == t: return i
+        return -1
+    def _ask(self):
+        v, ok = QInputDialog.getInt(None, "输入", "请输入数字")
+        return v if ok else 0
+
+# ---------- NodeGraphQt 节点（库渲染） ----------
+class NodeList(NodeBaseWidget):
     def __init__(self, parent=None):
         super().__init__(parent, "children")
-        self._widget = QListWidget()
-        self.set_custom_widget(self._widget)
+        self._w = QListWidget(); self.set_custom_widget(self._w)
     def get_value(self): return ""
-    def set_value(self, text): pass
-    def list_widget(self): return self._widget
+    def set_value(self, t): pass
+    def lw(self): return self._w
 
 class TokNode(BaseNode):
-    """每个 token/块 = 一个图节点；块动态挂子 token 列表（库渲染，零手写绘制）"""
-    __identifier__ = "simply"
-    NODE_NAME = "token"
+    __identifier__ = "simply"; NODE_NAME = "token"
     def __init__(self):
-        super().__init__()
-        self._node = None            # 反向引用 dict 节点
-        self._app = None
-        self._kids = None            # 块节点才有
-        self.add_input("in")
-        self.add_output("out")
+        super().__init__(); self._n = None; self._app = None; self._kids = None
+        self.add_input("in"); self.add_output("out")
         self.add_text_input("data", "data", tab="内容")
-    def refresh_kids(self):
-        if self._kids is None or self._node is None: return
-        lw = self._kids.list_widget()
-        lw.clear()
-        for c in sorted(self._node.get("children", []), key=lambda x: (x["y"], id(x))):
-            it = QListWidgetItem("  " + c["name"] + ("  |  " + c["data"] if c["data"] else ""))
-            it.setData(Qt.UserRole, c)
-            lw.addItem(it)
-        lw.itemDoubleClicked.connect(lambda it: self._app and self._app.edit_token(it.data(Qt.UserRole)))
+    def show_kids(self):
+        if self._kids is None and self._n and self._n["children"]:
+            self._kids = NodeList(); self.add_custom_widget(self._kids, "children", tab="内容")
+        if self._kids:
+            w = self._kids.lw(); w.clear()
+            for c in sorted(self._n["children"], key=lambda x: (x["y"], id(x))):
+                it = QListWidgetItem("  " + c["name"] + ("  |  " + c["data"] if c["data"] else ""))
+                it.setData(Qt.UserRole, c); w.addItem(it)
+            w.itemDoubleClicked.connect(lambda it: self._app and self._app.edit(it.data(Qt.UserRole)))
 
-STATE = "app_state.json"          # 本地布局保存
-
-# ---------- 主窗口（NodeGraphQt 轮子） ----------
+# ---------- 主窗口 ----------
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Simply Token 节点图编辑器（NodeGraphQt）")
-        self.resize(1280, 800)
-        self.nodes, self.key = [], b""
-        self.dirty, self.undo_stack = False, []
+        self.setWindowTitle("Simply Token 节点图编辑器"); self.resize(1280, 800)
+        self.nodes, self.key, self.dirty, self.undo_stack = [], b"", False, []
         self.vm = VM()
-        self.graph = NodeGraph()
-        self.graph.register_node(TokNode)
-        self.view = self.graph.widget
-        self._items = {}
-        self.graph.node_double_clicked.connect(self._on_double_click)
-        self.graph.nodes_deleted.connect(self._on_nodes_deleted)
-        self.build_ui()
-        self.load()
-        self.refresh_graph()
-        QTimer.singleShot(3000, self.after_loop)
-
-    def build_ui(self):
-        bar = QToolBar(); bar.setMovable(False); self.addToolBar(bar)
-        def act(t, fn):
-            a = QAction(t, self); a.triggered.connect(fn); bar.addAction(a); return a
-        act("保存", self.save); act("运行", self.run)
-        m = QMenu(self)
-        addm = m.addMenu("添加")
-        for label, names in [("变量", ["int", "set", "read", "inc"]),
-                             ("运算", ["add", "sub", "mul", "div", "rand", "eq", "gt", "lt"]),
-                             ("控制", ["ifz", "jmp", "ret", "end", "nop"]),
-                             ("交互", ["print", "input"]),
-                             ("标签", ["main", "notwin", "loop", "exit"]),
-                             ("网络", ["net"])]:
-            sub = addm.addMenu(label)
-            for nm in names:
-                sub.addAction(nm, lambda k=nm: self.add_node(k))
-        addm.addAction("新建块", self.add_block)
-        for t, fn in [("加载", self.load), ("载入猜数字示例", self.load_template),
-                      ("自动布局", self.auto_layout), ("撤销", self.undo),
-                      ("快速添加 token（补全）", self.quick_add_token),
-                      ("服务器查看器", self.toggle_side), ("输出面板", self.toggle_out)]:
-            m.addAction(t, fn)
-        bar.addAction("\u2630", m.popup)
-        self.status = QLabel(""); bar.addWidget(self.status)
-
-        self.side = QDockWidget("服务器 data（双击添加）", self)
-        self.side.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-        self.listw = QListWidget()
-        self.listw.itemDoubleClicked.connect(lambda _: self.viewer_add())
-        self.side.setWidget(self.listw)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.side)
-        self.side.setVisible(False)
-
-        self.out_dock = QDockWidget("输出", self)
-        self.out = QTextEdit(); self.out.setReadOnly(True)
-        self.out.setMaximumHeight(160)
-        self.out.setStyleSheet("background:#0d0f16;color:#9ece6a;font-family:Consolas;")
-        self.out_dock.setWidget(self.out)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.out_dock)
-        self.out_dock.setVisible(False)
-
-    def log(self, s):
-        self.out.append(s)
-
-    # ---------- 场景（NodeGraphQt：建节点/连线/删除全内置） ----------
-    def refresh_graph(self):
-        g = self.graph
-        for n in list(g.all_nodes()):
-            g.delete_node(n)
+        self.g = NodeGraph(); self.g.register_node(TokNode)
+        self.view = self.g.widget; self._items = {}
+        self.g.node_double_clicked.connect(self.dbl)
+        self.g.nodes_deleted.connect(self.deled)
+        self._ui()
+        self.load(); self.refresh(); QTimer.singleShot(3000, self.loop)
+# 场景
+    def refresh(self):
+        for n in list(self.g.all_nodes()): self.g.delete_node(n)
         self._items = {}
         for n in self.nodes:
-            tn = g.create_node("simply.TokNode", name=n["name"])
-            tn._node = n; tn._app = self
-            tn.set_property("data", n["data"])
-            tn.set_pos(n["x"], n["y"])
-            if n.get("children") and tn._kids is None:
-                tn._kids = NodeListWidget()
-                tn.add_custom_widget(tn._kids, "children", tab="内容")
-            tn.refresh_kids()
-            self._items[id(n)] = tn
-        roots = sorted(self.nodes, key=lambda x: (x["y"], id(x)))
-        for i in range(len(roots) - 1):
-            self._items[id(roots[i])].output(0).connect_to(self._items[id(roots[i + 1])].input(0))
-        self.status.setText("%d 根 / %d token | %s" % (len(self.nodes), len(ordered(self.nodes)),
-                             "未保存" if self.dirty else ""))
-
-    def sync_positions(self):
+            t = self.g.create_node("simply.TokNode", name=n["name"])
+            t._n = n; t._app = self; t.set_property("data", n["data"]); t.set_pos(n["x"], n["y"])
+            t.show_kids(); self._items[id(n)] = t
+        r = sorted(self.nodes, key=lambda x: (x["y"], id(x)))
+        for i in range(len(r) - 1):
+            self._items[id(r[i])].output(0).connect_to(self._items[id(r[i + 1])].input(0))
+        self.status.setText("%d 根 / %d token%s" % (len(self.nodes), len(ordered(self.nodes)),
+                             " 未保存" if self.dirty else ""))
+    def sync(self):
         for n in self.nodes:
-            tn = self._items.get(id(n))
-            if tn is None: continue
-            try: n['x'], n['y'] = tn.pos()
+            t = self._items.get(id(n))
+            if not t: continue
+            try: n["x"], n["y"] = t.pos()
             except Exception: pass
-            try: n['data'] = tn.get_property('data') or n['data']
+            try: n["data"] = t.get_property("data") or n["data"]
             except Exception: pass
-
-    def _on_double_click(self, node):
-        n = getattr(node, "_node", None)
-        if n is None: return
-        if n.get("children"): self.edit_block(n)
-        else: self.edit_token(n)
-
-    def _on_nodes_deleted(self, nodes):
-        removed = {id(getattr(n, "_node", None)) for n in nodes if getattr(n, "_node", None)}
-        if not removed: return
-        self.snapshot()
-        self.nodes = [n for n in self.nodes if id(n) not in removed]
-        for n in self.nodes:
-            n["children"] = [c for c in n.get("children", []) if id(c) not in removed]
-        self.dirty = True; self.refresh_graph()
-
-    # ---------- 布局 ----------
-    def auto_layout(self):
-        if not self.nodes: return
-        self.snapshot()
-        y = 40.0
-        for i, n in enumerate(sorted(self.nodes, key=lambda x: (x["y"], id(x)))):
-            n["x"] = 60.0 + (i % 4) * 360
-            n["y"] = y
-            y += 60 + len(n.get("children", [])) * 26
-        self.refresh_graph()
-
-    def edit_token(self, node):
-        d = QDialog(self); d.setWindowTitle("编辑 token")
-        f = QFormLayout(d)
-        e1 = CompleteLineEdit(node["name"], lambda: collect_completions(self.nodes))
-        e2 = QLineEdit(node["data"])
-        f.addRow("token", e1); f.addRow("data", e2)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(d.accept); bb.rejected.connect(d.reject)
-        f.addRow(bb)
-        if d.exec() == QDialog.Accepted:
-            self.snapshot()
-            node["name"] = e1.text().strip() or "nop"
-            node["data"] = e2.text()
-            self.dirty = True; self.refresh_graph()
-
-    def edit_block(self, node):
-        # 轮子：QInputDialog 单行输入
-        name, ok = QInputDialog.getText(self, "编辑块", "块名", text=node["name"])
-        if ok and name.strip():
-            self.snapshot()
-            node["name"] = name.strip() or "块"
-            self.dirty = True; self.refresh_graph()
-
-    def quick_add_token(self, parent=None):
-        d = QDialog(self); d.setWindowTitle("快速添加 token（补全）")
+    def dbl(self, node):
+        n = getattr(node, "_n", None)
+        if n:
+            if n["name"] == "net" and n["data"]:
+                self.load_key(n["data"], n)
+            else:
+                self.edit(n)
+    def deled(self, nodes):
+        rm = {id(getattr(x, "_n", None)) for x in nodes if getattr(x, "_n", None)}
+        if not rm: return
+        self.snap()
+        self.nodes = [n for n in self.nodes if id(n) not in rm]
+        for n in self.nodes: n["children"] = [c for c in n["children"] if id(c) not in rm]
+        self.dirty = True; self.refresh()
+    # 编辑
+    def ask(self, title, init="", ph=""):
+        d = QDialog(self); d.setWindowTitle(title)
         lay = QVBoxLayout(d)
-        e = CompleteLineEdit("", lambda: collect_completions(self.nodes))
-        e.setPlaceholderText("输入前缀，空格/回车补全插入")
+        e = CompleteEdit(init, lambda: completions(self.nodes)); e.setPlaceholderText(ph)
         lay.addWidget(e)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(d.accept); bb.rejected.connect(d.reject)
-        lay.addWidget(bb)
-        e.setFocus()
+        lay.addWidget(bb); e.setFocus()
+        return (e.text().strip(), True) if d.exec() == QDialog.Accepted else (None, False)
+    def edit(self, n):
+        if n["children"]:
+            t, ok = self.ask("编辑块", n["name"])
+            if ok and t: self.snap(); n["name"] = t or "块"; self.dirty = True; self.refresh()
+            return
+        d = QDialog(self); d.setWindowTitle("编辑 token")
+        f = QFormLayout(d)
+        e1 = CompleteEdit(n["name"], lambda: completions(self.nodes)); e2 = QLineEdit(n["data"])
+        f.addRow("token", e1); f.addRow("data", e2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept); bb.rejected.connect(d.reject); f.addRow(bb)
         if d.exec() == QDialog.Accepted:
-            name = e.text().strip()
-            if name: self.add_node(name, "", parent=parent)
-
-    def net_dialog(self, node):
-        """网络节点：查看/浏览服务器 key（QListWidgetItem+UserRole 存结构化数据）"""
-        d = QDialog(self); d.setWindowTitle("网络节点 - 查看服务器"); d.resize(600, 440)
-        lay = QVBoxLayout(d)
-        row = QHBoxLayout(); row.addWidget(QLabel("key:"))
-        ekey = QLineEdit(node.get("data", "")); ekey.setPlaceholderText("key（留空 = 零data 空key）")
-        row.addWidget(ekey, 1); lay.addLayout(row)
-        lb = QListWidget(); lay.addWidget(lb, 1)
-        status = QLabel(""); status.setStyleSheet("color:#8fa3c8;"); lay.addWidget(status)
-        def add(txt, payload=None):
-            it = QListWidgetItem(txt)
-            if payload is not None: it.setData(Qt.UserRole, payload)
-            lb.addItem(it)
-        def refresh():
-            lb.clear()
-            k = ekey.text().encode("utf-8")
-            try:
-                toks = decode(boot_dll.fetch(k)) if k else []
-                if not toks: add("(空块)")
-                for nm, dt in toks:
-                    add(nm + ("  |  " + dt if dt else ""), ("tok", nm, dt))
-                status.setText("已取回 %d 个 token" % len(toks))
-            except Exception:
-                add("(服务器无此 key 的数据)"); status.setText("key 无数据")
-        def browse():
-            lb.clear()
-            try:
-                keys = boot_dll.list_keys()
-                if not keys: add("(服务器为空)")
-                for k, c in keys:
-                    add("[%d条] %s" % (c, k.decode("utf-8", "replace") or "<空 key>"),
-                        ("key", k.decode("utf-8", "replace")))
-                status.setText("共 %d 个 key" % len(keys))
-            except Exception as ex:
-                status.setText("浏览失败: %s" % ex)
-        def use_selected():
-            it = lb.currentItem()
-            if not it: return
-            p = it.data(Qt.UserRole)
-            ekey.setText(p[1] if p else it.text())
-            refresh()
-        def load_into_editor():
-            k = ekey.text().encode("utf-8")
-            try:
-                toks = decode(boot_dll.fetch(k)) if k else []
-                if not toks: status.setText("空块，无法载入"); return
-                self.snapshot()
-                c = (100.0, 100.0)
-                for i, (nm, dt) in enumerate(toks):
-                    self.nodes.append(new_node(nm, dt, c[0] + (i % 6) * 30, c[1] + (i // 6) * 30))
-                node["data"] = ekey.text(); self.dirty = True; self.refresh_graph()
-                status.setText("已载入 %d 个 token 到编辑器" % len(toks))
-            except Exception:
-                status.setText("载入失败：服务器无此 key")
-        def setkey():
-            node["data"] = ekey.text(); status.setText("已设为节点 key")
-        btns = QHBoxLayout()
-        for t, fn in [("刷新", refresh), ("浏览服务器", browse), ("使用选中", use_selected),
-                      ("载入编辑器", load_into_editor), ("设为节点key", setkey), ("关闭", d.accept)]:
-            b = QPushButton(t); b.clicked.connect(fn); btns.addWidget(b)
-        lay.addLayout(btns)
-        d.exec()
-
-    def snapshot(self):
+            self.snap(); n["name"] = e1.text().strip() or "nop"; n["data"] = e2.text()
+            self.dirty = True; self.refresh()
+    def quick(self):
+        t, ok = self.ask("快速添加 token（补全）", "", "输入前缀，空格/回车补全插入")
+        if ok and t: self.add(t)
+    def snap(self):
         self.undo_stack.append(copy.deepcopy(self.nodes))
         if len(self.undo_stack) > 60: self.undo_stack.pop(0)
-
     def undo(self):
-        if self.undo_stack:
-            self.nodes = self.undo_stack.pop()
-            self.dirty = True; self.refresh_graph()
-
-    def add_node(self, name, data="", parent=None):
-        self.snapshot()
-        c = (120.0 + len(self.nodes) * 30, 120.0 + len(self.nodes) * 30)
-        node = new_node(name, data, c[0], c[1])
-        if parent is not None:
-            parent["children"].append(node); parent["collapsed"] = False
-        else:
-            self.nodes.append(node)
-        self.dirty = True; self.refresh_graph()
-
-    def add_block(self):
-        self.add_node("块")
-
+        if self.undo_stack: self.nodes = self.undo_stack.pop(); self.dirty = True; self.refresh()
+    def add(self, name, data="", parent=None):
+        self.snap()
+        n = node(name, data, 120 + len(self.nodes) * 30, 120 + len(self.nodes) * 30)
+        parent["children"].append(n) if parent else self.nodes.append(n)
+        self.dirty = True; self.refresh()
+    # 服务器查看器
     def viewer_groups(self):
-        keys = [b""]
-        if self.key: keys.append(self.key)
-        for n in ordered(self.nodes):
+        keys = [b""] + ([self.key] if self.key else [])
+        for n in self.nodes:
             d = n["data"].encode("utf-8")
             if d and d not in keys: keys.append(d)
         groups = []
         for k in keys:
-            try:
-                toks = decode(boot_dll.fetch(k)) if k else []
-            except Exception:
-                toks = []
+            try: toks = decode(boot_dll.fetch(k)) if k else []
+            except Exception: toks = []
             groups.append((k, toks))
         return groups
-
     def refresh_viewer(self):
         self.listw.clear()
         for k, toks in self.viewer_groups():
@@ -500,147 +293,133 @@ class App(QMainWindow):
             self.listw.addItem("\u25b8 " + label + "（" + str(len(toks)) + "）")
             for nm, dt in toks:
                 it = QListWidgetItem("   " + nm + ("  |  " + dt if dt else ""))
-                it.setData(Qt.UserRole, (nm, dt))
-                self.listw.addItem(it)
+                it.setData(Qt.UserRole, (nm, dt)); self.listw.addItem(it)
         self.listw.addItem("---- %d 组 ----" % len(self.viewer_groups()))
-
-    def viewer_add(self):
+    def add_viewer(self):
         it = self.listw.currentItem()
         p = it.data(Qt.UserRole) if it else None
-        if p:
-            self.add_node(*p)
-
-    # ---------- 布局 ----------
-
-    def load_template(self):
-        self.snapshot()
-        self.nodes = [wrap_block("猜数字", guess_template())]
-        self.dirty = True
-        self.refresh_graph(); self.fit()
-        self.status.setText("已载入猜数字示例：1 块 / %d token" % len(guess_template()))
-
-    # ---------- 服务器存取 ----------
-
+        if p: self.add(*p)
+    # 布局/示例
+    def layout(self):
+        if not self.nodes: return
+        self.snap(); y = 40.0
+        for i, n in enumerate(sorted(self.nodes, key=lambda x: (x["y"], id(x)))):
+            n["x"] = 60.0 + (i % 4) * 360; n["y"] = y
+            y += 60 + len(n["children"]) * 26
+        self.refresh()
+    def demo(self):
+        self.snap(); self.nodes = [wrap("猜数字", GUESS)]; self.dirty = True
+        self.refresh()
+    # 服务器存取
     def save(self):
-        self.sync_positions()
+        self.sync()
         if not self.key:
             try: self.key = boot_dll.get_id()
-            except Exception as e:
-                self.status.setText("保存失败: " + str(e)); return
+            except Exception as e: self.status.setText("保存失败: " + str(e)); return
         payload = encode(flatten(self.nodes))
         try:
             idx = boot_dll.upload(self.key, payload)
-            ok = False
             for _ in range(50):
                 try:
-                    if boot_dll.fetch(self.key) == payload:
-                        ok = True; break
-                except Exception:
-                    break
+                    if boot_dll.fetch(self.key) == payload: break
+                except Exception: break
                 boot_dll.vote(self.key, idx)
             self.dirty = False
-            self.save_layout()
-            self.status.setText("已保存 idx=%d（确认）" % idx if ok else "已保存 idx=%d" % idx)
+            json.dump({"nodes": self.nodes}, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
+            self.status.setText("已保存 idx=%d（确认）" % idx if boot_dll.fetch(self.key) == payload else "已保存 idx=%d" % idx)
         except Exception as e:
             self.status.setText("保存失败: " + str(e))
-
-    def save_layout(self):
-        try:
-            json.dump({"nodes": self.nodes}, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
-        except Exception:
-            pass
-
     def load(self):
-        try:
-            self.key = boot_dll.get_id()
-        except Exception as e:
-            self.status.setText("无法获取 id: " + str(e)); return
-        try:
-            toks = decode(boot_dll.fetch(self.key))
-        except Exception:
-            toks = []
+        try: self.key = boot_dll.get_id()
+        except Exception as e: self.status.setText("无法获取 id: " + str(e)); return
+        try: toks = decode(boot_dll.fetch(self.key))
+        except Exception: toks = []
         if toks == [("editor", ""), ("rerun", "")]:
-            self.nodes = [wrap_block("猜数字", guess_template())]
-            self.save(); return
-        if toks == guess_template():
-            self.nodes = [wrap_block("猜数字", toks)]
-            self.dirty = False
-            self.status.setText("已加载：1 块 / %d token" % len(toks))
-            return
-        cur = flatten(self.nodes)
-        if cur == toks: return
+            self.nodes = [wrap("猜数字", GUESS)]; self.save(); return
+        if toks == GUESS:
+            self.nodes = [wrap("猜数字", toks)]; self.dirty = False
+            self.status.setText("已加载：1 块 / %d token" % len(toks)); return
+        if flatten(self.nodes) == toks: return
         saved = None
-        try:
-            saved = json.load(open(STATE, encoding="utf-8"))["nodes"]
-        except Exception:
-            saved = None
-        def flat_seq(nodes):
+        try: saved = json.load(open(STATE, encoding="utf-8"))["nodes"]
+        except Exception: saved = None
+        def flat_seq(ns):
             out = []
-            for n in nodes:
-                out.append((n["name"], n["data"]))
-                out += flat_seq(n.get("children", []))
+            for n in ns:
+                out.append((n["name"], n["data"])); out += flat_seq(n["children"])
             return out
         if saved is not None and flat_seq(saved) == toks:
             self.nodes = saved
         else:
-            self.nodes = []
-            for i, (nm, dt) in enumerate(toks):
-                self.nodes.append(new_node(nm, dt, 40 + (i % 5) * 240, 40 + (i // 5) * 90))
+            self.nodes = [node(nm, dt, 40 + (i % 5) * 240, 40 + (i // 5) * 90)
+                          for i, (nm, dt) in enumerate(toks)]
         self.dirty = False
-
-    def after_loop(self):
-        if not self.dirty:
-            self.load(); self.refresh_viewer()
-        QTimer.singleShot(3000, self.after_loop)
-
-    # ---------- 运行/开关 ----------
-
+    def load_key(self, key, net_node=None):
+        try:
+            toks = decode(boot_dll.fetch(key.encode())) if key else []
+            if not toks: return
+            self.snap()
+            for i, (nm, dt) in enumerate(toks):
+                self.nodes.append(node(nm, dt, 100 + (i % 6) * 30, 100 + (i // 6) * 30))
+            if net_node: net_node["data"] = key
+            self.dirty = True; self.refresh()
+        except Exception: pass
+    def loop(self):
+        if not self.dirty: self.load(); self.refresh_viewer()
+        QTimer.singleShot(3000, self.loop)
+    # 运行
     def run(self):
-        if not self.out_dock.isVisible():
-            self.out_dock.setVisible(True)
-        self.out.clear()
+        self.out_dock.setVisible(True); self.out.clear()
         toks = flatten(self.nodes)
         self.out.append("--- 运行 %d 个 token（树形层级 + 返回标记）---" % len(toks))
         self.vm.out = self.out.append
-        self.vm.run(self.nodes)      # 树形层级执行（带返回标记）
+        self.vm.run(self.nodes)
         self.status.setText("运行结束，共 %d 步，最大层级 %d" % (self.vm.steps, self.vm.depth))
+    def toggle_side(self): self.side.setVisible(not self.side.isVisible())
+    def toggle_out(self): self.out_dock.setVisible(not self.out_dock.isVisible())
 
-    def toggle_side(self):
-        self.side.setVisible(not self.side.isVisible())
+    def _ui(self):
+        bar = QToolBar(); bar.setMovable(False); self.addToolBar(bar)
+        for t, fn in [("保存", self.save), ("运行", self.run)]:
+            a = QAction(t, self); a.triggered.connect(fn); bar.addAction(a)
+        m = QMenu(self)
+        am = m.addMenu("添加")
+        for label, names in [("变量", ["int","set","read","inc"]), ("运算", ["add","sub","mul","div","rand","eq","gt","lt"]),
+                             ("控制", ["ifz","jmp","ret","end","nop"]), ("交互", ["print","input"]),
+                             ("标签", ["main","notwin","loop","exit"]), ("网络", ["net"])]:
+            sub = am.addMenu(label)
+            for nm in names: sub.addAction(nm, lambda k=nm: self.add(k))
+        am.addAction("新建块", lambda: self.add("块"))
 
-    def toggle_out(self):
-        self.out_dock.setVisible(not self.out_dock.isVisible())
+        for t, fn in [("加载", self.load), ("猜数字示例", self.demo), ("自动布局", self.layout),
+                      ("撤销", self.undo), ("快速添加（补全）", self.quick),
+                      ("服务器查看器", self.toggle_side), ("输出面板", self.toggle_out)]:
+            m.addAction(t, fn)
+        bar.addAction("☰", m.popup)
+        self.status = QLabel(""); bar.addWidget(self.status)
+        self.side = QDockWidget("服务器 data（双击添加）", self)
+        self.side.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.listw = QListWidget()
+        self.listw.itemDoubleClicked.connect(lambda _: self.add_viewer())
+        self.side.setWidget(self.listw)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.side)
+        self.out_dock = QDockWidget("输出", self)
+        self.out = QTextEdit()
+        self.out.setReadOnly(True)
+        self.out.setMaximumHeight(160)
+        self.out.setStyleSheet("background:#0d0f16;color:#9ece6a;font-family:Consolas;")
+        self.out_dock.setWidget(self.out)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.out_dock)
 
 def main():
     import sys, ctypes
     app = QApplication(sys.argv)
-    w = App()
-    w.show()
-    # Qt6 在部分环境下 show() 不设置 WS_VISIBLE，强制显示（tkinter 无此问题）
-    try:
-        hwnd = int(w.winId())
-        ctypes.windll.user32.ShowWindow(hwnd, 5)      # SW_SHOW
-        ctypes.windll.user32.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
-    sys.exit(app.exec())
-
-if __name__ == "__main__":
-    main()
-
-
-def main():
-    import sys, ctypes
-    app = QApplication(sys.argv)
-    w = App()
-    w.show()
-    # Qt6 部分环境下 show() 不设 WS_VISIBLE，强制显示
+    w = App(); w.show()
     try:
         hwnd = int(w.winId())
         ctypes.windll.user32.ShowWindow(hwnd, 5)
         ctypes.windll.user32.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
+    except Exception: pass
     sys.exit(app.exec())
 
 if __name__ == "__main__":

@@ -17,3 +17,4 @@ app_err.log
 _bg_test*
 _ngq_test*
 _pip_install.log
+*.bak_full

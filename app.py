@@ -79,6 +79,17 @@ def icon_for(name, is_block=False):
     f = ICON_MAP.get(name, "block" if is_block else "label") + ".svg"
     return os.path.join(ICON_DIR, f)
 
+# ---------- 类别配色（Singularity 巅峰版 palette） ----------
+CAT = {
+    "read": (200,224,160), "set": (232,200,120), "int": (127,184,216),
+    "add": (94,200,232), "sub": (94,200,232), "mul": (94,200,232), "div": (94,200,232),
+    "inc": (94,200,232), "nop": (94,200,232), "jmp": (94,200,232), "print": (94,200,232),
+    "eq": (208,128,224), "gt": (208,128,224), "lt": (208,128,224), "ifz": (208,128,224),
+    "input": (224,160,80), "net": (247,118,142), "end": (255,158,100),
+}
+def cat_color(name):
+    return CAT.get(name, (115,218,202))
+
 def completions(nodes):
     prios = {}
     def walk(ns, pp):
@@ -207,6 +218,7 @@ class App(QMainWindow):
         self.nodes, self.key, self.dirty, self.undo_stack = [], b"", False, []
         self.vm = VM()
         self.g = NodeGraph(); self.g.register_node(TokNode)
+        self.g.set_background_color(15, 18, 24)   # #0f1218 Singularity 深色
         self.view = self.g.widget; self._items = {}
         self.g.node_double_clicked.connect(self.dbl)
         self.g.nodes_deleted.connect(self.deled)
@@ -220,6 +232,7 @@ class App(QMainWindow):
             t = self.g.create_node("simply.TokNode", name=n["name"])
             t._n = n; t._app = self; t.set_property("data", n["data"]); t.set_pos(n["x"], n["y"])
             t.set_svg(icon_for(n["name"], bool(n["children"])))
+            t.set_color(*cat_color(n["name"]))
             t.show_kids(); self._items[id(n)] = t
         r = sorted(self.nodes, key=lambda x: (x["y"], id(x)))
         for i in range(len(r) - 1):
@@ -313,11 +326,9 @@ class App(QMainWindow):
     # 布局/示例
     def layout(self):
         if not self.nodes: return
-        self.snap(); y = 40.0
-        for i, n in enumerate(sorted(self.nodes, key=lambda x: (x["y"], id(x)))):
-            n["x"] = 60.0 + (i % 4) * 360; n["y"] = y
-            y += 60 + len(n["children"]) * 26
-        self.refresh()
+        self.snap()
+        self.g.auto_layout_nodes()          # 库内置树形/流程自动布局
+        self.sync(); self.refresh()
     def demo(self):
         self.snap(); self.nodes = [wrap("猜数字", GUESS)]; self.dirty = True
         self.refresh()

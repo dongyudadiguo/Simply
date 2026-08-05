@@ -3,9 +3,12 @@ import copy, json, os, random, struct
 from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QListWidget, QToolBar,
     QMenu, QLabel, QTextEdit, QLineEdit, QDialog, QVBoxLayout, QFormLayout, QPushButton,
     QDialogButtonBox, QInputDialog, QListWidgetItem, QCompleter)
-from PySide6.QtCore import Qt, QTimer, QStringListModel
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, QTimer, QStringListModel, QRectF, QPointF
+from PySide6.QtGui import QAction, QColor, QFont, QPen, QBrush, QPixmap, QPainter, QIcon
+from PySide6.QtSvg import QSvgRenderer
+from NodeGraphQt.qgraphics.node_svg import SVGNodeItem
 from NodeGraphQt import NodeGraph, BaseNodeSVG, NodeBaseWidget
+from NodeGraphQt.constants import ViewerEnum, PipeLayoutEnum
 import boot_dll
 
 STATE = "app_state.json"
@@ -38,7 +41,7 @@ GUESS = [("int","target"),("int","guess"),("int","tries"),("rand","100"),("set",
 
 # ---------- 数据模型 ----------
 def node(n, d="", x=0.0, y=0.0, kids=None):
-    return {"name": n, "data": d, "x": x, "y": y, "children": kids or []}
+    return {"name": n, "data": d, "x": x, "y": y, "children": kids or [], "collapsed": False}
 
 def wrap(title, ts):
     b = node(title, "", 40, 40)
@@ -185,30 +188,123 @@ class VM:
         v, ok = QInputDialog.getInt(None, "输入", "请输入数字")
         return v if ok else 0
 
-# ---------- NodeGraphQt 节点（库渲染） ----------
-class NodeList(NodeBaseWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent, "children")
-        self._w = QListWidget(); self.set_custom_widget(self._w)
-    def get_value(self): return ""
-    def set_value(self, t): pass
-    def lw(self): return self._w
+# ---------- NodeGraphQt 节点（Singularity 巅峰画法） ----------
+ROW_H, TITLE_H, CARD_W, SWATCH_W = 24.0, 34.0, 340.0, 5.0
+C_BG, C_EDGE, C_SEL, C_TITLE, C_DIM, C_TEXT, C_GUT = (32,38,60), (52,65,77), (61,74,115), (157,167,179), (102,113,125), (232,236,239), (74,85,96)
+
+def icon_pixmap(name, size, color=None):
+    try:
+        p = QPixmap(size, size); p.fill(Qt.transparent)
+        pr = QPainter(p)
+        QSvgRenderer(icon_for(name)).render(pr)
+        pr.end()
+        return p
+    except Exception:
+        return None
+
+class BlockCardItem(SVGNodeItem):
+    """块卡片：标题栏 + 内部 token 行 + 折叠（严格对齐 Singularity views 画法）"""
+    def __init__(self, name="block", parent=None):
+        super().__init__(name, parent)
+        self._n = None; self._app = None; self._row = -1
+    def _draw_node_horizontal(self):
+        super()._draw_node_horizontal()
+        if self._n and self._n.get("children"):
+            rows = 0 if self._n.get("collapsed") else len(self._n["children"])
+            self._width, self._height = CARD_W, TITLE_H + rows * ROW_H + 8.0
+            self.update()
+    def paint(self, painter, option, widget):
+        n = self._n
+        if not n or not n.get("children"):
+            super().paint(painter, option, widget); return
+        painter.save()
+        w, h = self._width, self._height
+        r = QRectF(0, 0, w, h)
+        painter.setPen(QPen(QColor(*C_SEL) if self.selected else QColor(*C_EDGE), 2))
+        painter.setBrush(QColor(*C_BG)); painter.drawRoundedRect(r, 10, 10)
+        # 缩进槽
+        painter.setPen(Qt.NoPen); painter.setBrush(QColor(*C_GUT))
+        painter.drawRect(QRectF(12, 14, 2, 20))
+        # 标题
+        painter.setPen(QColor(*C_TITLE))
+        painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+        painter.drawText(QRectF(22, 6, w - 84, 22), Qt.AlignLeft | Qt.AlignVCenter, n.get("name") or "块")
+        # 折叠按钮
+        bx, by = w - 34, 9
+        painter.setPen(QPen(QColor(*C_TITLE), 1)); painter.setBrush(QColor("#26314d"))
+        painter.drawEllipse(QRectF(bx, by, 16, 16))
+        painter.setPen(QColor(*C_TEXT)); painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        painter.drawText(QRectF(bx, by - 1, 16, 16), Qt.AlignCenter, "+" if n.get("collapsed") else "-")
+        if n.get("collapsed"):
+            painter.setPen(QColor(*C_DIM)); painter.setFont(QFont("Microsoft YaHei UI", 8))
+            painter.drawText(QRectF(22, h - 26, w - 44, 20), Qt.AlignLeft, "%d tokens" % len(n["children"]))
+            painter.restore(); return
+        # token 行
+        kids = sorted(n["children"], key=lambda c: (c["y"], id(c)))
+        fname = QFont("Microsoft YaHei UI", 11); fsum = QFont("Microsoft YaHei UI", 9)
+        for i, c in enumerate(kids):
+            y0 = TITLE_H + i * ROW_H
+            col = QColor(*cat_color(c["name"]))
+            if self._row == i:
+                painter.setPen(Qt.NoPen); painter.setBrush(QColor(*C_EDGE))
+                painter.drawRect(QRectF(2, y0, w - 4, ROW_H))
+            # 状态条
+            painter.setPen(Qt.NoPen); painter.setBrush(col)
+            painter.drawRect(QRectF(8, y0 + 5, SWATCH_W, 14))
+            # 图标
+            ic = icon_pixmap(c["name"], 16)
+            if ic: painter.drawPixmap(int(18), int(y0 + 4), ic)
+            # 名称（类别色）
+            painter.setPen(col); painter.setFont(fname)
+            painter.drawText(QRectF(40, y0, 170, ROW_H), Qt.AlignLeft | Qt.AlignVCenter, c["name"])
+            # 摘要（亮色）
+            if c["data"]:
+                painter.setPen(QColor(*C_TEXT)); painter.setFont(fsum)
+                painter.drawText(QRectF(216, y0, w - 224, ROW_H), Qt.AlignLeft | Qt.AlignVCenter, "  |  " + c["data"])
+            # 分隔线
+            painter.setPen(QPen(QColor(32, 38, 60), 1))
+            painter.drawLine(QPointF(4, y0 + ROW_H), QPointF(w - 4, y0 + ROW_H))
+        painter.restore()
+    def mousePressEvent(self, e):
+        n = self._n
+        if n and n.get("children"):
+            p = e.pos()
+            if QRectF(self._width - 34, 9, 16, 16).contains(p):
+                if self._app: self._app.toggle_fold(self)
+                self.update(); e.accept(); return
+        super().mousePressEvent(e)
+    def mouseDoubleClickEvent(self, e):
+        n = self._n
+        if n and n.get("children") and not n.get("collapsed"):
+            r = int((e.pos().y() - TITLE_H) // ROW_H)
+            kids = sorted(n["children"], key=lambda c: (c["y"], id(c)))
+            if 0 <= r < len(kids):
+                if self._app: self._app.edit(kids[r])
+                e.accept(); return
+        super().mouseDoubleClickEvent(e)
 
 class TokNode(BaseNodeSVG):
     __identifier__ = "simply"; NODE_NAME = "token"
     def __init__(self):
-        super().__init__(); self._n = None; self._app = None; self._kids = None
+        super().__init__(BlockCardItem)
+        self._n = None; self._app = None
         self.add_input("in"); self.add_output("out")
         self.add_text_input("data", "data", tab="内容")
     def show_kids(self):
-        if self._kids is None and self._n and self._n["children"]:
-            self._kids = NodeList(); self.add_custom_widget(self._kids, "children", tab="内容")
-        if self._kids:
-            w = self._kids.lw(); w.clear()
-            for c in sorted(self._n["children"], key=lambda x: (x["y"], id(x))):
-                it = QListWidgetItem("  " + c["name"] + ("  |  " + c["data"] if c["data"] else ""))
-                it.setData(Qt.UserRole, c); w.addItem(it)
-            w.itemDoubleClicked.connect(lambda it: self._app and self._app.edit(it.data(Qt.UserRole)))
+        if self._n: self.view._n = self._n
+        self.view.setToolTip(self.tooltip_text())
+    def tooltip_text(self):
+        n = self._n or {}
+        p = ["<b>%s</b>" % (n.get("name") or "块")]
+        if n.get("data"): p.append("data: " + n["data"])
+        if n.get("children"): p.append("子树: %d 个 token" % len(n["children"]))
+        try:
+            ins = [x.node().name for x in self.input(0).connected_ports()]
+            outs = [x.node().name for x in self.output(0).connected_ports()]
+            if ins: p.append("输入连线 \u2190 " + ", ".join(ins))
+            if outs: p.append("输出连线 \u2192 " + ", ".join(outs))
+        except Exception: pass
+        return "<br/>".join(p)
 
 # ---------- 主窗口 ----------
 class App(QMainWindow):
@@ -219,12 +315,19 @@ class App(QMainWindow):
         self.vm = VM()
         self.g = NodeGraph(); self.g.register_node(TokNode)
         self.g.set_background_color(15, 18, 24)   # #0f1218 Singularity 深色
+        self.g.set_grid_mode(ViewerEnum.GRID_DISPLAY_DOTS.value)   # 巅峰：点阵底
+        self.g.set_grid_color(31, 37, 51)
+        self.g.set_pipe_style(PipeLayoutEnum.CURVED.value)
+        self.g.set_pipe_collision(True); self.g.set_pipe_slicing(True)
         self.view = self.g.widget; self._items = {}
         self.setCentralWidget(self.view)   # 关键：把图挂到窗口中央
         self.g.node_double_clicked.connect(self.dbl)
         self.g.nodes_deleted.connect(self.deled)
+        self.g.node_selection_changed.connect(self.sel_changed)
         self._ui()
-        self.load(); self.refresh(); QTimer.singleShot(3000, self.loop)
+        self.load(); self.refresh()
+        QTimer.singleShot(150, self.g.fit_to_selection)   # 首屏自动框选全部
+        QTimer.singleShot(3000, self.loop)
 # 场景
     def refresh(self):
         for n in list(self.g.all_nodes()): self.g.delete_node(n)
@@ -232,12 +335,26 @@ class App(QMainWindow):
         for n in self.nodes:
             t = self.g.create_node("simply.TokNode", name=n["name"])
             t._n = n; t._app = self; t.set_property("data", n["data"]); t.set_pos(n["x"], n["y"])
-            t.set_svg(icon_for(n["name"], bool(n["children"])))
-            t.set_color(*cat_color(n["name"]))
+            t.view._n = n; t.view._app = self
+            if n["children"]:                                  # 块=深色巅峰卡片
+                t.set_svg(icon_for("block", True))
+                t.set_color(*C_BG); t.view.border_color = (*C_EDGE, 255)
+                t.view.text_color = (*C_TITLE, 255)
+            else:                                              # token=类别色图标
+                t.set_svg(icon_for(n["name"], False))
+                t.set_color(*cat_color(n["name"]))
+                t.view.border_color = (*cat_color(n["name"]), 255)
+                t.view.text_color = (*C_TEXT, 255)
             t.show_kids(); self._items[id(n)] = t
+            t.hide_widget("data", push_undo=False)             # 巅峰：data 走双击编辑，不占卡片
+            if n["children"]: t.view._draw_node_horizontal()   # 应用块卡片尺寸
+            t.view.setToolTip(t.tooltip_text())
         r = sorted(self.nodes, key=lambda x: (x["y"], id(x)))
         for i in range(len(r) - 1):
             self._items[id(r[i])].output(0).connect_to(self._items[id(r[i + 1])].input(0))
+        for it in self.g.scene().items():                       # 连线=Singularity 绿 #62c982
+            if it.__class__.__name__ == "PipeItem" and getattr(it, "_output_port", None):
+                it.set_pipe_styling((98, 201, 130, 220), 2, 0)
         self.status.setText("%d 根 / %d token%s" % (len(self.nodes), len(ordered(self.nodes)),
                              " 未保存" if self.dirty else ""))
     def sync(self):
@@ -251,10 +368,39 @@ class App(QMainWindow):
     def dbl(self, node):
         n = getattr(node, "_n", None)
         if n:
+            self.conn_detail(node)          # 双击连线细节
+            self.highlight_pipes(node)
             if n["name"] == "net" and n["data"]:
                 self.load_key(n["data"], n)
             else:
                 self.edit(n)
+    def conn_detail(self, t):
+        n = getattr(t, "_n", None)
+        if not n: return
+        self.out_dock.setVisible(True)
+        self.out.append("\u2500\u2500 %s%s \u2500\u2500" % (n["name"], (" | " + n["data"]) if n["data"] else ""))
+        if n["children"]: self.out.append("   子树 %d 个 token" % len(n["children"]))
+        try:
+            ins = [x.node().name for x in t.input(0).connected_ports()]
+            outs = [x.node().name for x in t.output(0).connected_ports()]
+            if ins: self.out.append("   输入连线 \u2190 " + ", ".join(ins))
+            if outs: self.out.append("   输出连线 \u2192 " + ", ".join(outs))
+            if not ins and not outs: self.out.append("   （无连线）")
+        except Exception: pass
+        c = cat_color(n["name"])
+        self.status.setText("%s%s | RGB(%d,%d,%d)%s" % (n["name"], (" | "+n["data"]) if n["data"] else "",
+                             *c, (" | 子树 %d" % len(n["children"])) if n["children"] else ""))
+    def highlight_pipes(self, t, ms=1800):
+        try:
+            for p in (t.input(0), t.output(0)):
+                for pipe in p.view.connected_pipes(): pipe.set_pipe_styling((160, 240, 255, 255), 3, 0)
+            QTimer.singleShot(ms, lambda: self.reset_pipes(t))
+        except Exception: pass
+    def reset_pipes(self, t):
+        try:
+            for p in (t.input(0), t.output(0)):
+                for pipe in p.view.connected_pipes(): pipe.reset()
+        except Exception: pass
     def deled(self, nodes):
         rm = {id(getattr(x, "_n", None)) for x in nodes if getattr(x, "_n", None)}
         if not rm: return
@@ -262,6 +408,21 @@ class App(QMainWindow):
         self.nodes = [n for n in self.nodes if id(n) not in rm]
         for n in self.nodes: n["children"] = [c for c in n["children"] if id(c) not in rm]
         self.dirty = True; self.refresh()
+    def toggle_fold(self, t):
+        n = getattr(t, "_n", None)
+        if not n or not n.get("children"): return
+        n["collapsed"] = not n.get("collapsed", False)
+        if hasattr(t, "_draw_node_horizontal"): t._draw_node_horizontal()
+        elif hasattr(t, "view"): t.view._draw_node_horizontal()
+        self.status.setText("%s | %s (%d tokens)" % (n["name"],
+                             "已折叠" if n["collapsed"] else "已展开", len(n["children"])))
+    def sel_changed(self, selected, deselected):
+        if not selected: return
+        n = getattr(selected[0], "_n", None)
+        if n:
+            c = cat_color(n["name"])
+            self.status.setText("%s%s | RGB(%d,%d,%d)%s" % (n["name"], (" | "+n["data"]) if n["data"] else "",
+                                 *c, (" | 子树 %d" % len(n["children"])) if n["children"] else ""))
     # 编辑
     def ask(self, title, init="", ph=""):
         d = QDialog(self); d.setWindowTitle(title)

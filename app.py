@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QListWidg
     QDialogButtonBox, QInputDialog, QListWidgetItem, QCompleter)
 from PySide6.QtCore import Qt, QTimer, QStringListModel
 from PySide6.QtGui import QAction
-from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget
+from NodeGraphQt import NodeGraph, BaseNodeSVG, NodeBaseWidget
 import boot_dll
 
 STATE = "app_state.json"
@@ -68,6 +68,16 @@ def prefix(name, q):
 
 BASE = ["int","set","read","inc","add","sub","mul","div","rand","eq","gt","lt",
         "ifz","jmp","ret","end","nop","print","input","main","notwin","loop","exit","net","块"]
+
+ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+ICON_MAP = {"read":"var_read_payload", "set":"var_set_payload", "int":"const_payload",
+            "inc":"add", "add":"add", "sub":"sub", "mul":"mul", "div":"div",
+            "rand":"f32_const", "eq":"cond_payload", "gt":"cond_payload", "lt":"cond_payload",
+            "ifz":"cond_payload", "jmp":"jump_payload", "nop":"key_pressed",
+            "print":"exec", "input":"key_down", "net":"globe", "end":"end", "ret":"jump_payload"}
+def icon_for(name, is_block=False):
+    f = ICON_MAP.get(name, "block" if is_block else "label") + ".svg"
+    return os.path.join(ICON_DIR, f)
 
 def completions(nodes):
     prios = {}
@@ -173,7 +183,7 @@ class NodeList(NodeBaseWidget):
     def set_value(self, t): pass
     def lw(self): return self._w
 
-class TokNode(BaseNode):
+class TokNode(BaseNodeSVG):
     __identifier__ = "simply"; NODE_NAME = "token"
     def __init__(self):
         super().__init__(); self._n = None; self._app = None; self._kids = None
@@ -209,6 +219,7 @@ class App(QMainWindow):
         for n in self.nodes:
             t = self.g.create_node("simply.TokNode", name=n["name"])
             t._n = n; t._app = self; t.set_property("data", n["data"]); t.set_pos(n["x"], n["y"])
+            t.set_svg(icon_for(n["name"], bool(n["children"])))
             t.show_kids(); self._items[id(n)] = t
         r = sorted(self.nodes, key=lambda x: (x["y"], id(x)))
         for i in range(len(r) - 1):

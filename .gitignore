@@ -18,3 +18,34 @@ _bg_test*
 _ngq_test*
 _pip_install.log
 *.bak_full
+
+# 运行时落盘（vm 当前块）
+_current_block.bin
+_current_key.txt
+
+# pyglet 编辑器临时文件（截图/日志/测试）
+_pyglet_*.log
+_pyglet_*.png
+_check_*.png
+_layout*.png
+_net*.png
+_launch*.png
+_card_zoom.png
+_ed_zoom.png
+_sep_*.png
+_start*.png
+_two_nodes.png
+_proto*.png
+_proto.log
+_label_test*.py
+_*.log
+
+# 上下文/备份（不入库）
+_compact.py
+_summary.txt
+app.py.bak_nodegraph_card
+app.py.bak_pre_peak
+*.bak
+_default_net*.png
+_editor_block_check.png
+.agent/.ae_active_input

@@ -1,5 +1,5 @@
 # app.py —— Simply Token 节点图编辑器（最小实现：NodeGraphQt + QCompleter，逻辑不变）
-import copy, json, os, random, struct
+import copy, json, os, random, struct, binascii
 from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, QListWidget, QToolBar,
     QMenu, QLabel, QTextEdit, QLineEdit, QDialog, QVBoxLayout, QFormLayout, QPushButton,
     QDialogButtonBox, QInputDialog, QListWidgetItem, QCompleter)
@@ -92,6 +92,18 @@ CAT = {
 }
 def cat_color(name):
     return CAT.get(name, (115,218,202))
+
+# ---------- crc32-base32（transition 块引用短名，同款） ----------
+def crc_name(key):
+    """key 的 crc32 → 大写 base32 短名（transition int_to_base32）"""
+    data = key.encode() if isinstance(key, str) else key
+    n = binascii.crc32(data) & 0xFFFFFFFF
+    if n == 0: return "A"
+    ch = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    out = []
+    while n:
+        out.append(ch[n % 32]); n //= 32
+    return "".join(reversed(out))
 
 def completions(nodes):
     prios = {}
@@ -257,10 +269,11 @@ class BlockCardItem(SVGNodeItem):
             # 名称（类别色）
             painter.setPen(col); painter.setFont(fname)
             painter.drawText(QRectF(40, y0, 170, ROW_H), Qt.AlignLeft | Qt.AlignVCenter, c["name"])
-            # 摘要（亮色）
+            # 摘要（亮色；net = 块引用 → 显示 crc32-base32 短名）
             if c["data"]:
                 painter.setPen(QColor(*C_TEXT)); painter.setFont(fsum)
-                painter.drawText(QRectF(216, y0, w - 224, ROW_H), Qt.AlignLeft | Qt.AlignVCenter, "  |  " + c["data"])
+                summ = crc_name(c["data"]) if c["name"] == "net" else c["data"]
+                painter.drawText(QRectF(216, y0, w - 224, ROW_H), Qt.AlignLeft | Qt.AlignVCenter, "  |  " + summ)
             # 分隔线
             painter.setPen(QPen(QColor(32, 38, 60), 1))
             painter.drawLine(QPointF(4, y0 + ROW_H), QPointF(w - 4, y0 + ROW_H))
@@ -308,10 +321,15 @@ class TokNode(BaseNodeSVG):
 
 # ---------- 主窗口 ----------
 class App(QMainWindow):
-    def __init__(self):
+    def __init__(self, block_file=None, key_file=None):
         super().__init__()
         self.setWindowTitle("Simply Token 节点图编辑器"); self.resize(1280, 800)
         self.nodes, self.key, self.dirty, self.undo_stack = [], b"", False, []
+        self.block_file = block_file            # editor 所在块：vm 落盘的块字节
+        self.block_key = None                   # 该块的 key（可能为空 key b""）
+        if key_file and os.path.exists(key_file):
+            try: self.block_key = bytes.fromhex(open(key_file).read().strip())
+            except Exception: pass
         self.vm = VM()
         self.g = NodeGraph(); self.g.register_node(TokNode)
         self.g.set_background_color(15, 18, 24)   # #0f1218 Singularity 深色
@@ -370,7 +388,9 @@ class App(QMainWindow):
         if n:
             self.conn_detail(node)          # 双击连线细节
             self.highlight_pipes(node)
-            if n["name"] == "net" and n["data"]:
+            if n.get("net_key"):
+                self.refresh_net(n)                      # 网络节点：刷新（只读）
+            elif n["name"] == "net" and n["data"]:
                 self.load_key(n["data"], n)
             else:
                 self.edit(n)
@@ -434,6 +454,11 @@ class App(QMainWindow):
         lay.addWidget(bb); e.setFocus()
         return (e.text().strip(), True) if d.exec() == QDialog.Accepted else (None, False)
     def edit(self, n):
+        if n.get("_ro"):                                 # 网络节点远程行：只读
+            self.out_dock.setVisible(True); self.out.append("（网络数据只读，双击标题可刷新）")
+            return
+        if n["name"] == "net" and n["data"]:             # net = 块引用 → 进入加载
+            self.load_key(n["data"], n); return
         if n["children"]:
             t, ok = self.ask("编辑块", n["name"])
             if ok and t: self.snap(); n["name"] = t or "块"; self.dirty = True; self.refresh()
@@ -497,23 +522,33 @@ class App(QMainWindow):
     # 服务器存取
     def save(self):
         self.sync()
-        if not self.key:
-            try: self.key = boot_dll.get_id()
+        target = self.block_key if self.block_key is not None else self.key
+        if target is None or (target == b"" and self.block_key is None):
+            try: target = self.key = boot_dll.get_id()
             except Exception as e: self.status.setText("保存失败: " + str(e)); return
         payload = encode(flatten(self.nodes))
         try:
-            idx = boot_dll.upload(self.key, payload)
+            idx = boot_dll.upload(target, payload)
             for _ in range(50):
                 try:
-                    if boot_dll.fetch(self.key) == payload: break
+                    if boot_dll.fetch(target) == payload: break
                 except Exception: break
-                boot_dll.vote(self.key, idx)
+                boot_dll.vote(target, idx)
             self.dirty = False
             json.dump({"nodes": self.nodes}, open(STATE, "w", encoding="utf-8"), ensure_ascii=False)
-            self.status.setText("已保存 idx=%d（确认）" % idx if boot_dll.fetch(self.key) == payload else "已保存 idx=%d" % idx)
+            self.status.setText("已保存 idx=%d（确认）" % idx if boot_dll.fetch(target) == payload else "已保存 idx=%d" % idx)
         except Exception as e:
             self.status.setText("保存失败: " + str(e))
     def load(self):
+        if self.block_file and os.path.exists(self.block_file):   # editor 模式：显示所在块
+            try:
+                toks = decode(open(self.block_file, "rb").read())
+                if toks:
+                    self.nodes = [wrap("当前块", toks)]
+                    self.status.setText("已加载 editor 所在块：1 块 / %d token%s" % (
+                        len(toks), "（空 key）" if self.block_key == b"" else ""))
+                    self.dirty = False; return
+            except Exception: pass
         try: self.key = boot_dll.get_id()
         except Exception as e: self.status.setText("无法获取 id: " + str(e)); return
         try: toks = decode(boot_dll.fetch(self.key))
@@ -543,14 +578,27 @@ class App(QMainWindow):
                           for i, (nm, dt) in enumerate(toks)]
         self.dirty = False
     def load_key(self, key, net_node=None):
+        """网络节点：fetch(key) → 创建只读块卡片显示远程 token 流"""
         try:
             toks = decode(boot_dll.fetch(key.encode())) if key else []
             if not toks: return
             self.snap()
-            for i, (nm, dt) in enumerate(toks):
-                self.nodes.append(node(nm, dt, 100 + (i % 6) * 30, 100 + (i // 6) * 30))
+            nb = node("网络 " + crc_name(key), "", 160 + len(self.nodes) * 40, 160 + len(self.nodes) * 40)
+            nb["net_key"] = key                          # 标记：网络节点（只读）
+            nb["children"] = [node(nm, dt, 0, i * ROW_H) for i, (nm, dt) in enumerate(toks)]
+            for c in nb["children"]: c["_ro"] = True     # 远程行只读
+            self.nodes.append(nb)
             if net_node: net_node["data"] = key
-            self.dirty = True; self.refresh()
+            self.refresh()
+        except Exception: pass
+    def refresh_net(self, n):
+        """网络节点重新拉取远程块（只读刷新）"""
+        try:
+            toks = decode(boot_dll.fetch(n["net_key"].encode()))
+            if not toks: return
+            n["children"] = [node(nm, dt, 0, i * ROW_H) for i, (nm, dt) in enumerate(toks)]
+            for c in n["children"]: c["_ro"] = True
+            self.refresh()
         except Exception: pass
     def loop(self):
         if not self.dirty: self.load(); self.refresh_viewer()
@@ -607,7 +655,8 @@ class App(QMainWindow):
 def main():
     import sys, ctypes
     app = QApplication(sys.argv)
-    w = App(); w.show()
+    w = App(sys.argv[1] if len(sys.argv) > 1 else None,
+            sys.argv[2] if len(sys.argv) > 2 else None); w.show()
     try:
         hwnd = int(w.winId())
         ctypes.windll.user32.ShowWindow(hwnd, 5)

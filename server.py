@@ -36,11 +36,6 @@ async def handle(reader, writer):      # 每条连接只处理一个操作，完
             items.append([0, payload]) # 新数据初始票数为零
             writer.write(pack("<I", len(items) - 1))  # 响应只有 4 字节 idx
 
-        elif op == 4:                  # 列出所有 key：[4][key]
-            items = list(db.items())        # 返回每个 key 及其条目数
-            writer.write(pack("<I", len(items)))  # 先发 key 数量
-            for k, lst in items:            # 每个 key：[4B key长][key][4B 条目数]
-                writer.write(pack("<I", len(k)) + k + pack("<I", len(lst)))
         await writer.drain()           # 把响应送入系统发送缓冲
     except (asyncio.IncompleteReadError, ConnectionError, KeyError, IndexError):  # 客户端断线或请求无效
         pass                           # 最低限度协议不额外发送错误文本

@@ -326,7 +326,7 @@ class App(QMainWindow):
         self.g.node_selection_changed.connect(self.sel_changed)
         self._ui()
         self.load(); self.refresh()
-        QTimer.singleShot(150, self.g.fit_to_selection)   # 首屏自动框选全部
+        QTimer.singleShot(800, self.g.fit_to_selection)   # 等窗口就绪再框选
         QTimer.singleShot(3000, self.loop)
 # 场景
     def refresh(self):
@@ -518,6 +518,10 @@ class App(QMainWindow):
         except Exception as e: self.status.setText("无法获取 id: " + str(e)); return
         try: toks = decode(boot_dll.fetch(self.key))
         except Exception: toks = []
+        if not toks:                                   # 服务器不可达 → 回退本地 state
+            try: self.nodes = json.load(open(STATE, encoding="utf-8"))["nodes"]
+            except Exception: pass
+            self.dirty = False; return
         if toks == [("editor", ""), ("rerun", "")]:
             self.nodes = [wrap("猜数字", GUESS)]; self.save(); return
         if toks == GUESS:
@@ -590,6 +594,7 @@ class App(QMainWindow):
         self.listw.itemDoubleClicked.connect(lambda _: self.add_viewer())
         self.side.setWidget(self.listw)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.side)
+        self.side.setVisible(False)              # 巅峰：默认干净画布，菜单/快捷键再开
         self.out_dock = QDockWidget("输出", self)
         self.out = QTextEdit()
         self.out.setReadOnly(True)
@@ -597,6 +602,7 @@ class App(QMainWindow):
         self.out.setStyleSheet("background:#0d0f16;color:#9ece6a;font-family:Consolas;")
         self.out_dock.setWidget(self.out)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.out_dock)
+        self.out_dock.setVisible(False)
 
 def main():
     import sys, ctypes

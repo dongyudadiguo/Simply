@@ -5,7 +5,7 @@
 import inspect, struct, binascii, hashlib, os
 from block import fetch, HOST, PORT, HERE
 import socket, pyglet
-from pyglet.shapes import Rectangle, Circle
+from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
 
@@ -131,6 +131,13 @@ def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
+def pointer_y():                              # 鼠标位置对应的指针行（世界 y）
+    wx, wy = screen_to_world(*mpos)
+    lines = build_lines(toks)
+    dist = RH - wy
+    row = min((max(0, dist) + GAP) // (RH+GAP), len(lines))
+    return -row * (RH+GAP)
+
 # —— 渲染 ——
 @win.event
 def on_draw():
@@ -142,27 +149,26 @@ def on_draw():
         y = -row * (RH+GAP)
         for kind, i, n, p, x in row_geom(line)[0]:
             if i == drag_i: continue               # 拖出的项单独画
-            w = item_w(n,p); lb = label(n,p)
-            bg = item_color(n)
-            # 热力高亮：cond/handrun/condrerun 热度越高底色越偏 HOT
-            if n in ("cond","handrun","condrerun") and heat.get(n):
-                bg = tuple(int(bg[j] + (HOT[j]-bg[j])*min(heat.get(n,0)*.2, 1)) for j in range(3))
-            shapes.append(Rectangle(x, y, w, RH, color=BLUE if i == edit_i else bg))
-            # handrun 两个按钮（右侧小圆）
-            if n == "handrun":
+            lb = label(n, p)
+            col = item_color(n)                    # 纯文字颜色（无矩形背景）
+            if n in ("cond","handrun","condrerun") and heat.get(n):   # 热力：文字偏 HOT
+                col = tuple(int(col[j] + (HOT[j]-col[j])*min(heat.get(n,0)*.2,1)) for j in range(3))
+            if i == edit_i: col = (255,255,255)    # 悬浮编辑项白字
+            labels.append(pyglet.text.Label(lb, x=x+2, y=y+RH/2, font_size=13,
+                                            color=col+(255,), anchor_y="center"))
+            if n == "handrun":                     # handrun 两个按钮（小圆点）
                 _, hid = split_handrun(p)
                 f = hand_flags.get(hid, [0, 0])
                 for bi in (0, 1):
-                    bx = x + w - 24 + bi*12
-                    shapes.append(Circle(bx, y+RH/2, 4, color=(255,200,80) if f[bi] else (60,70,80)))
-            labels.append(pyglet.text.Label(lb, x=x+10, y=y+RH/2, font_size=13,
-                                            color=(255,255,255)+(255,) if n in ("read","set","cond","handrun","condrerun") else TXT+(255,),
-                                            anchor_y="center"))
-    if drag_i >= 0:                              # 拖出的项跟随鼠标（半透明）
-        n, p = toks[drag_i]; w = item_w(n,p); lb = label(n,p)
-        shapes.append(Rectangle(drag_pos[0], drag_pos[1], w, RH, color=(100,160,220)))
-        labels.append(pyglet.text.Label(lb, x=drag_pos[0]+10, y=drag_pos[1]+RH/2, font_size=13,
-                                        color=(255,255,255)+(255,), anchor_y="center"))
+                    bx = x + item_w(n,p) - 26 + bi*12
+                    shapes.append(Circle(bx, y+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
+    # 指针：鼠标位置对应的插入行（参考 transition 的水平线）
+    py = pointer_y()
+    shapes.append(Line(0, py, 420, py, thickness=2, color=(150,160,170)))
+    if drag_i >= 0:                              # 拖出的项跟随鼠标（文字）
+        n, p = toks[drag_i]; lb = label(n,p)
+        labels.append(pyglet.text.Label(lb, x=drag_pos[0]+2, y=drag_pos[1]+RH/2, font_size=13,
+                                        color=(100,160,220)+(255,), anchor_y="center"))
     for s in shapes: s.draw()
     for l in labels: l.draw()
     # —— UI：补全跟随鼠标（pyglet y 向上，鼠标上=候选上）——

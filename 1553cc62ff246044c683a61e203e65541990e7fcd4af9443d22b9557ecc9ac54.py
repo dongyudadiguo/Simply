@@ -1,11 +1,122 @@
-# 1553cc62ff246044c683a61e203e65541990e7fcd4af9443d22b9557ecc9ac54.py —— editor 插件（token="editor" → sha256 命名，独立于 boot）
-# 内容：编辑器入口（显示/编辑块）。当前占位：print 一次后由 vm 重跑。
-# 直接代码（不加 run 层）
-from block import fetch, next_key   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
-import os, struct, hashlib
+# 1553cc62ff246044c683a61e203e65541990e7fcd4af9443d22b9557ecc9ac54.py —— editor 插件（token="editor"）
+# 内容：查看 editor 所在的块 —— 中键平移 + 滚轮缩放 + 节点图（块节点 + token 子节点）
+# 直接代码（不加 run 层）：inspect 找 run_loop 帧 start_key = editor 所在块 key → fetch → pyglet 节点图
+import inspect, struct, binascii
+from block import fetch, run_loop
+import pyglet
+from pyglet.graphics import Batch
+from pyglet.shapes import Rectangle, Line
+from pyglet.window import mouse, key
+from pyglet.math import Mat4, Vec3
 
-# 读取当前块（id key 引导块）展示
-key = b""
-p = fetch(key)
-key = next_key(p)
-print("editor: 当前块 token =", key, flush=True)
+# ---- 1. 找 editor 所在的块（调用栈中 run_loop 帧的 start_key）----
+blk_key = b""
+for frame in inspect.stack()[1:]:
+    if frame.function == "run_loop":
+        blk_key = frame.frame.f_locals.get("start_key", b"")
+        break
+block_data = fetch(blk_key)                     # 取 editor 所在块的二进制
+
+# ---- 2. 块 = token 流，解析成列表 ----
+def parse_tokens(blk):
+    toks, i = [], 0
+    while i + 4 <= len(blk):
+        n = struct.unpack_from("<I", blk, i)[0]; i += 4
+        if n == 0: break
+        toks.append(blk[i:i + n].decode("utf-8", "replace")); i += n
+        if i + 4 > len(blk): break               # 容错：无尾部 extra 4B
+        i += 4                                    # 跳过每条后的 4 字节（extra/dlen）
+    return toks
+
+def crc_name(data):
+    if isinstance(data, str): data = data.encode()
+    n = binascii.crc32(data) & 0xFFFFFFFF
+    if n == 0: return "A"
+    ch = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    out = []
+    while n: out.append(ch[n % 32]); n //= 32
+    return "".join(reversed(out))
+
+root_tokens = parse_tokens(block_data)
+
+# ---- 3. pyglet 节点图：中键平移 + 滚轮缩放 ----
+W, H = 960, 640
+ROW_H, TITLE_H, CARD_W = 24, 30, 320
+BG = (15, 18, 24)
+CARD_BG = (32, 38, 60); HEAD = (40, 48, 70)
+TEXT_C = (232, 236, 239); DIM = (102, 113, 125)
+GREEN = (98, 201, 130); EDGE = (52, 65, 77)
+YELLOW = (232, 200, 120)
+
+win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
+cam = [0.0, 0.0, 1.0]                            # 平移 x/y + 缩放
+drag = None
+expanded = []                                    # [(key, x, y, tokens), ...] 展开的子块节点
+
+def screen_to_world(x, y):
+    s = cam[2]
+    return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
+
+def try_expand(token, wx, wy):
+    try:
+        sub = fetch(token.encode())
+    except Exception:
+        return
+    st = parse_tokens(sub)
+    if not st: return
+    expanded.append({"key": token, "x": wx + CARD_W + 60, "y": wy, "tokens": st})
+
+@win.event
+def on_draw():
+    import pyglet.gl as gl
+    gl.glClearColor(BG[0]/255, BG[1]/255, BG[2]/255, 1)
+    win.clear()
+    s = cam[2]
+    win.view = Mat4.from_translation(Vec3(cam[0] + W/2, cam[1] + H/2, 0)) @ Mat4.from_scale(Vec3(s, s, 1))
+    texts = []; shapes = []
+    def card(x, y, title, toks, tcolor):
+        h = TITLE_H + len(toks) * ROW_H
+        shapes.append(Rectangle(x, y, CARD_W, h, color=CARD_BG))
+        shapes.append(Rectangle(x, y, CARD_W, TITLE_H, color=HEAD))
+        texts.append(pyglet.text.Label(title, x=x+8, y=y+h-TITLE_H/2,
+                     font_size=12, color=tcolor+(255,), anchor_y="center"))
+        for i, t in enumerate(toks):
+            texts.append(pyglet.text.Label(t, x=x+10, y=y+h-TITLE_H-(i+0.5)*ROW_H,
+                         font_size=11, color=TEXT_C+(255,), anchor_y="center"))
+        return h
+    # 根块节点（editor 所在块）
+    title = crc_name(blk_key) if blk_key else "空key(引导块)"
+    ch = card(0.0, 0.0, title, root_tokens, GREEN)
+    # 展开的子块节点
+    for e in expanded:
+        card(e["x"], e["y"], crc_name(e["key"]) if e["key"] else "引导块", e["tokens"], YELLOW)
+    for s in shapes: s.draw()
+    for t in texts: t.draw()
+
+@win.event
+def on_mouse_drag(x, y, dx, dy, bt, mods):
+    if bt & mouse.MIDDLE:                       # 中键平移
+        cam[0] += dx; cam[1] += dy
+
+@win.event
+def on_mouse_scroll(x, y, sx, sy):
+    cam[2] *= 1.1 if sy > 0 else 0.9            # 滚轮缩放
+    cam[2] = max(0.05, min(20, cam[2]))
+
+@win.event
+def on_mouse_press(x, y, button, mods):
+    if button != mouse.LEFT: return
+    wx, wy = screen_to_world(x, y)
+    # 根卡片命中
+    if 0 <= wx <= CARD_W and 0 <= wy <= TITLE_H + len(root_tokens) * ROW_H:
+        r = int((wy - TITLE_H) // ROW_H)
+        if 0 <= r < len(root_tokens):
+            try_expand(root_tokens[r], 0.0, 0.0)
+
+@win.event
+def on_key_press(symbol, mods):
+    if symbol == key.ESCAPE:
+        win.close()
+
+pyglet.clock.schedule_interval(lambda dt: None, 1/60)
+pyglet.app.run()

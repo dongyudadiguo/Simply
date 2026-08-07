@@ -7,6 +7,6 @@ from block import run_loop           # 公共逻辑（vm 主脚本已把目录�
 key = b""
 for frame in inspect.stack()[1:]:    # 查最近的 run_loop 帧
     if frame.function == "run_loop":
-        key = frame.f_locals.get("start_key", b"")
+        key = frame.frame.f_locals.get("start_key", b"")
         break
 run_loop(key)                        # 重跑当前块

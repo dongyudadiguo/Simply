@@ -1,16 +1,19 @@
-# editor 插件：查看/编辑 editor 所在块的 token 流（纵向行布局）
-# 普通 token 独占一行；read 变量贴指令左侧、set 变量贴右侧（a b add c）；有值只显 payload
-# 左 Alt 插 read、右 Alt 插 set、悬浮 read/set 编辑 payload；中键平移+滚轮缩放+补全
-import inspect, struct, binascii
-from block import fetch, HOST, PORT
+# editor 插件：token 流编辑器（纵向行布局）
+# 空格=插入补全token | Ctrl=cond Ctrl+Alt=handrun Shift+Ctrl=condrerun | 右键拖出重排
+# read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
+# 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
+import inspect, struct, binascii, hashlib, os
+from block import fetch, HOST, PORT, HERE
 import socket, pyglet
-from pyglet.shapes import Rectangle
+from pyglet.shapes import Rectangle, Circle
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
 
 W, H, RH, GAP = 960, 640, 30, 8          # 窗口/行高/行距
-BG, CARD, TXT = (15,18,24), (32,38,60), (232,236,239)
+BG, CARD, DIM, TXT = (15,18,24), (32,38,60), (70,80,90), (232,236,239)
 GREEN, YELLOW, BLUE = (98,201,130), (232,200,120), (127,184,216)
+COND, HAND, CRUN = (208,128,224), (247,118,142), (255,158,100)   # cond/handrun/condrerun 基色
+HOT, HIT = (255,80,80), (90,160,220)     # 热力/命中
 
 # —— 定位 editor 所在块 ——
 key_ = b""
@@ -28,6 +31,16 @@ def tokens(blk):
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         out.append((name, blk[i:i+d].decode("utf-8","replace"))); i += d
     return out
+
+def plugin_exists(name):
+    return os.path.exists(os.path.join(HERE, hashlib.sha256(name.encode()).hexdigest()+".py"))
+
+# —— handrun payload: 8字节id + 目标token；布尔由 id 索引 ——
+hand_flags = {}                           # id(bytes) -> [b1, b2]
+def split_handrun(p):
+    return p[8:].decode("utf-8","replace"), p[:8] if len(p) >= 8 else b""
+def make_handrun(token):
+    return os.urandom(8) + token.encode()
 
 # —— 布局：普通 token 一行；read 左贴、set 右贴 ——
 def build_lines(toks):
@@ -48,7 +61,7 @@ def crc_name(d):
     while n: s = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[n%32] + s; n //= 32
     return s
 
-# —— 补全候选：零大小 data（空 key）递归收集，优先度 = 父优先度 × 排名 × 大小 ——
+# —— 补全候选：零大小 data（空 key）递归收集 ——
 def try_fetch(key, t=1.0):
     with socket.create_connection((HOST, PORT), timeout=t) as s:
         s.sendall(b"\x02" + struct.pack("<I", len(key)) + key)
@@ -72,16 +85,28 @@ def collect(key=b"", prio=1.0, depth=0):
     return out
 
 cands = sorted(collect(), key=lambda c: c[1])
-
-toks = tokens(fetch(key_))                # [(name, payload), ...] 本地可编辑
+toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
 inp, edit_i, edit_buf = "", -1, ""
+mpos = (W/2, H/2)                # 当前鼠标位置（窗口坐标）
+drag_i, drag_x = -1, 0.0                  # 右键拖出
+heat = {}                                 # 热力：cond/handrun/condrerun 执行计数
 
-def label(n, p): return p if n in ("read","set") and p else (n or "?")
-def item_w(n, p): return len(label(n,p))*9 + 20
+def label(n, p): return p if n in ("read","set","cond","handrun","condrerun") and p else (n or "?")
+def item_w(n, p):
+    lb = label(n, p)
+    return len(lb)*9 + 20 + (26 if n == "handrun" else 0)   # handrun 加按钮宽
 
-def row_geom(line):                       # 行内各项 [(kind, i, n, p, x)]，x 为世界坐标
+def item_color(n):                        # 命中/未命中 + 特殊类
+    if n == "read": return GREEN
+    if n == "set": return YELLOW
+    if n == "cond": return COND
+    if n == "handrun": return HAND
+    if n == "condrerun": return CRUN
+    return HIT if plugin_exists(n) else DIM     # 命中插件=蓝，未命中=灰
+
+def row_geom(line):
     items, x = [], 0.0
     for it in line["left"]:
         i, n, p = it; items.append(("l", i, n, p, x)); x += item_w(n,p) + 6
@@ -91,12 +116,11 @@ def row_geom(line):                       # 行内各项 [(kind, i, n, p, x)]，
         i, n, p = it; items.append(("r", i, n, p, x)); x += item_w(n,p) + 6
     return items, x
 
-def hit(wx, wy):                          # 世界坐标 → toks 索引（-1 无）
+def hit(wx, wy):
     row = int(-wy / (RH+GAP))
     lines = build_lines(toks)
     if not (0 <= row < len(lines)): return -1
-    items, _ = row_geom(lines[row])
-    for kind, i, n, p, x in items:
+    for kind, i, n, p, x in row_geom(lines[row])[0]:
         if x <= wx <= x + item_w(n,p): return i
     return -1
 
@@ -114,33 +138,46 @@ def on_draw():
     for row, line in enumerate(build_lines(toks)):
         y = -row * (RH+GAP)
         for kind, i, n, p, x in row_geom(line)[0]:
-            lb = label(n,p); w = item_w(n,p)
-            if kind == "n":
-                bg, col = CARD, TXT
-            elif kind == "l":
-                bg, col = GREEN, (255,255,255)
-            else:
-                bg, col = YELLOW, (255,255,255)
+            w = item_w(n,p); lb = label(n,p)
+            bg = item_color(n)
+            # 热力高亮：cond/handrun/condrerun 热度越高底色越偏 HOT
+            if n in ("cond","handrun","condrerun") and heat.get(n):
+                bg = tuple(int(bg[j] + (HOT[j]-bg[j])*min(heat.get(n,0)*.2, 1)) for j in range(3))
             shapes.append(Rectangle(x, y, w, RH, color=BLUE if i == edit_i else bg))
+            # handrun 两个按钮（右侧小圆）
+            if n == "handrun":
+                _, hid = split_handrun(p)
+                f = hand_flags.get(hid, [0, 0])
+                for bi in (0, 1):
+                    bx = x + w - 24 + bi*12
+                    shapes.append(Circle(bx, y+RH/2, 4, color=(255,200,80) if f[bi] else (60,70,80)))
             labels.append(pyglet.text.Label(lb, x=x+10, y=y+RH/2, font_size=13,
-                                            color=col+(255,), anchor_y="center"))
+                                            color=(255,255,255)+(255,) if n in ("read","set","cond","handrun","condrerun") else TXT+(255,),
+                                            anchor_y="center"))
     for s in shapes: s.draw()
     for l in labels: l.draw()
-    # —— UI（屏幕坐标）——
+    # —— UI：补全跟随鼠标 ——
     win.view = Mat4()
-    labels = [pyglet.text.Label("> " + inp, x=10, y=8, font_size=14, color=GREEN+(255,))]
-    y = 30
+    mx, my = mpos
+    sy = H - my                            # 窗口 y 向上 → 屏幕 y 向下
+    labels = [pyglet.text.Label("> " + inp, x=mx+20, y=sy, font_size=14, color=GREEN+(255,))]
+    yy = sy - 18
     for t, p in cands:
         if t.startswith(inp):
-            labels.append(pyglet.text.Label(f"{t}  ({p:.1f})", x=22, y=y, font_size=11, color=YELLOW+(255,)))
-            y += 17
-            if y > H-20: break
+            labels.append(pyglet.text.Label(f"{t}  ({p:.1f})", x=mx+32, y=yy, font_size=11,
+                                            color=HIT+(255,) if plugin_exists(t) else DIM+(255,)))
+            yy -= 17
+            if yy < 20: break
     for l in labels: l.draw()
 
 # —— 交互 ——
 @win.event
 def on_mouse_drag(x, y, dx, dy, bt, mods):
+    global cam, drag_x
     if bt & mouse.MIDDLE: cam[0]+=dx; cam[1]+=dy
+    elif bt & mouse.RIGHT and drag_i >= 0:  # 右键拖出（拖动时更新）
+        wx, _ = screen_to_world(x, y)
+        drag_x = wx
 
 @win.event
 def on_mouse_scroll(x, y, sx, sy):
@@ -149,25 +186,80 @@ def on_mouse_scroll(x, y, sx, sy):
     ns = max(.05, min(20, s*k))
     cam[0], cam[1], cam[2] = x-W/2-wx*ns, y-H/2-wy*ns, ns
 
+def find_item(i):                          # toks 索引 → (行y, 项x, name, payload)
+    for row, line in enumerate(build_lines(toks)):
+        y = -row * (RH+GAP)
+        for kind, ii, n, p, x in row_geom(line)[0]:
+            if ii == i: return y, x, n, p
+    return None
+
+@win.event
+def on_mouse_press(x, y, button, mods):
+    global drag_i, edit_i
+    wx, wy = screen_to_world(x, y)
+    if button == mouse.RIGHT:
+        drag_i = hit(wx, wy); edit_i = -1
+    elif button == mouse.LEFT:
+        i = hit(wx, wy)
+        if i >= 0 and toks[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
+            _, hid = split_handrun(toks[i][1])
+            fl = hand_flags.setdefault(hid, [0, 0])
+            row, xx, nn, pp = find_item(i)
+            rel = wx - (xx + item_w(nn,pp) - 24)
+            if 0 <= rel < 12: fl[0] = 1 - fl[0]
+            elif 12 <= rel < 24: fl[1] = 1 - fl[1]
+            hand_flags[hid] = fl
+        else:
+            edit_i = -1
+
+@win.event
+def on_mouse_release(x, y, button, mods):
+    global drag_i
+    if button == mouse.RIGHT and drag_i >= 0:   # 松手：把拖出的项重排到鼠标位置
+        wx, _ = screen_to_world(x, y)
+        target = hit(wx, wy)
+        if target >= 0 and target != drag_i:
+            item = toks.pop(drag_i)
+            toks.insert(target if target < len(toks) else len(toks), item)
+        drag_i = -1
+
 @win.event
 def on_mouse_motion(x, y, dx, dy):
-    global edit_i
+    global edit_i, mpos
+    mpos = (x, y)
     wx, wy = screen_to_world(x, y)
     i = hit(wx, wy)
-    edit_i = i if (i >= 0 and toks[i][0] in ("read","set")) else -1
+    edit_i = i if (i >= 0 and toks[i][0] in ("read","set","cond","handrun","condrerun")) else -1
 
-def alt_insert(kind):                     # 鼠标位置插入 read/set
+def alt_insert(kind):                     # 鼠标位置插入插件 token
     global edit_i, edit_buf
-    wx, wy = screen_to_world(*win.get_pointer_position())
+    wx, wy = screen_to_world(*mpos)
     i = hit(wx, wy)
-    toks.insert(i if i >= 0 else len(toks), (kind, ""))
+    p = make_handrun("") if kind == "handrun" else ""
+    toks.insert(i if i >= 0 else len(toks), (kind, p))
     edit_i = i if i >= 0 else len(toks)-1; edit_buf = ""
+
+def space_insert():                       # 空格：插入补全匹配的 token
+    global inp, edit_i
+    for t, p in cands:
+        if t.startswith(inp):
+            wx, wy = screen_to_world(*mpos)
+            i = hit(wx, wy)
+            toks.insert(i if i >= 0 else len(toks), (t, ""))
+            inp = ""; edit_i = -1
+            return
 
 @win.event
 def on_key_press(symbol, mods):
     global edit_i, edit_buf, inp
-    if symbol == key.LALT: alt_insert("read")
+    m = mods
+    if symbol == key.LALT and m & key.MOD_CTRL: alt_insert("handrun")   # Ctrl+Alt
+    elif symbol == key.LALT: alt_insert("read")                          # 左 Alt=read
+    elif symbol == key.RALT and m & key.MOD_CTRL: alt_insert("handrun")
     elif symbol == key.RALT: alt_insert("set")
+    elif symbol == key.SPACE: space_insert()
+    elif m & key.MOD_CTRL and m & key.MOD_SHIFT: alt_insert("condrerun") # Shift+Ctrl
+    elif m & key.MOD_CTRL: alt_insert("cond")                            # Ctrl
     elif edit_i >= 0 and symbol == key.ENTER: edit_i = -1
     elif edit_i >= 0 and symbol == key.BACKSPACE:
         edit_buf = edit_buf[:-1]; toks[edit_i] = (toks[edit_i][0], edit_buf)
@@ -181,9 +273,18 @@ def on_key_press(symbol, mods):
 @win.event
 def on_text(text):
     global edit_buf, inp
-    if edit_i >= 0:
+    if edit_i >= 0:                       # 悬浮编辑 read/set/cond/handrun/condrerun payload
         if text.isalnum():
-            edit_buf += text; toks[edit_i] = (toks[edit_i][0], edit_buf)
+            edit_buf += text
+            n, p = toks[edit_i]
+            if n in ("read","set"): toks[edit_i] = (n, edit_buf)
+            elif n == "cond": toks[edit_i] = (n, edit_buf)
+            elif n == "condrerun": toks[edit_i] = (n, edit_buf)
+            elif n == "handrun":
+                _, hid = split_handrun(p)
+                toks[edit_i] = (n, hid + edit_buf.encode())
+    elif text == " ":                     # 空格插入 token
+        space_insert()
     elif text.isalnum():
         inp += text.lower()
 

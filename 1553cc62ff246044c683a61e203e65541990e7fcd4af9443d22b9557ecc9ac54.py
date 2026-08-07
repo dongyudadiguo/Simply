@@ -2,10 +2,9 @@
 # 内容：查看 editor 所在的块 —— 中键平移 + 滚轮缩放 + 节点图（块节点 + token 子节点）
 # 直接代码（不加 run 层）：inspect 找 run_loop 帧 start_key = editor 所在块 key → fetch → pyglet 节点图
 import inspect, struct, binascii
-from block import fetch, run_loop
+from block import fetch
 import pyglet
-from pyglet.graphics import Batch
-from pyglet.shapes import Rectangle, Line
+from pyglet.shapes import Rectangle
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
 
@@ -46,25 +45,12 @@ BG = (15, 18, 24)
 CARD_BG = (32, 38, 60); HEAD = (40, 48, 70)
 TEXT_C = (232, 236, 239); DIM = (102, 113, 125)
 GREEN = (98, 201, 130); EDGE = (52, 65, 77)
-YELLOW = (232, 200, 120)
 
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0.0, 0.0, 1.0]                            # 平移 x/y + 缩放
-drag = None
-expanded = []                                    # [(key, x, y, tokens), ...] 展开的子块节点
-
 def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
-
-def try_expand(token, wx, wy):
-    try:
-        sub = fetch(token.encode())
-    except Exception:
-        return
-    st = parse_tokens(sub)
-    if not st: return
-    expanded.append({"key": token, "x": wx + CARD_W + 60, "y": wy, "tokens": st})
 
 @win.event
 def on_draw():
@@ -87,9 +73,6 @@ def on_draw():
     # 根块节点（editor 所在块）
     title = crc_name(blk_key) if blk_key else "空key(引导块)"
     ch = card(0.0, 0.0, title, root_tokens, GREEN)
-    # 展开的子块节点
-    for e in expanded:
-        card(e["x"], e["y"], crc_name(e["key"]) if e["key"] else "引导块", e["tokens"], YELLOW)
     for s in shapes: s.draw()
     for t in texts: t.draw()
 
@@ -100,18 +83,15 @@ def on_mouse_drag(x, y, dx, dy, bt, mods):
 
 @win.event
 def on_mouse_scroll(x, y, sx, sy):
-    cam[2] *= 1.1 if sy > 0 else 0.9            # 滚轮缩放
-    cam[2] = max(0.05, min(20, cam[2]))
+    k = 1.1 if sy > 0 else 0.9                  # 滚轮缩放（以鼠标位置为锚点）
+    s = cam[2]
+    wx = (x - W/2 - cam[0]) / s                 # 鼠标处的世界坐标
+    wy = (y - H/2 - cam[1]) / s
+    ns = max(0.05, min(20, s * k))
+    cam[0] = x - W/2 - wx * ns                  # 保持鼠标处世界点不动
+    cam[1] = y - H/2 - wy * ns
+    cam[2] = ns
 
-@win.event
-def on_mouse_press(x, y, button, mods):
-    if button != mouse.LEFT: return
-    wx, wy = screen_to_world(x, y)
-    # 根卡片命中
-    if 0 <= wx <= CARD_W and 0 <= wy <= TITLE_H + len(root_tokens) * ROW_H:
-        r = int((wy - TITLE_H) // ROW_H)
-        if 0 <= r < len(root_tokens):
-            try_expand(root_tokens[r], 0.0, 0.0)
 
 @win.event
 def on_key_press(symbol, mods):

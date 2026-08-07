@@ -131,11 +131,13 @@ def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
-def cursor_row():                              # 鼠标位置所在行/间隙（0..len）
+def cursor_row():                              # 鼠标在哪行文字中心之下 → 插该行前
     wx, wy = screen_to_world(*mpos)
-    lines = build_lines(toks)
-    dist = RH - wy
-    return int(min((max(0, dist) + GAP) // (RH+GAP), len(lines)))
+    n = len(build_lines(toks))
+    for i in range(n):
+        if -(i*(RH+GAP)) + RH/2 < wy:      # 该行文字中心在鼠标下方 → 插到该行前
+            return i
+    return n
 
 def pointer_y():                              # 指针行（世界 y）——与插入共用
     return -cursor_row() * (RH+GAP)

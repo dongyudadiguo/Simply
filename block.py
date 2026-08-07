@@ -27,14 +27,14 @@ def load_src(key):                           # key 的 sha256 十六进制就是
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）
     return open(path, encoding="utf-8").read()   # 读插件源码（最直接）
 
-def run_loop(start_key=b""):                 # 引导 + 沿引用链下钻到插件（vm 的为准）
+def run_block(start_key=b""):                 # 引导 + 沿引用链下钻到插件（vm 的为准）
     key = start_key                          # 引导起点：默认空 key（取引导块）
     seen = set()                             # 防引用环死循环
     while True:                              # 下钻循环：命中插件才跳出
         p = fetch(key)                       # 取当前 key 的块（失败直接冒泡）
         key = next_key(p)                    # 取块开头 token（引用目标）
         if key in seen:                      # 引用成环 → 明确报错（避免无限循环）
-            raise RuntimeError("run_loop 引用环: %r" % key)
+            raise RuntimeError("run_block 引用环: %r" % key)
         seen.add(key)
         try:
             src = load_src(key)              # 命中插件 → 拿到源码跳出

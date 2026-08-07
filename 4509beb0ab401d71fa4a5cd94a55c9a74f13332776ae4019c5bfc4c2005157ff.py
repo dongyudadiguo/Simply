@@ -1,9 +1,9 @@
 # 4509beb0ab401d71fa4a5cd94a55c9a74f13332776ae4019c5bfc4c2005157ff.py —— boot 插件（token="boot" → sha256 命名）
 # 内容：引导器 —— 生成/读取机器 id -> 上传引导块 -> 从 id key 引导执行
-# 直接代码（不加 run 层）：import block 后直接调用 run_loop(get_id())
+# 直接代码（不加 run 层）：import block 后直接调用 run_block(get_id())
 import os, struct          # 文件/编解码
 import socket              # TCP 连接
-from block import recv_all, run_loop   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
+from block import recv_all, run_block   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
 
 ID_FILE = "id.bin"                       # 机器 id 文件
 HOST, PORT = "127.0.0.1", 8000           # 本地服务器地址与端口
@@ -30,4 +30,4 @@ def get_id():
     upload(new_id, block)                # 上传引导块到 id key
     return new_id
 
-run_loop(get_id())                       # 直接执行：从 id key 引导（接管控制流）
+run_block(get_id())                       # 直接执行：从 id key 引导（接管控制流）

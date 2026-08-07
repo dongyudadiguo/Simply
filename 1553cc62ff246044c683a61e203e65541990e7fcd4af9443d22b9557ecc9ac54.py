@@ -3,7 +3,7 @@
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os, importlib
-from block import fetch, recv_all, run_loop, HOST, PORT, HERE
+from block import fetch, recv_all, run_block, HOST, PORT, HERE
 import socket, pyglet, ctypes
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -18,7 +18,7 @@ HOT, HIT = (255,80,80), (90,160,220)     # 热力/命中
 # —— 定位 editor 所在块 ——
 key_ = b""
 for f in inspect.stack()[1:]:
-    if f.function == "run_loop":
+    if f.function == "run_block":
         key_ = f.frame.f_locals.get("start_key", b""); break
 
 # —— 块 = [(name, payload)] ——
@@ -55,7 +55,7 @@ def save_view(v):                        # 改动即上传：视图 v(-1=主视�
 def exec_plugin(token):                  # 运行按钮：沿引用链下钻执行目标块
     if not token: return
     try:
-        run_loop(token.encode())         # 下钻：目标块开头 token 命中插件则执行，否则继续
+        run_block(token.encode())         # 下钻：目标块开头 token 命中插件则执行，否则继续
     except Exception:
         pass
 

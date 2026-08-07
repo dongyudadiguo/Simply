@@ -131,17 +131,19 @@ def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
-def cursor_row():                              # 鼠标在哪行文字中心之下 → 插该行前
+def cursor_row():                              # 鼠标在行底之上 → 插该行前
     wx, wy = screen_to_world(*mpos)
     n = len(build_lines(toks))
     for i in range(n):
-        if -(i*(RH+GAP)) + RH/2 < wy:      # 该行文字中心在鼠标下方 → 插到该行前
+        if -(i*(RH+GAP)) + RH < wy:        # 行 i 底之上 → 插到该行前
             return i
     return n
 
-def pointer_y():                              # 指针吸附到 token 之间的空隙（插入点）
+def pointer_y():                              # 指针吸附到插入点（token 之间唯一）
     i = cursor_row()
-    return 0 if i == 0 else 34 - 38*i      # i=0最上方；否则两行文字中间
+    n = len(build_lines(toks))
+    if i == 0: return RH                   # editor 上方（明确）
+    return -i*(RH+GAP) + (RH+GAP)/2        # 第 i 行前 = 行间隙中间（i=n 即末尾下方）
 
 # —— 渲染 ——
 @win.event

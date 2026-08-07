@@ -135,7 +135,7 @@ def cursor_row():                              # 鼠标位置所在行/间隙（
     wx, wy = screen_to_world(*mpos)
     lines = build_lines(toks)
     dist = RH - wy
-    return min((max(0, dist) + GAP) // (RH+GAP), len(lines))
+    return int(min((max(0, dist) + GAP) // (RH+GAP), len(lines)))
 
 def pointer_y():                              # 指针行（世界 y）——与插入共用
     return -cursor_row() * (RH+GAP)

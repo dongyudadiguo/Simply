@@ -3,7 +3,7 @@
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os
-from block import fetch, HOST, PORT, HERE
+from block import fetch, recv_all, HOST, PORT, HERE
 import socket, pyglet, ctypes
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -74,6 +74,12 @@ def try_fetch(key, t=1.0):
             if not c: raise ConnectionError
             d += c
         return d
+
+def upload(key, data):                       # op=3：上传数据（响应 4B idx）
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
+        s.sendall(b"\x03" + struct.pack("<I", len(key)) + key +
+                  struct.pack("<I", len(data)) + data)
+        return struct.unpack("<I", recv_all(s, 4))[0]
 
 def collect(key=b"", prio=1.0, depth=0):
     try: ts = tokens(try_fetch(key))
@@ -256,11 +262,11 @@ def on_mouse_press(x, y, button, mods):
                     key = n.encode()
                 try:                               # 目标块存在 → 拖出子块为独立视图
                     sub = tokens(try_fetch(key))
-                    if sub:
-                        subviews.append({"key": n, "toks": sub, "pos": (wx, wy)})
-                        drag_sv = len(subviews)-1
-                except Exception:
-                    pass
+                except Exception:                  # 服务器无 → 上传 4 字节全零占位
+                    upload(key, b"\x00\x00\x00\x00")
+                    sub = tokens(try_fetch(key))   # 重新取（现在存在）
+                subviews.append({"key": n, "toks": sub, "pos": (wx, wy)})   # 空块也拖出
+                drag_sv = len(subviews)-1
     elif button == mouse.LEFT:
         i = hit(wx, wy)
         if i >= 0 and toks[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）

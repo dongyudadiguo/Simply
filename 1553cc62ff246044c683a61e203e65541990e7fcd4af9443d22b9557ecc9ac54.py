@@ -94,7 +94,9 @@ drag_pos = (0.0, 0.0)                # 右键拖出的鼠标世界坐标        
 drag_i, drag_x = -1, 0.0                  # 右键拖出
 heat = {}                                 # 热力：cond/handrun/condrerun 执行计数
 
-def label(n, p): return p if n in ("read","set","cond","handrun","condrerun") and p else (n or "?")
+def label(n, p):
+    if n == "handrun": return split_handrun(p)[0] or "handrun"   # 只显示目标 token（str）
+    return p if n in ("read","set","cond","condrerun") and p else (n or "?")
 def item_w(n, p):
     lb = label(n, p)
     return len(lb)*9 + 20 + (26 if n == "handrun" else 0)   # handrun 加按钮宽

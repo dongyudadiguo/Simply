@@ -29,7 +29,8 @@ def tokens(blk):
         if not n: break
         name = blk[i:i+n].decode("utf-8","replace"); i += n
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
-        out.append((name, blk[i:i+d].decode("utf-8","replace"))); i += d
+        p = blk[i:i+d]
+        out.append((name, p if name == "handrun" else p.decode("utf-8","replace"))); i += d
     return out
 
 def plugin_exists(name):
@@ -247,8 +248,14 @@ def on_mouse_press(x, y, button, mods):
             i = hit(wx, wy)
             if i >= 0:
                 n, pp = toks[i]
-                try:                       # token 是块 key → 拖出子块为独立视图
-                    sub = tokens(try_fetch(n.encode()))
+                if n == "handrun":                 # handrun → 拖出 payload 里的目标 token
+                    target, _ = split_handrun(pp)
+                    if not target: return          # 无目标 → 不拖出
+                    key = target.encode()
+                else:                              # 普通 token → 自身名即块 key
+                    key = n.encode()
+                try:                               # 目标块存在 → 拖出子块为独立视图
+                    sub = tokens(try_fetch(key))
                     if sub:
                         subviews.append({"key": n, "toks": sub, "pos": (wx, wy)})
                         drag_sv = len(subviews)-1

@@ -260,17 +260,22 @@ def space_insert():                       # 空格：插入补全匹配的 token
             inp = ""; edit_i = -1
             return
 
+pressed, combo = set(), set()               # 当前按下的修饰键 / 本次组合
+def skey(symbol):
+    if symbol in (key.LCTRL, key.RCTRL): return "ctrl"
+    if symbol == key.LALT: return "altl"
+    if symbol == key.RALT: return "altr"
+    if symbol in (key.LSHIFT, key.RSHIFT): return "shift"
+    return None
+
 @win.event
 def on_key_press(symbol, mods):
     global edit_i, edit_buf, inp
-    m = mods
-    if symbol == key.LALT and m & key.MOD_CTRL: alt_insert("handrun")   # Ctrl+Alt
-    elif symbol == key.LALT: alt_insert("read")                          # 左 Alt=read
-    elif symbol == key.RALT and m & key.MOD_CTRL: alt_insert("handrun")
-    elif symbol == key.RALT: alt_insert("set")
-    elif symbol == key.SPACE: space_insert()
-    elif m & key.MOD_CTRL and m & key.MOD_SHIFT: alt_insert("condrerun") # Shift+Ctrl
-    elif m & key.MOD_CTRL: alt_insert("cond")                            # Ctrl
+    k = skey(symbol)
+    if k:                                        # 修饰键：只记录，等松开判定组合
+        pressed.add(k); combo.add(k)
+    elif symbol == key.SPACE:
+        space_insert()
     elif edit_i >= 0 and symbol == key.ENTER: edit_i = -1
     elif edit_i >= 0 and symbol == key.BACKSPACE:
         edit_buf = edit_buf[:-1]; toks[edit_i] = (toks[edit_i][0], edit_buf)
@@ -280,6 +285,21 @@ def on_key_press(symbol, mods):
         for t, p in cands:
             if t.startswith(inp): inp = t; break
     elif symbol == key.ESCAPE: win.close()
+
+@win.event
+def on_key_release(symbol, mods):
+    global pressed, combo, edit_i, edit_buf
+    k = skey(symbol)
+    if not k: return
+    pressed.discard(k)
+    if pressed or edit_i >= 0: return            # 还有修饰键按着 / 编辑态 → 不判定
+    c = frozenset(combo)                         # 本次完整组合（全部松开时）
+    combo.clear()
+    if c == frozenset({"altl"}): alt_insert("read")
+    elif c == frozenset({"altr"}): alt_insert("set")
+    elif c == frozenset({"ctrl"}): alt_insert("cond")
+    elif c in (frozenset({"ctrl","altl"}), frozenset({"ctrl","altr"})): alt_insert("handrun")
+    elif c == frozenset({"ctrl","shift"}): alt_insert("condrerun")
 
 @win.event
 def on_text(text):

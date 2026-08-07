@@ -1,78 +1,40 @@
-# boot_dll.py —— 启动引导（纯 Python，加载 .py 插件）
-# 逻辑：生成/读取机器 id -> 首次上传引导块 -> 取 key -> 按 sha256 加载 .py 插件并运行
-import hashlib, importlib.util, os, socket, struct, time
+# 1553cc62....py —— 引导插件（原 boot_dll.py，改名为 sha256("editor")）
+# 逻辑：生成/读取机器 id -> 首次上传引导块 -> 用公共 block.run_loop 从 id key 引导执行
+# 协议：op1 投票 / op2 取数据 / op3 上传（与 server 最小协议对齐，op4 已删）
+import os, sys, struct     # 路径/系统/编解码
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 本目录加入搜索路径
+import socket              # TCP 连接本地服务器
+from block import recv_all, fetch, next_key, load_run, run_loop   # 复用公共 block 逻辑（vm 的为准）
 
-HOST, PORT = "127.0.0.1", 8000
-ID_FILE = "id.bin"
-HERE = os.path.dirname(os.path.abspath(__file__))   # 插件和本文件放一起
-
-def recv_all(s, n):                          # 精确读满 n 字节
-    data = b""
-    while len(data) < n:
-        chunk = s.recv(n - len(data))
-        if not chunk: raise ConnectionError("连接被关闭")
-        data += chunk
-    return data
+HOST, PORT = "127.0.0.1", 8000   # 本地服务器地址与端口
+ID_FILE = "id.bin"               # 机器 id 文件（32 字节随机）
+HERE = os.path.dirname(os.path.abspath(__file__))   # 本文件所在目录（插件放一起）
 
 def upload(key, data):                       # 服务端 op=3：上传数据
-    with socket.create_connection((HOST, PORT), timeout=3) as s:
-        s.sendall(b"\x03" + struct.pack("<I", len(key)) + key +
-                  struct.pack("<I", len(data)) + data)
-        return struct.unpack("<I", recv_all(s, 4))[0]
-
-def fetch(key):                              # 服务端 op=2：按 key 取数据
-    with socket.create_connection((HOST, PORT), timeout=3) as s:
-        s.sendall(b"\x02" + struct.pack("<I", len(key)) + key)
-        return recv_all(s, struct.unpack("<I", recv_all(s, 4))[0])
-
+    with socket.create_connection((HOST, PORT), timeout=3) as s:   # 连服务器（3 秒超时）
+        s.sendall(b"\x03" + struct.pack("<I", len(key)) + key +   # 发 [op=3][key长][key]
+                  struct.pack("<I", len(data)) + data)             #    [data长][data]
+        return struct.unpack("<I", recv_all(s, 4))[0]              # 读回 4 字节 idx
 
 def vote(key, idx):                          # 服务端 op=1：给某条数据投票（平票时票数高者胜）
-    with socket.create_connection((HOST, PORT), timeout=3) as s:
-        s.sendall(b"\x01" + struct.pack("<I", len(key)) + key + struct.pack("<I", idx))
-        return struct.unpack("<I", recv_all(s, 4))[0]
-
-def list_keys():                       # 服务端 op=4：列出所有 key（需先发空 key 让服务端读完参数）
-    with socket.create_connection((HOST, PORT), timeout=3) as s:
-        s.sendall(b"\x04" + struct.pack("<I", 0))
-        n = struct.unpack("<I", recv_all(s, 4))[0]
-        out = []
-        for _ in range(n):
-            k = recv_all(s, struct.unpack("<I", recv_all(s, 4))[0])
-            c = struct.unpack("<I", recv_all(s, 4))[0]
-            out.append((k, c))
-        return out
+    with socket.create_connection((HOST, PORT), timeout=3) as s:   # 连服务器（3 秒超时）
+        s.sendall(b"\x01" + struct.pack("<I", len(key)) + key + struct.pack("<I", idx))  # 发 [op=1][key长][key][idx]
+        return struct.unpack("<I", recv_all(s, 4))[0]              # 读回 4 字节新票数
 
 def get_id():
     if os.path.exists(ID_FILE):              # 已有 id 直接用
-        return open(ID_FILE, "rb").read()
-    new_id = os.urandom(32)                  # 首次运行：生成 id 并保存
-    open(ID_FILE, "wb").write(new_id)
+        return open(ID_FILE, "rb").read()    # 读回 32 字节 id
+    new_id = os.urandom(32)                  # 首次运行：生成 32 字节随机 id
+    open(ID_FILE, "wb").write(new_id)        # 保存到 id.bin
     # 初始引导块，字节与原 C 版完全一致：[6]editor[0][5]rerun[0][0]
-    block = (bytes([6, 0, 0, 0]) + b"editor" + bytes([0, 0, 0, 0]) +
-             bytes([5, 0, 0, 0]) + b"rerun" + bytes([0, 0, 0, 0]) +
-             bytes([0, 0, 0, 0]))
-    upload(new_id, block)
-    return new_id
-
-def load_run(key):                           # key 的 sha256 十六进制就是插件文件名
-    path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")
-    spec = importlib.util.spec_from_file_location("boot_plugin", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)             # 每次重新执行插件文件
-    return mod.run
+    block = (bytes([6, 0, 0, 0]) + b"editor" + bytes([0, 0, 0, 0]) +   # editor 指令（token_len=6, data 空）
+             bytes([5, 0, 0, 0]) + b"rerun" + bytes([0, 0, 0, 0]) +    # rerun 指令（token_len=5, data 空）
+             bytes([0, 0, 0, 0]))                                      # 块结束标记（token_len=0）
+    upload(new_id, block)                    # 把引导块上传到 id key
+    return new_id                            # 返回 id
 
 def run():
-    key = get_id()
-    while True:
-        try:
-            p = fetch(key)
-            key = p[4 : 4 + struct.unpack("<I", p[:4])[0]]  # 前4字节是 key 长度
-            f = load_run(key)
-            break
-        except Exception:
-            time.sleep(1)                    # 没数据/没插件就等一会再试
-    while True:
-        f()
+    run_loop(get_id())                       # 从 id key 引导执行（复用公共逻辑）
 
 if __name__ == "__main__":
-    run()
+    run()                                    # 入口：启动引导

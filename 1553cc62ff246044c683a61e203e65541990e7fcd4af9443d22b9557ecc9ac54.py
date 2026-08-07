@@ -3,7 +3,7 @@
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os, importlib
-from block import fetch, recv_all, HOST, PORT, HERE
+from block import fetch, recv_all, run_loop, HOST, PORT, HERE
 import socket, pyglet, ctypes
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -52,14 +52,12 @@ def save_view(v):                        # 改动即上传：视图 v(-1=主视�
     except Exception:
         pass
 
-def exec_plugin(token):                  # 执行目标 token（加载 sha256 插件并 run）
+def exec_plugin(token):                  # 运行按钮：沿引用链下钻执行目标块
     if not token: return
-    path = os.path.join(HERE, hashlib.sha256(token.encode()).hexdigest()+".py")
-    if os.path.exists(path):
-        spec = importlib.util.spec_from_file_location("tok_"+token, path)
-        m = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(m)
-        if hasattr(m, "run"): m.run()
+    try:
+        run_loop(token.encode())         # 下钻：目标块开头 token 命中插件则执行，否则继续
+    except Exception:
+        pass
 
 def cur_toks():                          # 当前编辑视图的 token 流
     return toks if edit_v < 0 else subviews[edit_v]["toks"]

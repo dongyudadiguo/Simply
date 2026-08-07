@@ -139,9 +139,9 @@ def cursor_row():                              # 鼠标在哪行文字中心之�
             return i
     return n
 
-def pointer_y():                              # 指针精确跟随鼠标（世界 y）
-    wx, wy = screen_to_world(*mpos)
-    return wy
+def pointer_y():                              # 指针吸附到 token 之间的空隙（插入点）
+    i = cursor_row()
+    return 0 if i == 0 else 34 - 38*i      # i=0最上方；否则两行文字中间
 
 # —— 渲染 ——
 @win.event

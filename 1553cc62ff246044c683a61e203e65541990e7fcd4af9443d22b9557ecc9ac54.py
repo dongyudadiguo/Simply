@@ -4,7 +4,7 @@
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os
 from block import fetch, HOST, PORT, HERE
-import socket, pyglet
+import socket, pyglet, ctypes
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
@@ -139,8 +139,9 @@ def cursor_row():                              # 鼠标在哪行文字中心之�
             return i
     return n
 
-def pointer_y():                              # 指针行（世界 y）——与插入共用
-    return -cursor_row() * (RH+GAP)
+def pointer_y():                              # 指针精确跟随鼠标（世界 y）
+    wx, wy = screen_to_world(*mpos)
+    return wy
 
 # —— 渲染 ——
 @win.event
@@ -249,6 +250,11 @@ def on_mouse_release(x, y, button, mods):
 @win.event
 def on_mouse_motion(x, y, dx, dy):
     global edit_i, mpos
+    try:                                   # 鼠标进窗口 → 自动获得键盘焦点（否则收不到按键）
+        if ctypes.windll.user32.GetFocus() != win._hwnd:
+            ctypes.windll.user32.SetFocus(win._hwnd)
+    except Exception:
+        pass
     mpos = (x, y)
     wx, wy = screen_to_world(x, y)
     i = hit(wx, wy)

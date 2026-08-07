@@ -89,7 +89,8 @@ toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
 inp, edit_i, edit_buf = "", -1, ""
-mpos = (W/2, H/2)                # 当前鼠标位置（窗口坐标）
+mpos = (W/2, H/2)
+drag_pos = (0.0, 0.0)                # 右键拖出的鼠标世界坐标                # 当前鼠标位置（窗口坐标）
 drag_i, drag_x = -1, 0.0                  # 右键拖出
 heat = {}                                 # 热力：cond/handrun/condrerun 执行计数
 
@@ -138,6 +139,7 @@ def on_draw():
     for row, line in enumerate(build_lines(toks)):
         y = -row * (RH+GAP)
         for kind, i, n, p, x in row_geom(line)[0]:
+            if i == drag_i: continue               # 拖出的项单独画
             w = item_w(n,p); lb = label(n,p)
             bg = item_color(n)
             # 热力高亮：cond/handrun/condrerun 热度越高底色越偏 HOT
@@ -154,30 +156,33 @@ def on_draw():
             labels.append(pyglet.text.Label(lb, x=x+10, y=y+RH/2, font_size=13,
                                             color=(255,255,255)+(255,) if n in ("read","set","cond","handrun","condrerun") else TXT+(255,),
                                             anchor_y="center"))
+    if drag_i >= 0:                              # 拖出的项跟随鼠标（半透明）
+        n, p = toks[drag_i]; w = item_w(n,p); lb = label(n,p)
+        shapes.append(Rectangle(drag_pos[0], drag_pos[1], w, RH, color=(100,160,220)))
+        labels.append(pyglet.text.Label(lb, x=drag_pos[0]+10, y=drag_pos[1]+RH/2, font_size=13,
+                                        color=(255,255,255)+(255,), anchor_y="center"))
     for s in shapes: s.draw()
     for l in labels: l.draw()
-    # —— UI：补全跟随鼠标 ——
+    # —— UI：补全跟随鼠标（pyglet y 向上，鼠标上=候选上）——
     win.view = Mat4()
     mx, my = mpos
-    sy = H - my                            # 窗口 y 向上 → 屏幕 y 向下
-    labels = [pyglet.text.Label("> " + inp, x=mx+20, y=sy, font_size=14, color=GREEN+(255,))]
-    yy = sy - 18
+    labels = [pyglet.text.Label("> " + inp, x=mx+20, y=my, font_size=14, color=GREEN+(255,))]
+    yy = my + 18
     for t, p in cands:
         if t.startswith(inp):
             labels.append(pyglet.text.Label(f"{t}  ({p:.1f})", x=mx+32, y=yy, font_size=11,
                                             color=HIT+(255,) if plugin_exists(t) else DIM+(255,)))
-            yy -= 17
-            if yy < 20: break
+            yy += 17
+            if yy > H-20: break
     for l in labels: l.draw()
 
 # —— 交互 ——
 @win.event
 def on_mouse_drag(x, y, dx, dy, bt, mods):
-    global cam, drag_x
+    global cam, drag_pos
     if bt & mouse.MIDDLE: cam[0]+=dx; cam[1]+=dy
-    elif bt & mouse.RIGHT and drag_i >= 0:  # 右键拖出（拖动时更新）
-        wx, _ = screen_to_world(x, y)
-        drag_x = wx
+    elif bt & mouse.RIGHT and drag_i >= 0:  # 右键拖出（项跟随鼠标）
+        drag_pos = screen_to_world(x, y)
 
 @win.event
 def on_mouse_scroll(x, y, sx, sy):
@@ -193,12 +198,20 @@ def find_item(i):                          # toks 索引 → (行y, 项x, name, 
             if ii == i: return y, x, n, p
     return None
 
+def insert_pos(wx):                        # 鼠标 x → toks 插入位置（0..len）
+    pos = 0
+    for line in build_lines(toks):
+        for kind, i, n, p, x in row_geom(line)[0]:
+            if wx < x + item_w(n,p)/2: return pos
+            pos += 1
+    return pos
+
 @win.event
 def on_mouse_press(x, y, button, mods):
-    global drag_i, edit_i
+    global drag_i, drag_pos, edit_i
     wx, wy = screen_to_world(x, y)
     if button == mouse.RIGHT:
-        drag_i = hit(wx, wy); edit_i = -1
+        drag_i = hit(wx, wy); drag_pos = (wx, wy); edit_i = -1
     elif button == mouse.LEFT:
         i = hit(wx, wy)
         if i >= 0 and toks[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
@@ -215,12 +228,10 @@ def on_mouse_press(x, y, button, mods):
 @win.event
 def on_mouse_release(x, y, button, mods):
     global drag_i
-    if button == mouse.RIGHT and drag_i >= 0:   # 松手：把拖出的项重排到鼠标位置
+    if button == mouse.RIGHT and drag_i >= 0:   # 松手：拖出的项插到鼠标位置
         wx, _ = screen_to_world(x, y)
-        target = hit(wx, wy)
-        if target >= 0 and target != drag_i:
-            item = toks.pop(drag_i)
-            toks.insert(target if target < len(toks) else len(toks), item)
+        item = toks.pop(drag_i)
+        toks.insert(insert_pos(wx), item)
         drag_i = -1
 
 @win.event

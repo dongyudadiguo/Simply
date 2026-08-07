@@ -1,9 +1,11 @@
-# 1553cc62....py —— editor 插件（token="editor" → sha256 命名，独立于 boot）
-# 语义：编辑器入口（显示/编辑块）。与 boot（引导器）是不同的插件。
-# 当前：复用公共 run_loop 引导执行；后续可在此实现编辑器逻辑（GUI/显示）。
-import os, sys                       # 调整模块搜索路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 本目录加入搜索路径
-from block import run_loop           # 公共：引导 + 无限执行
+# 1553cc62ff246044c683a61e203e65541990e7fcd4af9443d22b9557ecc9ac54.py —— editor 插件（token="editor" → sha256 命名，独立于 boot）
+# 内容：编辑器入口（显示/编辑块）。当前占位：print 一次后由 vm 重跑。
+# 直接代码（不加 run 层）
+from block import fetch, next_key   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
+import os, struct, hashlib
 
-def run():
-    run_loop()                       # 编辑器入口：先复用引导执行（占位）
+# 读取当前块（id key 引导块）展示
+key = b""
+p = fetch(key)
+key = next_key(p)
+print("editor: 当前块 token =", key, flush=True)

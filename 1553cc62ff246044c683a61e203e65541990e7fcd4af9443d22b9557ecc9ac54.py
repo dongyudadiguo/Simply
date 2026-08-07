@@ -131,20 +131,21 @@ def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
-def cursor_row():                              # 鼠标在行底之上 → 插该行前
-    wx, wy = screen_to_world(*mpos)
+def gaps():                                     # 所有行间隙位置（世界 y）
     n = len(build_lines(toks))
-    for i in range(n):
-        if -(i*(RH+GAP)) + RH < wy:        # 行 i 底之上 → 插到该行前
-            return i
-    return n
+    gs = [RH]                               # editor 前
+    for i in range(1, n):
+        gs.append(-i*(RH+GAP) + (RH+GAP) - GAP/2)   # 行 i-1 与行 i 间隙中间
+    gs.append(-(n-1)*(RH+GAP) - (RH+GAP)/2)         # 末尾下方
+    return gs
 
-def pointer_y():                              # 指针画在行间隙中间（不压文字）
-    i = cursor_row()
-    n = len(build_lines(toks))
-    if i == 0: return RH                   # editor 上方
-    if i < n: return -i*(RH+GAP) + (RH+GAP) - GAP/2   # 行 i-1 与行 i 间隙中间（-38i+34）
-    return -(n-1)*(RH+GAP) - (RH+GAP)/2    # 末尾下方
+def cursor_row():                              # 吸附到离鼠标最近的间隙
+    wx, wy = screen_to_world(*mpos)
+    gs = gaps()
+    return min(range(len(gs)), key=lambda i: abs(gs[i] - wy))
+
+def pointer_y():                              # 指针 = 最近间隙
+    return gaps()[cursor_row()]
 
 # —— 渲染 ——
 @win.event

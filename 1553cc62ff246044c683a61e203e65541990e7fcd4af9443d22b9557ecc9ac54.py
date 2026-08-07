@@ -1,6 +1,6 @@
-# editor 插件：查看/编辑 editor 所在块的 token 流
-# read/set 显示 payload（有值时只显示 payload，颜色区分）；左 Alt 插 read、右 Alt 插 set、悬浮编辑 payload
-# 中键平移 + 滚轮缩放 + 打字补全（零大小 data，优先度=父优先度×排名×大小）
+# editor 插件：查看/编辑 editor 所在块的 token 流（纵向行布局）
+# 普通 token 独占一行；read 变量贴指令左侧、set 变量贴右侧（a b add c）；有值只显 payload
+# 左 Alt 插 read、右 Alt 插 set、悬浮 read/set 编辑 payload；中键平移+滚轮缩放+补全
 import inspect, struct, binascii
 from block import fetch, HOST, PORT
 import socket, pyglet
@@ -8,7 +8,7 @@ from pyglet.shapes import Rectangle
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
 
-W, H, RH, PAD = 960, 640, 30, 8          # 窗口/项高/项距
+W, H, RH, GAP = 960, 640, 30, 8          # 窗口/行高/行距
 BG, CARD, TXT = (15,18,24), (32,38,60), (232,236,239)
 GREEN, YELLOW, BLUE = (98,201,130), (232,200,120), (127,184,216)
 
@@ -28,6 +28,18 @@ def tokens(blk):
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         out.append((name, blk[i:i+d].decode("utf-8","replace"))); i += d
     return out
+
+# —— 布局：普通 token 一行；read 左贴、set 右贴 ——
+def build_lines(toks):
+    lines, left = [], []
+    for i, (n, p) in enumerate(toks):
+        if n == "read": left.append((i, n, p))
+        elif n == "set":
+            (lines[-1].setdefault("right", []).append((i, n, p)) if lines else left.append((i, n, p)))
+        else:
+            lines.append({"left": left, "name": (i, n, p), "right": []}); left = []
+    if left: lines.append({"left": left, "name": None, "right": []})
+    return lines
 
 def crc_name(d):
     n = binascii.crc32(d if isinstance(d,bytes) else d.encode()) & 0xFFFFFFFF
@@ -56,29 +68,41 @@ def collect(key=b"", prio=1.0, depth=0):
     for i, (t, _) in enumerate(ts):
         p = prio * (i+1) * len(t)
         out.append((t, p))
-        if depth < 3:
-            out += collect(t.encode(), p, depth+1)
+        if depth < 3: out += collect(t.encode(), p, depth+1)
     return out
 
 cands = sorted(collect(), key=lambda c: c[1])
 
-toks = tokens(fetch(key_))                # [(name, payload), ...]（本地可编辑列表）
+toks = tokens(fetch(key_))                # [(name, payload), ...] 本地可编辑
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
-inp, edit_i, edit_buf = "", -1, ""        # 补全输入 / 悬浮编辑项 / 编辑缓冲
+inp, edit_i, edit_buf = "", -1, ""
 
-def item_label(n, p):                     # read/set 有 payload 只显示 payload
-    return p if n in ("read","set") and p else (n or "?")
+def label(n, p): return p if n in ("read","set") and p else (n or "?")
+def item_w(n, p): return len(label(n,p))*9 + 20
 
-def item_color(n):
-    return GREEN if n == "read" else YELLOW if n == "set" else TXT
+def row_geom(line):                       # 行内各项 [(kind, i, n, p, x)]，x 为世界坐标
+    items, x = [], 0.0
+    for it in line["left"]:
+        i, n, p = it; items.append(("l", i, n, p, x)); x += item_w(n,p) + 6
+    if line["name"]:
+        i, n, p = line["name"]; items.append(("n", i, n, p, x)); x += item_w(n,p) + 6
+    for it in line["right"]:
+        i, n, p = it; items.append(("r", i, n, p, x)); x += item_w(n,p) + 6
+    return items, x
 
-def layout():                             # 每项 x 起点 + 总宽
-    xs, x = [], 0
-    for n, p in toks:
-        xs.append(x)
-        x += len(item_label(n, p))*9 + 20 + PAD
-    return xs, x
+def hit(wx, wy):                          # 世界坐标 → toks 索引（-1 无）
+    row = int(-wy / (RH+GAP))
+    lines = build_lines(toks)
+    if not (0 <= row < len(lines)): return -1
+    items, _ = row_geom(lines[row])
+    for kind, i, n, p, x in items:
+        if x <= wx <= x + item_w(n,p): return i
+    return -1
+
+def screen_to_world(x, y):
+    s = cam[2]
+    return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
 # —— 渲染 ——
 @win.event
@@ -86,15 +110,20 @@ def on_draw():
     import pyglet.gl as gl
     gl.glClearColor(*[c/255 for c in BG], 1); win.clear()
     win.view = Mat4.from_translation(Vec3(cam[0]+W/2, cam[1]+H/2, 0)) @ Mat4.from_scale(Vec3(cam[2], cam[2], 1))
-    xs, total = layout()
     shapes, labels = [], []
-    for i, (x0, (n, p)) in enumerate(zip(xs, toks)):
-        lb = item_label(n, p); c = item_color(n)
-        w = len(lb)*9 + 20
-        shapes.append(Rectangle(x0, 0, w, RH, color=BLUE if i == edit_i else CARD))
-        labels.append(pyglet.text.Label(lb, x=x0+10, y=RH/2, font_size=13,
-                                        color=(255,255,255)+(255,) if n in ("read","set") else c+(255,),
-                                        anchor_y="center"))
+    for row, line in enumerate(build_lines(toks)):
+        y = -row * (RH+GAP)
+        for kind, i, n, p, x in row_geom(line)[0]:
+            lb = label(n,p); w = item_w(n,p)
+            if kind == "n":
+                bg, col = CARD, TXT
+            elif kind == "l":
+                bg, col = GREEN, (255,255,255)
+            else:
+                bg, col = YELLOW, (255,255,255)
+            shapes.append(Rectangle(x, y, w, RH, color=BLUE if i == edit_i else bg))
+            labels.append(pyglet.text.Label(lb, x=x+10, y=y+RH/2, font_size=13,
+                                            color=col+(255,), anchor_y="center"))
     for s in shapes: s.draw()
     for l in labels: l.draw()
     # —— UI（屏幕坐标）——
@@ -107,17 +136,6 @@ def on_draw():
             y += 17
             if y > H-20: break
     for l in labels: l.draw()
-
-def hit_item(wx):                         # 世界 x → 项索引
-    xs, total = layout()
-    for i, x0 in enumerate(xs):
-        w = len(item_label(*toks[i]))*9 + 20
-        if x0 <= wx <= x0 + w: return i
-    return -1
-
-def screen_to_world(x, y):
-    s = cam[2]
-    return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
 # —— 交互 ——
 @win.event
@@ -135,40 +153,35 @@ def on_mouse_scroll(x, y, sx, sy):
 def on_mouse_motion(x, y, dx, dy):
     global edit_i
     wx, wy = screen_to_world(x, y)
-    i = hit_item(wx)
-    edit_i = i if (i >= 0 and toks[i][0] in ("read","set") and -RH/2 <= wy <= RH/2) else -1
+    i = hit(wx, wy)
+    edit_i = i if (i >= 0 and toks[i][0] in ("read","set")) else -1
+
+def alt_insert(kind):                     # 鼠标位置插入 read/set
+    global edit_i, edit_buf
+    wx, wy = screen_to_world(*win.get_pointer_position())
+    i = hit(wx, wy)
+    toks.insert(i if i >= 0 else len(toks), (kind, ""))
+    edit_i = i if i >= 0 else len(toks)-1; edit_buf = ""
 
 @win.event
 def on_key_press(symbol, mods):
     global edit_i, edit_buf, inp
-    if symbol == key.LALT:                 # 左 Alt：鼠标位置插 read
-        wx, _ = screen_to_world(*win.get_pointer_position())
-        hi = hit_item(wx)
-        toks.insert(hi if hi >= 0 else len(toks), ("read", ""))
-        edit_i = hi if hi >= 0 else len(toks)-1; edit_buf = ""
-    elif symbol == key.RALT:               # 右 Alt：插 set
-        wx, _ = screen_to_world(*win.get_pointer_position())
-        hi = hit_item(wx)
-        toks.insert(hi if hi >= 0 else len(toks), ("set", ""))
-        edit_i = hi if hi >= 0 else len(toks)-1; edit_buf = ""
-    elif edit_i >= 0 and symbol == key.ENTER:
-        edit_i = -1
+    if symbol == key.LALT: alt_insert("read")
+    elif symbol == key.RALT: alt_insert("set")
+    elif edit_i >= 0 and symbol == key.ENTER: edit_i = -1
     elif edit_i >= 0 and symbol == key.BACKSPACE:
         edit_buf = edit_buf[:-1]; toks[edit_i] = (toks[edit_i][0], edit_buf)
-    elif edit_i >= 0 and symbol == key.ESCAPE:
-        edit_i = -1
-    elif symbol == key.BACKSPACE:
-        inp = inp[:-1]
+    elif edit_i >= 0 and symbol == key.ESCAPE: edit_i = -1
+    elif symbol == key.BACKSPACE: inp = inp[:-1]
     elif symbol == key.ENTER:
         for t, p in cands:
             if t.startswith(inp): inp = t; break
-    elif symbol == key.ESCAPE:
-        win.close()
+    elif symbol == key.ESCAPE: win.close()
 
 @win.event
 def on_text(text):
     global edit_buf, inp
-    if edit_i >= 0:                        # 悬浮编辑 read/set payload
+    if edit_i >= 0:
         if text.isalnum():
             edit_buf += text; toks[edit_i] = (toks[edit_i][0], edit_buf)
     elif text.isalnum():

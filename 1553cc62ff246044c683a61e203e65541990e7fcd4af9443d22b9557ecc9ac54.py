@@ -118,8 +118,9 @@ def row_geom(line):
     return items, x
 
 def hit(wx, wy):
-    row = int(-wy / (RH+GAP))
     lines = build_lines(toks)
+    dist = RH - wy                             # 行0顶(y=RH)向下
+    row = int((max(0, dist) + GAP) // (RH+GAP))   # 与行底分界一致
     if not (0 <= row < len(lines)): return -1
     for kind, i, n, p, x in row_geom(lines[row])[0]:
         if x <= wx <= x + item_w(n,p): return i

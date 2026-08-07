@@ -131,12 +131,14 @@ def screen_to_world(x, y):
     s = cam[2]
     return ((x - W/2 - cam[0]) / s, (y - H/2 - cam[1]) / s)
 
-def pointer_y():                              # 鼠标位置对应的指针行（世界 y）
+def cursor_row():                              # 鼠标位置所在行/间隙（0..len）
     wx, wy = screen_to_world(*mpos)
     lines = build_lines(toks)
     dist = RH - wy
-    row = min((max(0, dist) + GAP) // (RH+GAP), len(lines))
-    return -row * (RH+GAP)
+    return min((max(0, dist) + GAP) // (RH+GAP), len(lines))
+
+def pointer_y():                              # 指针行（世界 y）——与插入共用
+    return -cursor_row() * (RH+GAP)
 
 # —— 渲染 ——
 @win.event
@@ -250,13 +252,17 @@ def on_mouse_motion(x, y, dx, dy):
     i = hit(wx, wy)
     edit_i = i if (i >= 0 and toks[i][0] in ("read","set","cond","handrun","condrerun")) else -1
 
-def alt_insert(kind):                     # 鼠标位置插入插件 token
+def alt_insert(kind):                     # 鼠标位置插入插件 token（与指针同定位）
     global edit_i, edit_buf
-    wx, wy = screen_to_world(*mpos)
-    i = hit(wx, wy)
+    lines = build_lines(toks)
+    row = cursor_row()
+    pos = len(toks)
+    if row < len(lines):                     # 指针所在行的第一个 token 作为插入点
+        f = min([ii for k, ii, n, p, x in row_geom(lines[row])[0]] or [len(toks)])
+        pos = f
     p = make_handrun("") if kind == "handrun" else ""
-    toks.insert(i if i >= 0 else len(toks), (kind, p))
-    edit_i = i if i >= 0 else len(toks)-1; edit_buf = ""
+    toks.insert(pos, (kind, p))
+    edit_i = pos; edit_buf = ""
 
 def space_insert():                       # 空格：插入补全匹配的 token
     global inp, edit_i

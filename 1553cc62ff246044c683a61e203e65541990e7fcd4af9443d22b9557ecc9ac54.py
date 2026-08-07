@@ -90,8 +90,6 @@ win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
 inp, edit_i, edit_buf = "", -1, ""
 mpos = (W/2, H/2)
-drag_pos = (0.0, 0.0)                # 右键拖出的鼠标世界坐标                # 当前鼠标位置（窗口坐标）
-drag_i, drag_x = -1, 0.0                  # 右键拖出
 heat = {}                                 # 热力：cond/handrun/condrerun 执行计数
 
 def label(n, p):
@@ -157,7 +155,6 @@ def on_draw():
     for row, line in enumerate(build_lines(toks)):
         y = -row * (RH+GAP)
         for kind, i, n, p, x in row_geom(line)[0]:
-            if i == drag_i: continue               # 拖出的项单独画
             lb = label(n, p)
             col = item_color(n)                    # 纯文字颜色（无矩形背景）
             if n in ("cond","handrun","condrerun") and heat.get(n):   # 热力：文字偏 HOT
@@ -174,10 +171,21 @@ def on_draw():
     # 指针：鼠标位置对应的插入行（参考 transition 的水平线）
     py = pointer_y()
     shapes.append(Line(0, py, 420, py, thickness=2, color=(150,160,170)))
-    if drag_i >= 0:                              # 拖出的项跟随鼠标（文字）
-        n, p = toks[drag_i]; lb = label(n,p)
-        labels.append(pyglet.text.Label(lb, x=drag_pos[0]+2, y=drag_pos[1]+RH/2, font_size=13,
-                                        color=(100,160,220)+(255,), anchor_y="center"))
+    # —— 拖出的子视图：显示其 token 行 + 父-子连线 ——
+    for sv in subviews:
+        bx, by = sv["pos"]
+        for row, line in enumerate(build_lines(sv["toks"])):
+            yy = by - row*(RH+GAP)
+            for kind, ii, nn, pp, xx in row_geom(line)[0]:
+                lb = label(nn, pp)
+                labels.append(pyglet.text.Label(lb, x=bx+xx+2, y=yy+RH/2, font_size=13,
+                                                color=item_color(nn)+(255,), anchor_y="center"))
+        # 父-子连线（主视图 token → 子视图左上）
+        for row, line in enumerate(build_lines(toks)):
+            for kind, ii, nn, pp, xx in row_geom(line)[0]:
+                if nn == sv["key"]:
+                    py = -row*(RH+GAP)
+                    shapes.append(Line(xx+20, py+RH/2, bx, by, thickness=1, color=(98,201,130)))
     for s in shapes: s.draw()
     for l in labels: l.draw()
     # —— UI：补全跟随鼠标（pyglet y 向上，鼠标上=候选上）——
@@ -196,10 +204,10 @@ def on_draw():
 # —— 交互 ——
 @win.event
 def on_mouse_drag(x, y, dx, dy, bt, mods):
-    global cam, drag_pos
+    global cam, drag_sv
     if bt & mouse.MIDDLE: cam[0]+=dx; cam[1]+=dy
-    elif bt & mouse.RIGHT and drag_i >= 0:  # 右键拖出（项跟随鼠标）
-        drag_pos = screen_to_world(x, y)
+    elif bt & mouse.RIGHT and drag_sv >= 0:   # 拖动子视图跟随鼠标
+        subviews[drag_sv]["pos"] = screen_to_world(x, y)
 
 @win.event
 def on_mouse_scroll(x, y, sx, sy):
@@ -215,20 +223,36 @@ def find_item(i):                          # toks 索引 → (行y, 项x, name, 
             if ii == i: return y, x, n, p
     return None
 
-def insert_pos(wx):                        # 鼠标 x → toks 插入位置（0..len）
-    pos = 0
-    for line in build_lines(toks):
-        for kind, i, n, p, x in row_geom(line)[0]:
-            if wx < x + item_w(n,p)/2: return pos
-            pos += 1
-    return pos
+subviews = []                            # 右键拖出的独立子视图 [{"key","toks","pos"}]
+drag_sv = -1                              # 正在拖动的子视图索引
+
+def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无）
+    for si, sv in enumerate(subviews):
+        n = len(build_lines(sv["toks"]))
+        if sv["pos"][1] >= wy >= sv["pos"][1] - n*(RH+GAP) and wx >= sv["pos"][0]-20:
+            return si
+    return -1
 
 @win.event
 def on_mouse_press(x, y, button, mods):
-    global drag_i, drag_pos, edit_i
+    global drag_sv, edit_i
     wx, wy = screen_to_world(x, y)
     if button == mouse.RIGHT:
-        drag_i = hit(wx, wy); drag_pos = (wx, wy); edit_i = -1
+        edit_i = -1
+        si = hit_subview(wx, wy)
+        if si >= 0:
+            drag_sv = si
+        else:
+            i = hit(wx, wy)
+            if i >= 0:
+                n, pp = toks[i]
+                try:                       # token 是块 key → 拖出子块为独立视图
+                    sub = tokens(try_fetch(n.encode()))
+                    if sub:
+                        subviews.append({"key": n, "toks": sub, "pos": (wx, wy)})
+                        drag_sv = len(subviews)-1
+                except Exception:
+                    pass
     elif button == mouse.LEFT:
         i = hit(wx, wy)
         if i >= 0 and toks[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
@@ -244,12 +268,8 @@ def on_mouse_press(x, y, button, mods):
 
 @win.event
 def on_mouse_release(x, y, button, mods):
-    global drag_i
-    if button == mouse.RIGHT and drag_i >= 0:   # 松手：拖出的项插到鼠标位置
-        wx, _ = screen_to_world(x, y)
-        item = toks.pop(drag_i)
-        toks.insert(insert_pos(wx), item)
-        drag_i = -1
+    global drag_sv
+    if button == mouse.RIGHT: drag_sv = -1
 
 @win.event
 def on_mouse_motion(x, y, dx, dy):

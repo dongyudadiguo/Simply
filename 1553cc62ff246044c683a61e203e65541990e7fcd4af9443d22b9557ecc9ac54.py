@@ -139,11 +139,12 @@ def cursor_row():                              # 鼠标在行底之上 → 插�
             return i
     return n
 
-def pointer_y():                              # 指针吸附到插入点（token 之间唯一）
+def pointer_y():                              # 指针画在行间隙中间（不压文字）
     i = cursor_row()
     n = len(build_lines(toks))
-    if i == 0: return RH                   # editor 上方（明确）
-    return -i*(RH+GAP) + (RH+GAP)/2        # 第 i 行前 = 行间隙中间（i=n 即末尾下方）
+    if i == 0: return RH                   # editor 上方
+    if i < n: return -i*(RH+GAP) + (RH+GAP) - GAP/2   # 行 i-1 与行 i 间隙中间（-38i+34）
+    return -(n-1)*(RH+GAP) - (RH+GAP)/2    # 末尾下方
 
 # —— 渲染 ——
 @win.event

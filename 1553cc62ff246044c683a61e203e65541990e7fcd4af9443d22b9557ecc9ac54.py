@@ -2,7 +2,7 @@
 # 空格=插入补全token | Ctrl=cond Ctrl+Alt=handrun Shift+Ctrl=condrerun | 右键拖出重排
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
-import inspect, struct, binascii, hashlib, os
+import inspect, struct, binascii, hashlib, os, importlib
 from block import fetch, recv_all, HOST, PORT, HERE
 import socket, pyglet, ctypes
 from pyglet.shapes import Circle, Line
@@ -35,6 +35,62 @@ def tokens(blk):
 
 def plugin_exists(name):
     return os.path.exists(os.path.join(HERE, hashlib.sha256(name.encode()).hexdigest()+".py"))
+
+def encode_toks(ts):                     # 块序列化（tokens 的逆）→ upload 用
+    out = b""
+    for n, p in ts:
+        b = n.encode()
+        out += struct.pack("<I", len(b)) + b
+        pb = p if isinstance(p, bytes) else p.encode()
+        out += struct.pack("<I", len(pb)) + pb
+    return out + struct.pack("<I", 0)
+
+def save_view(v):                        # 改动即上传：视图 v(-1=主视图) 编码后 upload
+    try:
+        if v < 0: upload(key_, encode_toks(toks))
+        else: upload(subviews[v]["bkey"], encode_toks(subviews[v]["toks"]))
+    except Exception:
+        pass
+
+def exec_plugin(token):                  # 执行目标 token（加载 sha256 插件并 run）
+    if not token: return
+    path = os.path.join(HERE, hashlib.sha256(token.encode()).hexdigest()+".py")
+    if os.path.exists(path):
+        spec = importlib.util.spec_from_file_location("tok_"+token, path)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        if hasattr(m, "run"): m.run()
+
+def cur_toks():                          # 当前编辑视图的 token 流
+    return toks if edit_v < 0 else subviews[edit_v]["toks"]
+
+def hit_view(sv, wx, wy):                # 子视图内命中 → 项索引（行0顶=pos.y+RH）
+    bx, by = sv["pos"]
+    dist = (by + RH) - wy
+    row = int((max(0, dist) + GAP) // (RH+GAP))
+    lines = build_lines(sv["toks"])
+    if not (0 <= row < len(lines)): return -1
+    for kind, i, n, p, x in row_geom(lines[row])[0]:
+        if bx + x <= wx <= bx + x + item_w(n,p): return i
+    return -1
+
+def find_item_v(v, i):                   # 视图内项位置 → (world x, world y, name, payload)
+    if v < 0: ts, ox, oy = toks, 0.0, 0.0
+    else: ts, ox, oy = subviews[v]["toks"], subviews[v]["pos"][0], subviews[v]["pos"][1]
+    for r, line in enumerate(build_lines(ts)):
+        for k, ii, n, p, x in row_geom(line)[0]:
+            if ii == i: return ox + x, oy - r*(RH+GAP), n, p
+    return None
+
+def insert_point(ts, ox, oy):            # 鼠标在视图(原点 ox,oy)内 → 插入位置
+    wx, wy = screen_to_world(*mpos)
+    dist = oy - wy
+    row = int((max(0, dist) + GAP) // (RH+GAP))
+    lines = build_lines(ts)
+    if 0 <= row < len(lines):
+        f = min([ii for k, ii, n, p, x in row_geom(lines[row])[0]] or [len(ts)])
+        return f
+    return len(ts)
 
 # —— handrun payload: 8字节id + 目标token；布尔由 id 索引 ——
 hand_flags = {}                           # id(bytes) -> [b1, b2]
@@ -95,7 +151,7 @@ cands = sorted(collect(), key=lambda c: c[1])
 toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
-inp, edit_i, edit_buf = "", -1, ""
+inp, edit_i, edit_buf, edit_v = "", -1, "", -1
 mpos = (W/2, H/2)
 heat = {}                                 # 热力：cond/handrun/condrerun 执行计数
 
@@ -167,7 +223,7 @@ def on_draw():
             col = item_color(n)                    # 纯文字颜色（无矩形背景）
             if n in ("cond","handrun","condrerun") and heat.get(n):   # 热力：文字偏 HOT
                 col = tuple(int(col[j] + (HOT[j]-col[j])*min(heat.get(n,0)*.2,1)) for j in range(3))
-            if i == edit_i: col = (255,255,255)    # 悬浮编辑项白字
+            if i == edit_i and edit_v < 0: col = (255,255,255)    # 悬浮编辑项白字
             labels.append(pyglet.text.Label(lb, x=x+2, y=y+RH/2, font_size=13,
                                             color=col+(255,), anchor_y="center"))
             if n == "handrun":                     # handrun 两个按钮（小圆点）
@@ -179,15 +235,23 @@ def on_draw():
     # 指针：鼠标位置对应的插入行（参考 transition 的水平线）
     py = pointer_y()
     shapes.append(Line(0, py, 420, py, thickness=2, color=(150,160,170)))
-    # —— 拖出的子视图：显示其 token 行 + 父-子连线 ——
-    for sv in subviews:
+    # —— 拖出的子视图：显示其 token 行 + 父-子连线（可编辑：白字/按钮）——
+    for si, sv in enumerate(subviews):
         bx, by = sv["pos"]
         for row, line in enumerate(build_lines(sv["toks"])):
             yy = by - row*(RH+GAP)
             for kind, ii, nn, pp, xx in row_geom(line)[0]:
                 lb = label(nn, pp)
+                col = item_color(nn)
+                if ii == edit_i and edit_v == si: col = (255,255,255)   # 子视图编辑态白字
                 labels.append(pyglet.text.Label(lb, x=bx+xx+2, y=yy+RH/2, font_size=13,
-                                                color=item_color(nn)+(255,), anchor_y="center"))
+                                                color=col+(255,), anchor_y="center"))
+                if nn == "handrun":                  # 子视图 handrun 按钮
+                    _, hid = split_handrun(pp)
+                    f = hand_flags.get(hid, [0, 0])
+                    for bi in (0, 1):
+                        bx2 = bx + xx + item_w(nn,pp) - 26 + bi*12
+                        shapes.append(Circle(bx2, yy+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
         # 父-子连线（主视图 token → 子视图左上）
         for row, line in enumerate(build_lines(toks)):
             for kind, ii, nn, pp, xx in row_geom(line)[0]:
@@ -234,10 +298,12 @@ def find_item(i):                          # toks 索引 → (行y, 项x, name, 
 subviews = []                            # 右键拖出的独立子视图 [{"key","toks","pos"}]
 drag_sv = -1                              # 正在拖动的子视图索引
 
-def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无）
+def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无；含空块）
     for si, sv in enumerate(subviews):
         n = len(build_lines(sv["toks"]))
-        if sv["pos"][1] >= wy >= sv["pos"][1] - n*(RH+GAP) and wx >= sv["pos"][0]-20:
+        top = sv["pos"][1] + RH                    # 行0顶
+        bot = sv["pos"][1] - (n-1)*(RH+GAP) - RH   # 最后行底（空块也覆盖行0区）
+        if top >= wy >= bot and wx >= sv["pos"][0]-20:
             return si
     return -1
 
@@ -265,18 +331,27 @@ def on_mouse_press(x, y, button, mods):
                 except Exception:                  # 服务器无 → 上传 4 字节全零占位
                     upload(key, b"\x00\x00\x00\x00")
                     sub = tokens(try_fetch(key))   # 重新取（现在存在）
-                subviews.append({"key": n, "toks": sub, "pos": (wx, wy)})   # 空块也拖出
+                subviews.append({"key": n, "bkey": key, "toks": sub, "pos": (wx, wy)})   # 空块也拖出
                 drag_sv = len(subviews)-1
     elif button == mouse.LEFT:
-        i = hit(wx, wy)
-        if i >= 0 and toks[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
-            _, hid = split_handrun(toks[i][1])
+        si = hit_subview(wx, wy)
+        if si >= 0:                            # 点的是子视图
+            v, ts = si, subviews[si]["toks"]
+            i = hit_view(subviews[si], wx, wy)
+        else:                                  # 主视图
+            v, ts = -1, toks
+            i = hit(wx, wy)
+        if i >= 0 and ts[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
+            _, hid = split_handrun(ts[i][1])
             fl = hand_flags.setdefault(hid, [0, 0])
-            row, xx, nn, pp = find_item(i)
-            rel = wx - (xx + item_w(nn,pp) - 24)
-            if 0 <= rel < 12: fl[0] = 1 - fl[0]
-            elif 12 <= rel < 24: fl[1] = 1 - fl[1]
-            hand_flags[hid] = fl
+            gi = find_item_v(v, i)
+            rel = wx - (gi[0] + item_w(gi[2],gi[3]) - 24)
+            hitb = 0 if 0 <= rel < 12 else (1 if 12 <= rel < 24 else -1)
+            if hitb >= 0:                      # 命中按钮 → 切换 + 执行目标（运行按钮）
+                fl[hitb] = 1 - fl[hitb]
+                hand_flags[hid] = fl
+                target, _ = split_handrun(gi[3])
+                if target: exec_plugin(target)
         else:
             edit_i = -1
 
@@ -287,7 +362,7 @@ def on_mouse_release(x, y, button, mods):
 
 @win.event
 def on_mouse_motion(x, y, dx, dy):
-    global edit_i, mpos
+    global edit_i, edit_v, mpos
     try:                                   # 鼠标进窗口 → 自动获得键盘焦点（否则收不到按键）
         if ctypes.windll.user32.GetFocus() != win._hwnd:
             ctypes.windll.user32.SetFocus(win._hwnd)
@@ -295,29 +370,37 @@ def on_mouse_motion(x, y, dx, dy):
         pass
     mpos = (x, y)
     wx, wy = screen_to_world(x, y)
-    i = hit(wx, wy)
-    edit_i = i if (i >= 0 and toks[i][0] in ("read","set","cond","handrun","condrerun")) else -1
+    si = hit_subview(wx, wy)
+    if si >= 0:                              # 鼠标在子视图 → 编辑子视图
+        edit_v = si
+        i = hit_view(subviews[si], wx, wy)
+    else:                                    # 主视图
+        edit_v = -1
+        i = hit(wx, wy)
+    edit_i = i if (i >= 0 and cur_toks()[i][0] in ("read","set","cond","handrun","condrerun")) else -1
 
-def alt_insert(kind):                     # 鼠标位置插入插件 token（与指针同定位）
-    global edit_i, edit_buf
-    lines = build_lines(toks)
-    row = cursor_row()
-    pos = len(toks)
-    if row < len(lines):                     # 指针所在行的第一个 token 作为插入点
-        f = min([ii for k, ii, n, p, x in row_geom(lines[row])[0]] or [len(toks)])
-        pos = f
+def alt_insert(kind):                     # 鼠标位置插入插件 token（当前视图）
+    global edit_i, edit_buf, edit_v
+    ts = cur_toks()
+    if edit_v < 0: ox, oy = 0.0, float(RH)
+    else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1] + RH
+    pos = insert_point(ts, ox, oy)
     p = make_handrun("") if kind == "handrun" else ""
-    toks.insert(pos, (kind, p))
+    ts.insert(pos, (kind, p))
     edit_i = pos; edit_buf = ""
+    save_view(edit_v)
 
-def space_insert():                       # 空格：插入补全匹配的 token
-    global inp, edit_i
+def space_insert():                       # 空格：插入补全匹配的 token（当前视图）
+    global inp, edit_i, edit_v
     for t, p in cands:
         if t.startswith(inp):
-            wx, wy = screen_to_world(*mpos)
-            i = hit(wx, wy)
-            toks.insert(i if i >= 0 else len(toks), (t, ""))
+            ts = cur_toks()
+            if edit_v < 0: ox, oy = 0.0, float(RH)
+            else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1] + RH
+            pos = insert_point(ts, ox, oy)
+            ts.insert(pos, (t, ""))
             inp = ""; edit_i = -1
+            save_view(edit_v)
             return
 
 pressed, combo = set(), set()               # 当前按下的修饰键 / 本次组合
@@ -338,7 +421,9 @@ def on_key_press(symbol, mods):
         space_insert()
     elif edit_i >= 0 and symbol == key.ENTER: edit_i = -1
     elif edit_i >= 0 and symbol == key.BACKSPACE:
-        edit_buf = edit_buf[:-1]; toks[edit_i] = (toks[edit_i][0], edit_buf)
+        edit_buf = edit_buf[:-1]
+        ts = cur_toks(); ts[edit_i] = (ts[edit_i][0], edit_buf)
+        save_view(edit_v)
     elif edit_i >= 0 and symbol == key.ESCAPE: edit_i = -1
     elif symbol == key.BACKSPACE: inp = inp[:-1]
     elif symbol == key.ENTER:
@@ -363,17 +448,18 @@ def on_key_release(symbol, mods):
 
 @win.event
 def on_text(text):
-    global edit_buf, inp
+    global edit_buf, inp, edit_v
     if edit_i >= 0:                       # 悬浮编辑 read/set/cond/handrun/condrerun payload
         if text.isalnum():
             edit_buf += text
-            n, p = toks[edit_i]
-            if n in ("read","set"): toks[edit_i] = (n, edit_buf)
-            elif n == "cond": toks[edit_i] = (n, edit_buf)
-            elif n == "condrerun": toks[edit_i] = (n, edit_buf)
+            ts = cur_toks(); n, p = ts[edit_i]
+            if n in ("read","set"): ts[edit_i] = (n, edit_buf)
+            elif n == "cond": ts[edit_i] = (n, edit_buf)
+            elif n == "condrerun": ts[edit_i] = (n, edit_buf)
             elif n == "handrun":
                 _, hid = split_handrun(p)
-                toks[edit_i] = (n, hid + edit_buf.encode())
+                ts[edit_i] = (n, hid + edit_buf.encode())
+            save_view(edit_v)
     elif text == " ":                     # 空格插入 token
         space_insert()
     elif text.isalnum():

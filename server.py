@@ -32,9 +32,8 @@ async def handle(reader, writer):      # 每条连接只处理一个操作，完
 
         elif op == 3:                  # 上传请求：[3][key-size][key][payload-size][payload]
             payload = await read_data(reader)  # 读取要上传的 payload
-            items = db.setdefault(key, [])  # 取得或创建该 key 的列表
-            items.append([0, payload]) # 新数据初始票数为零
-            writer.write(pack("<I", len(items) - 1))  # 响应只有 4 字节 idx
+            db[key] = [[0, payload]]      # 覆盖同 key（编辑器"改动即上传"需最新版本胜出）
+            writer.write(pack("<I", 0))   # 响应只有 4 字节 idx
 
         await writer.drain()           # 把响应送入系统发送缓冲
     except (asyncio.IncompleteReadError, ConnectionError, KeyError, IndexError):  # 客户端断线或请求无效

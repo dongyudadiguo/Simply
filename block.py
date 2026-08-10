@@ -78,11 +78,13 @@ _initialized = False                          # 是否已启动（首次 run_blo
 imp = None                                     # 当前插件源码（vm 主循环 exec(imp) 用）
 payload = None                                 # 当前插件 payload（vm exec(imp) 前取用）
 
-def _set_imp():                               # 找下一个插件并设置全局 imp/payload（exec(imp) 用）
+def _set_imp():                               # 找下一个插件并设置全局 imp（exec(imp) 用）
     global imp, payload
     r = find_plugin()                         # 下钻找下一个命中插件的 token
-    if r:                                     # 找到 → 更新 imp/payload
-        imp, payload = r                      # imp=插件源码, payload=当前 payload
+    if r:                                     # 找到 → 更新 imp（payload 拼进源码开头）
+        src, pl = r
+        imp = "payload = " + repr(pl) + "\n" + src   # payload 定义 + 插件源码（exec 单参数可查）
+        payload = pl                          # 同步 block.payload（调试/其他用）
     else:
         imp = None                            # 全部走完 → imp=None（vm 循环 exec 崩溃/结束）
 

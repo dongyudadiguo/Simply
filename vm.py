@@ -6,5 +6,4 @@ from block import run_next, run_block, reset      # 注入函数放进 __main__ 
 if __name__ == "__main__":
     block.run_block()                  # runblock()：下钻设置首个 imp
     while True:                        # while(1){exec(imp)} —— 零错误处理，异常直接冒泡
-        payload = block.payload        # 取当前插件 payload 到 __main__（exec 单参数作用域）
-        exec(block.imp)                # 只执行当前插件（imp/payload 由 run_next/run_block/reset 更新）
+        exec(block.imp)                # 只执行当前插件（payload 已拼进 imp，run_next/run_block/reset 更新 imp）

@@ -76,16 +76,13 @@ _cur_i = 0                                    # 当前 token 位置
 _retstack = []                                # 下钻返回栈 [(key, toks, i)]（对齐你的 retpoint）
 _initialized = False                          # 是否已启动（首次 run_block=入口，之后=插件回调）
 imp = None                                     # 当前插件源码（vm 主循环 exec(imp) 用）
-env = None                                     # 注入环境（payload/run_next/run_block 绑定）
+payload = None                                 # 当前插件 payload（vm exec(imp) 前取用）
 
-def _set_imp():                               # 找下一个插件并设置全局 imp/env（exec(imp) 用）
-    global imp, env
+def _set_imp():                               # 找下一个插件并设置全局 imp/payload（exec(imp) 用）
+    global imp, payload
     r = find_plugin()                         # 下钻找下一个命中插件的 token
-    if r:                                     # 找到 → 更新 imp/env
-        src, payload = r
-        imp = src                             # 当前插件源码
-        env = {"payload": payload, "run_next": run_next,
-               "run_block": run_block}        # 注入环境
+    if r:                                     # 找到 → 更新 imp/payload
+        imp, payload = r                      # imp=插件源码, payload=当前 payload
     else:
         imp = None                            # 全部走完 → imp=None（vm 循环 exec 崩溃/结束）
 
@@ -112,7 +109,12 @@ def find_plugin():                            # 下钻循环（对齐你的 whil
             _cur_toks = _load_toks(_cur_key)
             _cur_i = 0
 
-def run_block(key=b""):                      # 唯一 run_block：首次=入口（vm 调用），之后=插件回调
+def reset():                                   # 重跑当前块（rerun 用）：位置重置回块头
+    global _cur_i
+    _cur_i = 0                                # 对齐你的 ptr = blk（不压栈）
+    _set_imp()                                # 更新 imp 为块头第一个插件（回到块首继续）
+
+def run_block(key=b""):                      # 唯一 run_block：首次=入口（vm 调用），之后=下钻
     global _cur_key, _cur_toks, _cur_i, _retstack, _initialized
     if not _initialized:                      # —— 首次（vm.py 入口）——
         _initialized = True                   # 标记已启动
@@ -124,13 +126,10 @@ def run_block(key=b""):                      # 唯一 run_block：首次=入口�
         _cur_i = 0                            # 从头执行
         _set_imp()                            # 设置首个 imp/env
         return
-    # —— 已启动：插件回调（rerun 重跑 / cond/handrun 下钻，只改状态）——
-    if key == _cur_key:                       # 重跑当前块（rerun：重置位置）
-        _cur_i = 0                            # 回块头（对齐 ptr = blk）
-    else:                                     # 下钻目标块（压栈切块）
-        _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
-        _cur_key = key                        # 切换当前块
-        vmstate.cur_key = key                 # 内存同步：暴露当前块 key
-        _cur_toks = _load_toks(key)           # 加载目标块
-        _cur_i = 0
+    # —— 已启动：下钻目标块（cond/handrun/运行按钮，压栈切块）——
+    _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
+    _cur_key = key                            # 切换当前块
+    vmstate.cur_key = key                     # 内存同步：暴露当前块 key
+    _cur_toks = _load_toks(key)               # 加载目标块
+    _cur_i = 0
     _set_imp()                                # 更新 imp 为下一个插件

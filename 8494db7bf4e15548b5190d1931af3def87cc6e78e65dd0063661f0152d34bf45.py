@@ -2,6 +2,6 @@
 # stk 首字节非零 → 重跑当前块（读 vmstate.cur_key）
 import vmstate
 
-if vmstate.stk_off > 0 and vmstate.stk[0] != 0 and vmstate.cur_key:
-    run_block(vmstate.cur_key)
+if vmstate.stk_off > 0 and vmstate.stk[0] != 0:
+    reset()                        # 重跑当前块
 run_next()   # 自主接棒到下一个 token

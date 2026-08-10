@@ -1,6 +1,17 @@
-// block.c —— 执行器：全局状态 + 连续执行
-// 语义：token 从空 key（大小为零）开始；命中插件 → 执行；否则压返回点 + 取块的第一个 data 下钻
-// 零错误处理：不检查任何返回值、不防御越界/空数据（非预期一律忽略）
+// block.c —— 执行器：runblock 下钻循环
+// runblock 语义（对齐伪代码）：
+//   while(1){
+//     if(hit(key)){ imp = key }           命中插件 → 设 imp（随后回 vm 执行）
+//     *(void**)retpoint = ptr; retpoint+=8 压返回点
+//     ptr = getfirstdata(key)              取块的第一个 data
+//     key = (KEY){*(u32*)ptr, ptr+4}       下一条 token = data 开头的 size + data+4
+//   }
+// 我没写内存变动同步，这里加上：
+//   - 块 token 流取数：内存 cur 优先 / server 兜底（load_toks）
+//   - 命中 → 打破循环回 vm：for(;;){imp()}
+//   - 块 token 流走完 → 弹返回点回上层；全部走完 → imp=NULL
+//   - 返回点深拷贝（key + 位置）；payload 深拷贝到全局
+// 零错误处理：不检查任何返回值、不防御非预期
 #include "simply.h"
 #include <windows.h>
 #include <stdlib.h>
@@ -18,8 +29,8 @@ static const Plugin PLUGINS[] = {
 };
 #define PLUGINS_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
 
-/* 命中插件？返回 run 指针；否则 NULL（说明是块引用） */
-static void (*find_hit(const uint8_t *name, uint32_t nlen))(void) {
+/* hit(key)：token 命中插件 → run；否则 NULL（= 块引用，下钻） */
+static void (*hit(const uint8_t *name, uint32_t nlen))(void) {
     for (size_t i = 0; i < PLUGINS_N; i++) {
         size_t ln = strlen(PLUGINS[i].name);
         if (ln == nlen && memcmp(PLUGINS[i].name, name, nlen) == 0) return PLUGINS[i].run;
@@ -28,14 +39,14 @@ static void (*find_hit(const uint8_t *name, uint32_t nlen))(void) {
 }
 
 /* ================= 全局状态 ================= */
-uint8_t *cur_key = NULL; uint32_t cur_key_len = 0;      /* 当前块 key（editor 用） */
-static uint32_t cur_i = 0;                               /* 当前 token 位置 */
-typedef struct { uint8_t *key; uint32_t klen; uint32_t i; } RetItem;
-static RetItem *ret = NULL; static uint32_t ret_n = 0;  /* 返回点栈 */
+uint8_t *cur_key = NULL; uint32_t cur_key_len = 0;   /* 当前块 key（editor 用） */
+static uint32_t cur_i = 0;                            /* 当前块 token 流位置 */
+typedef struct { uint8_t *key; uint32_t klen; uint32_t i; } Ret;  /* 返回点 */
+static Ret *ret = NULL; static uint32_t ret_n = 0;    /* 返回点栈 */
 
-const uint8_t *payload; uint32_t plen;                 /* 当前插件 payload（插件内部读） */
+const uint8_t *payload; uint32_t plen;               /* 当前插件 payload（插件内部读） */
 
-/* ================= 块 token 流 ================= */
+/* ================= 块 token 流（内存 cur 优先 / server 兜底） ================= */
 /* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内）；0 长 name = 块结束 */
 static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t cap) {
     uint32_t i = 0; size_t n = 0;
@@ -51,7 +62,6 @@ static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t ca
     return n;
 }
 
-/* 取块 token 流：内存 cur 优先（editor 实时维护 → 改动立即响应），否则 fetch server 解析 */
 Toks load_toks(const uint8_t *key, uint32_t klen) {
     Toks ts = {0};
     size_t n = 0;
@@ -101,47 +111,34 @@ static void free_fetched(Toks *ts) {
     ts->tok = NULL; ts->n = ts->cap = 0;
 }
 
-/* ================= 抽象步骤：下钻循环的每一步（命名即语义） ================= */
-
-/* 当前块 token 走完？ */
-static int block_done(const Toks *ts) { return cur_i >= ts->n; }
-
-/* 取当前 token 并推进（对齐：data 开头的 *(u32*)data, data+4 是 token） */
-static Tok next_token(const Toks *ts) { return ts->tok[cur_i++]; }
-
-/* 压入返回点（当前块 key + 下一 token 位置） */
+/* ================= 返回点栈 ================= */
+/* 压返回点（当前块 key + 下一位置；key 深拷贝，避免悬垂） */
 static void push_return(void) {
-    ret = (RetItem*)realloc(ret, (ret_n + 1) * sizeof(RetItem));
-    ret[ret_n].key = cur_key; ret[ret_n].klen = cur_key_len; ret[ret_n].i = cur_i;
+    ret = (Ret*)realloc(ret, (ret_n + 1) * sizeof(Ret));
+    ret[ret_n].key = (uint8_t*)malloc(cur_key_len);
+    memcpy(ret[ret_n].key, cur_key, cur_key_len);
+    ret[ret_n].klen = cur_key_len;
+    ret[ret_n].i = cur_i;
     ret_n++;
 }
 
 /* 弹返回点回上层；有则恢复并返回 1，没有返回 0 */
 static int pop_return(void) {
     if (!ret_n) return 0;
-    RetItem *r = &ret[--ret_n];
+    Ret *r = &ret[--ret_n];
     free(cur_key);
     cur_key = r->key; cur_key_len = r->klen; cur_i = r->i;
     return 1;
 }
 
-/* 切到指定块：压返回点 + 设置新块 key + 从第一个 data 开始（下钻） */
-static void goto_block(const uint8_t *key, uint32_t klen) {
-    push_return();
-    free(cur_key);
-    cur_key = (uint8_t*)malloc(klen); memcpy(cur_key, key, klen);
-    cur_key_len = klen;
-    cur_i = 0;
-}
-
-/* vm.exe 导出的 imp 变量地址（dll 导入 vm 的 imp，GetModuleHandle(NULL)=vm.exe） */
+/* ================= vm imp（GetProcAddress 写 vm 导出的 imp） ================= */
 static void (**vm_imp)(void) = NULL;
 static void **get_vm_imp(void) {
     if (!vm_imp) vm_imp = (void (**)(void))GetProcAddress(GetModuleHandle(NULL), "imp");
     return (void**)vm_imp;
 }
 
-/* 设置当前插件（payload 深拷贝到全局；imp 写入 vm.exe 导出的变量） */
+/* 设当前插件：payload 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
 static void set_imp(void (*run)(void), const Tok *t) {
     free((void*)payload);
     payload = (uint8_t*)malloc(t->plen);
@@ -150,43 +147,44 @@ static void set_imp(void (*run)(void), const Tok *t) {
     *get_vm_imp() = run;
 }
 
-/* ================= 下钻循环 ================= */
-/* token 从空 key（大小为零）开始：
- * 命中插件 → 设 imp（执行链随后执行）；
- * 否则 → 压返回点 + 取块的第一个 data 作下一 token，继续循环 */
-static int find_plugin(void) {
+/* ================= runblock：下钻循环 ================= */
+static int runblock(void) {
     for (;;) {
-        Toks toks = load_toks(cur_key, cur_key_len);      /* 取当前块的 data 流 */
-        if (block_done(&toks)) {                          /* 当前块 token 走完 */
+        Toks toks = load_toks(cur_key, cur_key_len);      /* 取当前块的 token 流 */
+        if (cur_i >= toks.n) {                            /* 块走完 → 弹返回点回上层 */
             free_fetched(&toks);
-            if (pop_return()) continue;                   /* 弹返回点回上层 */
-            *get_vm_imp() = NULL; return 0;                 /* 全部走完 → vm 循环结束 */
+            if (!pop_return()) { *get_vm_imp() = NULL; return 0; }   /* 全部走完 → imp=NULL */
+            continue;
         }
-        Tok t = next_token(&toks);                        /* 取当前 token */
-        void (*run)(void) = find_hit(t.name, t.nlen);     /* 命中插件？ */
-        if (run) {                                        /* 命中 → 执行 */
+        Tok t = toks.tok[cur_i++];                        /* key = 当前 token */
+        void (*run)(void) = hit(t.name, t.nlen);          /* hit(key) */
+        if (run) {                                        /* 命中插件 → imp = key，回 vm */
             set_imp(run, &t);
             free_fetched(&toks);
             return 1;
         }
-        goto_block(t.name, t.nlen);                       /* 否则压返回点 + 取块的第一个 data 下钻 */
+        push_return();                                    /* 压返回点 */
+        free(cur_key);                                    /* 切块：key = 块的第一个 data */
+        cur_key = (uint8_t*)malloc(t.nlen);
+        memcpy(cur_key, t.name, t.nlen); cur_key_len = t.nlen; cur_i = 0;
         free_fetched(&toks);
     }
 }
 
 /* ================= 入口 / 下钻 / 接棒 ================= */
 void run_block(const uint8_t *key, uint32_t klen) {
-    if (!ret) {                                           /* 入口（vm.c: run_block(0,0)） */
-        ret = (RetItem*)malloc(sizeof(RetItem));          /* 分配返回栈（空） */
-        ret_n = 0;
-        cur_key = NULL; cur_key_len = 0;                  /* 从 token 大小为零开始 */
-        cur_i = 0;
-        find_plugin();                                    /* 下钻到首个命中插件 */
-        return;                                           /* 返回 vm.c，由 for(;;){imp()} 主循环执行 */
+    if (!ret) {                                           /* 入口（vm: run_block(0,0)） */
+        ret = (Ret*)malloc(sizeof(Ret));
+        ret_n = 0; cur_key = NULL; cur_key_len = 0; cur_i = 0;
+        runblock();
+        return;                                           /* 回 vm：for(;;){imp()} */
     }
-    goto_block(key, klen);                                /* 下钻（插件内回调）：压返回点 + 切块 */
-    find_plugin();                                        /* 更新 imp（当前 for 循环继续执行） */
+    push_return();                                        /* 插件下钻：压返回点 + 切块 */
+    free(cur_key);
+    cur_key = (uint8_t*)malloc(klen);
+    memcpy(cur_key, key, klen); cur_key_len = klen; cur_i = 0;
+    runblock();
 }
 
-void run_next(void) { find_plugin(); }                    /* 插件自主接棒：位置已推进，更新 imp */
-void reset(void)     { cur_i = 0; find_plugin(); }        /* 重跑当前块 */
+void run_next(void) { runblock(); }                       /* 插件接棒：继续当前块下一 token */
+void reset(void)     { cur_i = 0; runblock(); }           /* 重跑当前块 */

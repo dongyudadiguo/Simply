@@ -52,7 +52,7 @@ def _chain(toks, i):                          # 链式自主接棒：当前 toke
 
 def run_block(start_key=b""):                 # 块入口：空 key 引导（boot 最低限度）用 next_key，否则链式执行
     blk = fetch(start_key)
-    if start_key == b"":                      # 引导：boot 块最低限度 [n][name]，只取 name
-        run_token(next_key(blk).decode("utf-8","replace"), b"")
+    if start_key == b"":                      # 引导：boot 块最低限度 [n][name]，只取 name 走 _chain
+        _chain([(next_key(blk).decode("utf-8","replace"), b"")], 0)
         return
     _chain(list(iter_tokens(blk)), 0)

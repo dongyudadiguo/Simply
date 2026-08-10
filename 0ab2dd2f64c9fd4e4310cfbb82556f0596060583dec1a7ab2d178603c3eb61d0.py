@@ -4,5 +4,5 @@ import vmstate
 from block import run_block
 
 if vmstate.stk_off > 0 and vmstate.stk[0] != 0 and payload:
-    run_block(payload.encode())
+    run_block(payload)
 run_next()   # 自主接棒到下一个 token

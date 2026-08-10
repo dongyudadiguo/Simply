@@ -1,6 +1,6 @@
 @echo off
 cd /d %~dp0
-set RL=..\raylib-5.5_win64_mingw-w64
+set RL=..\raylib-6.0_win64_mingw-w64
 echo [1/3] core...
 gcc server.c -o server.exe -lws2_32
 gcc upload_boot.c net.c -o upload_boot.exe -lws2_32

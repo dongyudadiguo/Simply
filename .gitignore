@@ -57,5 +57,5 @@ c/plugins/*.dll
 c/*.o
 
 # raylib 第三方库（build.bat 需要：下载 raylib-5.5_win64_mingw-w64 解压到项目根）
-raylib-5.5_win64_mingw-w64/
-raylib.zip
+raylib-*/
+raylib*.zip

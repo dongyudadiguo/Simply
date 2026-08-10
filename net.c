@@ -1,5 +1,5 @@
 // net.c —— 裸 TCP 客户端（对齐 Python block.py 的 fetch/upload）
-#include "vm.h"
+#include "api.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <stdlib.h>

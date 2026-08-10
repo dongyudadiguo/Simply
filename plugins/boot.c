@@ -1,17 +1,17 @@
-#include "vm.h"
+#include "api.h"
 #include <stdlib.h>
 #include <string.h>
 
 #include <stdio.h>
-void plugin_run(VM *vm, const uint8_t *payload, uint32_t plen) {
+void boot_run(const uint8_t *payload, uint32_t plen) {
     (void)payload; (void)plen;
     uint8_t id[32];
     FILE *f = fopen("id.bin", "rb");
     if (f) {
         if (fread(id, 1, 32, f) == 32) {
             uint32_t blen = 0;
-            uint8_t *blk = vm->cb_fetch(id, 32, &blen);   /* server 有该块 → 直接用 */
-            if (blk) { free(blk); vm->cb_run_block(vm, id, 32); return; }
+            uint8_t *blk = net_fetch(id, 32, &blen);          /* server 有该块 → 直接用 */
+            if (blk) { free(blk); run_block(id, 32); return; }
         }
         fclose(f);
     }
@@ -21,6 +21,6 @@ void plugin_run(VM *vm, const uint8_t *payload, uint32_t plen) {
         6,0,0,0,'e','d','i','t','o','r',0,0,0,0,
         5,0,0,0,'r','e','r','u','n',0,0,0,0,
         0,0,0,0};
-    vm->cb_upload(id, 32, block, 31);     /* 首次/恢复：上传引导块 */
-    vm->cb_run_block(vm, id, 32);
+    net_upload(id, 32, block, 31);        /* 首次/恢复：上传引导块 */
+    run_block(id, 32);
 }

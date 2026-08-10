@@ -1,6 +1,7 @@
 // block.c —— 执行器：全局状态 + 尾调用连续执行
 // 语义：token 从空 key（大小为零）开始；命中插件 → 执行；否则压返回点 + 取块的第一个 data 下钻
 #include "simply.h"
+#include <windows.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,7 +31,7 @@ uint8_t *cur_key = NULL; uint32_t cur_key_len = 0;      /* 当前块 key（edito
 static uint32_t cur_i = 0;                               /* 当前 token 位置 */
 typedef struct { uint8_t *key; uint32_t klen; uint32_t i; } RetItem;
 static RetItem *ret = NULL; static uint32_t ret_n = 0;  /* 返回点栈 */
-void (*imp)(void) = NULL;                              /* 当前插件（vm.c for(;;){imp()} 用） */
+
 const uint8_t *payload; uint32_t plen;                 /* 当前插件 payload（插件内部读） */
 
 /* ================= 块 token 流 ================= */
@@ -139,7 +140,14 @@ static void goto_block(const uint8_t *key, uint32_t klen) {
     cur_i = 0;
 }
 
-/* 设置当前插件（payload 深拷贝到全局，保证执行期间有效） */
+/* vm.exe 导出的 imp 变量地址（dll 导入 vm 的 imp，GetModuleHandle(NULL)=vm.exe） */
+static void (**vm_imp)(void) = NULL;
+static void **get_vm_imp(void) {
+    if (!vm_imp) vm_imp = (void (**)(void))GetProcAddress(GetModuleHandle(NULL), "imp");
+    return (void**)vm_imp;
+}
+
+/* 设置当前插件（payload 深拷贝到全局；imp 写入 vm.exe 导出的变量） */
 static void set_imp(void (*run)(void), const Tok *t) {
     if (payload) { free((void*)payload); payload = NULL; }
     if (t->plen) {
@@ -147,7 +155,7 @@ static void set_imp(void (*run)(void), const Tok *t) {
         memcpy((void*)payload, t->payload, t->plen);
     }
     plen = t->plen;
-    imp = run;
+    *get_vm_imp() = run;
 }
 
 /* ================= 下钻循环 ================= */
@@ -160,7 +168,7 @@ static int find_plugin(void) {
         if (block_done(&toks)) {                          /* 当前块 token 走完 */
             free_fetched(&toks);
             if (pop_return()) continue;                   /* 弹返回点回上层 */
-            imp = NULL; return 0;                         /* 全部走完 → 执行链结束 */
+            *get_vm_imp() = NULL; return 0;                 /* 全部走完 → vm 循环结束 */
         }
         Tok t = next_token(&toks);                        /* 取当前 token */
         void (*run)(void) = find_hit(t.name, t.nlen);     /* 命中插件？ */

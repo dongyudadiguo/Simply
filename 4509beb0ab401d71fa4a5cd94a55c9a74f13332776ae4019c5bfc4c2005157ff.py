@@ -21,13 +21,14 @@ def vote(key, idx):                      # 服务端 op=1：投票
 
 def get_id():
     if os.path.exists(ID_FILE):          # 已有 id 直接用
-        return open(ID_FILE, "rb").read()
-    new_id = os.urandom(32)              # 生成 32 字节 id
-    open(ID_FILE, "wb").write(new_id)
+        new_id = open(ID_FILE, "rb").read()
+    else:
+        new_id = os.urandom(32)          # 生成 32 字节 id
+        open(ID_FILE, "wb").write(new_id)
     block = (bytes([6, 0, 0, 0]) + b"editor" + bytes([0, 0, 0, 0]) +   # 引导块 [editor][rerun]
              bytes([5, 0, 0, 0]) + b"rerun" + bytes([0, 0, 0, 0]) +
              bytes([0, 0, 0, 0]))
-    upload(new_id, block)                # 上传引导块到 id key
+    upload(new_id, block)                # 总是上传引导块（覆盖，server 重启后可恢复）
     return new_id
 
 run_block(get_id())                       # 直接执行：从 id key 引导（接管控制流）

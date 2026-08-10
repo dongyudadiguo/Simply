@@ -69,45 +69,73 @@ def _load_toks(key):                          # 取块并解析成 token 流（�
         return [(next_key(blk).decode("utf-8","replace"), b"")]   # 最低限度：只取第一条 name（boot）
     return list(iter_tokens(blk))             # 普通块：严格完整解析全部 token
 
-def run_block(start_key=b""):                 # 迭代主循环（对齐 while(1) imp()）：显式栈下钻/重置，不递归
-    flush_pending()                          # 运行前 flush 改动（每次运行入口统一保存）
-    cur_key = start_key                      # 当前块 key（空 key 引导或指定块）
-    vmstate.cur_key = cur_key                # 暴露当前块 key（editor/rerun 定位所在块用，替代 inspect）
-    cur_toks = _load_toks(cur_key)           # 加载当前块 token 流
-    cur_i = 0                                # 当前块内的 token 位置
-    stack = []                                # 下钻返回栈 [(key, toks, i)]（cond/handrun/块引用下钻）
-    while True:                               # —— 迭代执行（不递归、不堆积）——
-        if cur_i >= len(cur_toks):            # 当前块已走完
-            if stack:                         # 有下钻返回栈 → 弹栈回上层继续
-                cur_key, cur_toks, cur_i = stack.pop()   # 恢复上层块与位置
-                continue                      # 继续迭代上层块
-            break                             # 栈空 → 全部执行完 → 结束
-        name, payload = cur_toks[cur_i]       # 取当前 token（名字 + payload）
-        cur_i += 1                            # 默认推进位置（插件 run_next 的迭代语义）
+# —— 全局执行上下文（find_plugin/exec_imp/run_block 共享，模块级）——
+_cur_key = None                               # 当前块 key
+_cur_toks = None                              # 当前块 token 流
+_cur_i = 0                                    # 当前 token 位置
+_retstack = []                                # 下钻返回栈 [(key, toks, i)]（对齐你的 retpoint）
+
+def run_next():                               # 插件自主接棒：位置已推进（_cur_i += 1）
+    pass                                      # 纯指针推进（对齐你的 ptr += ... 两次）
+
+def run_block(key):                           # 插件下钻/重跑（只改状态，不新开循环）
+    global _cur_key, _cur_toks, _cur_i
+    if key == _cur_key:                       # 重跑当前块（rerun：重置位置）
+        _cur_i = 0                            # 回块头（对齐你的 ptr = blk）
+    else:                                     # 下钻目标块（cond/handrun：压栈切块）
+        _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点（对齐 *(void**)retpoint=ptr）
+        _cur_key = key                        # 切换当前块
+        vmstate.cur_key = key                 # 内存同步：暴露当前块 key
+        _cur_toks = _load_toks(key)           # 加载目标块（对齐 getfirstdata 下钻）
+        _cur_i = 0
+
+def find_plugin():                            # 下钻循环（对齐你的 while(1)）：找下一个命中插件的 token
+    global _cur_key, _cur_toks, _cur_i
+    while True:                               # —— 迭代下钻，不递归 ——
+        if _cur_i >= len(_cur_toks):          # 当前块走完
+            if _retstack:                     # 弹栈回上层
+                _cur_key, _cur_toks, _cur_i = _retstack.pop()
+                continue
+            return None                       # 全部走完 → 结束
+        name, payload = _cur_toks[_cur_i]     # 取当前 token（对齐 *(u32*)ptr, ptr+4）
+        _cur_i += 1                           # 推进（run_next 语义）
         try:
-            src = load_src(name.encode())     # 尝试加载该 token 的插件源码
-        except OSError:                       # 无插件 → 该 token 是块引用，下钻其块
-            stack.append((cur_key, cur_toks, cur_i))   # 压栈当前块与位置（执行完返回）
-            cur_key = name.encode()           # 切换到被引用的块 key
-            vmstate.cur_key = cur_key         # 同步暴露当前块 key
-            cur_toks = _load_toks(cur_key)    # 加载目标块
-            cur_i = 0                         # 从目标块开头执行
-            continue                          # 继续迭代（下钻）
-        def run_next():                       # 注入给插件的接棒函数：位置已推进（cur_i += 1）
-            pass                              # 无需操作——迭代主循环已自动推进
-        def run_block(k):                     # 注入给插件的下钻/重跑函数（迭代，不递归）
-            nonlocal cur_key, cur_toks, cur_i # 声明修改外层主循环变量
-            if k == cur_key:                  # 目标是当前块（rerun 重跑）
-                cur_i = 0                     # 重置位置 → 从块头重跑（不压栈）
-            else:                             # 目标是其他块（cond/handrun/运行按钮下钻）
-                stack.append((cur_key, cur_toks, cur_i))   # 压栈当前块（执行完返回）
-                cur_key = k                   # 切换到目标块
-                vmstate.cur_key = cur_key     # 同步暴露当前块 key
-                cur_toks = _load_toks(k)      # 加载目标块
-                cur_i = 0                     # 从目标块开头执行
-        try:
-            exec(src, {"payload": payload, "run_next": run_next,
-                       "run_block": run_block})   # 注入 payload/run_next/run_block 执行插件顶层
-        except SystemExit:                    # 正常结束信号（editor 窗口关闭 / ret_int 结束）
-            flush_pending()                   # 结束前保存所有编辑改动
-            break                             # 退出主循环 → run_block 返回 → vm 结束
+            load_src(name.encode())           # 命中插件文件？
+            return name, payload              # 是 → 返回 imp（插件 key + payload）
+        except OSError:                       # 无插件 → 块引用，下钻
+            _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
+            _cur_key = name.encode()          # 下钻（对齐 getfirstdata 取第一个 data）
+            vmstate.cur_key = _cur_key        # 内存同步：暴露当前块 key
+            _cur_toks = _load_toks(_cur_key)
+            _cur_i = 0
+
+def run_block(start_key=b""):                 # 下钻到第一个命中插件的 token，返回 imp（对齐你的 runblock）
+    global _cur_key, _cur_toks, _cur_i, _retstack
+    flush_pending()                          # 内存同步：运行前保存编辑改动
+    _cur_key = start_key                      # 起点 key（空 key 引导）
+    vmstate.cur_key = start_key               # 内存同步：暴露当前块 key
+    _cur_toks = _load_toks(start_key)         # 加载起始块
+    _cur_i = 0                                # 从头执行
+    _retstack = []                            # 清空返回栈
+    return find_plugin()                      # 下钻 → 返回 (name, payload) 或 None
+
+def exec_imp(imp):                            # 执行当前插件（对齐你的 exec(imp)）
+    name, payload = imp                       # imp = (插件 key, payload)
+    src = load_src(name.encode())             # 读插件源码
+    def run_block_cb(key):                    # 注入给插件的 run_block 回调：只改状态
+        global _cur_key, _cur_toks, _cur_i
+        if key == _cur_key:                   # 重跑当前块（rerun：重置位置）
+            _cur_i = 0
+        else:                                 # 下钻目标块（cond/handrun：压栈切块）
+            _retstack.append((_cur_key, _cur_toks, _cur_i))
+            _cur_key = key
+            vmstate.cur_key = key
+            _cur_toks = _load_toks(key)
+            _cur_i = 0
+    try:
+        exec(src, {"payload": payload, "run_next": run_next,
+                   "run_block": run_block_cb})  # 注入 payload/run_next/run_block(回调)
+    except SystemExit:                        # 插件主动结束（editor 关闭/ret_int）
+        flush_pending()                       # 内存同步：保存并退出
+        return False
+    return True

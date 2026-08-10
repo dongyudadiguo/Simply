@@ -142,7 +142,8 @@ def collect(key=b"", prio=1.0, depth=0):
     return out
 
 # 补全候选 = 递归块引用（collect）+ 本地插件指令名（add/read/set/cond/handrun/condrerun 等）
-PLUGIN_NAMES = ["add","read","set","cond","handrun","condrerun","rerun","editor","boot"]
+PLUGIN_NAMES = ["boot","editor","rerun","add","read","set","cond","handrun","condrerun",
+               "push_int","in-int","out","rand","gt","lt","eq","mul","ret_int"]
 cands = sorted(collect() + [(t, 100.0) for t in PLUGIN_NAMES], key=lambda c: c[1])
 toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
 vmstate.cur[key_] = toks                 # 挂共享：run_block 运行前对比哈希用

@@ -1,5 +1,6 @@
-// block.c —— 执行器：全局状态 + 尾调用连续执行
+// block.c —— 执行器：全局状态 + 连续执行
 // 语义：token 从空 key（大小为零）开始；命中插件 → 执行；否则压返回点 + 取块的第一个 data 下钻
+// 零错误处理：不检查任何返回值、不防御越界/空数据（非预期一律忽略）
 #include "simply.h"
 #include <windows.h>
 #include <stdlib.h>
@@ -35,17 +36,14 @@ static RetItem *ret = NULL; static uint32_t ret_n = 0;  /* 返回点栈 */
 const uint8_t *payload; uint32_t plen;                 /* 当前插件 payload（插件内部读） */
 
 /* ================= 块 token 流 ================= */
-/* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内） */
+/* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内）；0 长 name = 块结束 */
 static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t cap) {
     uint32_t i = 0; size_t n = 0;
     while (i + 4 <= blen) {
         uint32_t nl; memcpy(&nl, blk + i, 4); i += 4;
-        if (!nl) break;
-        if (i + nl > blen) break;
+        if (!nl) break;                                    /* 块结束符 */
         out[n].name = (uint8_t*)blk + i; out[n].nlen = nl; i += nl;
-        if (i + 4 > blen) break;
         uint32_t dl; memcpy(&dl, blk + i, 4); i += 4;
-        if (i + dl > blen) break;
         out[n].payload = (uint8_t*)blk + i; out[n].plen = dl; i += dl;
         n++;
     }
@@ -62,25 +60,23 @@ Toks load_toks(const uint8_t *key, uint32_t klen) {
 
     uint32_t blen = 0;
     uint8_t *blk = net_fetch(key, klen, &blen);
-    if (!blk) return ts;
 
     if (klen == 0) {                                         /* 引导：空 key 只取第一条 name */
         Tok tmp[1];
-        if (iter_tokens(blk, blen, tmp, 1) > 0) {
-            ts.tok = (Tok*)calloc(1, sizeof(Tok));
-            ts.n = ts.cap = 1; ts.owned = 1;
-            ts.tok[0].name = (uint8_t*)malloc(tmp[0].nlen);
-            memcpy(ts.tok[0].name, tmp[0].name, tmp[0].nlen);
-            ts.tok[0].nlen = tmp[0].nlen;
-            ts.tok[0].payload = NULL; ts.tok[0].plen = 0;
-        }
+        iter_tokens(blk, blen, tmp, 1);
+        ts.tok = (Tok*)calloc(1, sizeof(Tok));
+        ts.n = ts.cap = 1; ts.owned = 1;
+        ts.tok[0].name = (uint8_t*)malloc(tmp[0].nlen);
+        memcpy(ts.tok[0].name, tmp[0].name, tmp[0].nlen);
+        ts.tok[0].nlen = tmp[0].nlen;
+        ts.tok[0].payload = NULL; ts.tok[0].plen = 0;
         free(blk);
         return ts;
     }
 
     Tok tmp[256];
     size_t cnt = iter_tokens(blk, blen, tmp, 256);
-    ts.tok = (Tok*)calloc(cnt ? cnt : 1, sizeof(Tok));
+    ts.tok = (Tok*)calloc(cnt, sizeof(Tok));
     for (size_t k = 0; k < cnt; k++) {
         ts.tok[k].name = (uint8_t*)malloc(tmp[k].nlen);
         memcpy(ts.tok[k].name, tmp[k].name, tmp[k].nlen);
@@ -97,13 +93,11 @@ Toks load_toks(const uint8_t *key, uint32_t klen) {
 /* 释放本次 fetch 解析的 toks（内存 cur 的 toks 由 editor 拥有，不动） */
 static void free_fetched(Toks *ts) {
     if (!ts->owned) { ts->tok = NULL; ts->n = ts->cap = 0; return; }
-    if (ts->tok) {
-        for (size_t k = 0; k < ts->n; k++) {
-            free(ts->tok[k].name);
-            if (ts->tok[k].payload) free(ts->tok[k].payload);
-        }
-        free(ts->tok);
+    for (size_t k = 0; k < ts->n; k++) {
+        free(ts->tok[k].name);
+        free(ts->tok[k].payload);
     }
+    free(ts->tok);
     ts->tok = NULL; ts->n = ts->cap = 0;
 }
 
@@ -126,7 +120,7 @@ static void push_return(void) {
 static int pop_return(void) {
     if (!ret_n) return 0;
     RetItem *r = &ret[--ret_n];
-    if (cur_key) free(cur_key);
+    free(cur_key);
     cur_key = r->key; cur_key_len = r->klen; cur_i = r->i;
     return 1;
 }
@@ -134,8 +128,8 @@ static int pop_return(void) {
 /* 切到指定块：压返回点 + 设置新块 key + 从第一个 data 开始（下钻） */
 static void goto_block(const uint8_t *key, uint32_t klen) {
     push_return();
-    if (cur_key) free(cur_key);
-    cur_key = (uint8_t*)malloc(klen ? klen : 1); memcpy(cur_key, key, klen);
+    free(cur_key);
+    cur_key = (uint8_t*)malloc(klen); memcpy(cur_key, key, klen);
     cur_key_len = klen;
     cur_i = 0;
 }
@@ -149,11 +143,9 @@ static void **get_vm_imp(void) {
 
 /* 设置当前插件（payload 深拷贝到全局；imp 写入 vm.exe 导出的变量） */
 static void set_imp(void (*run)(void), const Tok *t) {
-    if (payload) { free((void*)payload); payload = NULL; }
-    if (t->plen) {
-        payload = (uint8_t*)malloc(t->plen);
-        memcpy((void*)payload, t->payload, t->plen);
-    }
+    free((void*)payload);
+    payload = (uint8_t*)malloc(t->plen);
+    memcpy((void*)payload, t->payload, t->plen);
     plen = t->plen;
     *get_vm_imp() = run;
 }

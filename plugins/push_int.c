@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include <stdio.h>
-void push_int_run(const uint8_t *payload, uint32_t plen) {
+void push_int_run(void) {
     uint32_t v = (uint32_t)strtoul((const char*)payload, NULL, 10);
     push((uint8_t*)&v, 4);
     write_num(4);

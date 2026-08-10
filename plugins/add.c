@@ -2,8 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void add_run(const uint8_t *payload, uint32_t plen) {
-    (void)payload; (void)plen;
+void add_run(void) {
     uint32_t o = stk_off;
     uint32_t a, b; memcpy(&a, stk + o - 8, 4); memcpy(&b, stk + o - 4, 4);
     uint32_t r = a + b;

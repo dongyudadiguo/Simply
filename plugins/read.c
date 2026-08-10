@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void read_run(const uint8_t *payload, uint32_t plen) {
+void read_run(void) {
     uint32_t v = var_off;
     while (v > 0) {
         uint32_t nsize, vsize; uint64_t vptr;

@@ -5,7 +5,7 @@
 #include <string.h>
 
 /* ================= 插件表（内建，逻辑名 → 函数） ================= */
-typedef struct { const char *name; void (*run)(const uint8_t*, uint32_t); } Plugin;
+typedef struct { const char *name; void (*run)(void); } Plugin;
 static const Plugin PLUGINS[] = {
     {"boot", boot_run}, {"editor", editor_run}, {"rerun", rerun_run},
     {"add", add_run}, {"read", read_run}, {"set", set_run},
@@ -17,10 +17,10 @@ static const Plugin PLUGINS[] = {
 #define PLUGINS_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
 
 /* 命中插件？返回 run 指针；否则 NULL（说明是块引用） */
-static void *find_hit(const uint8_t *name, uint32_t nlen) {
+static void (*find_hit(const uint8_t *name, uint32_t nlen))(void) {
     for (size_t i = 0; i < PLUGINS_N; i++) {
         size_t ln = strlen(PLUGINS[i].name);
-        if (ln == nlen && memcmp(PLUGINS[i].name, name, nlen) == 0) return (void*)PLUGINS[i].run;
+        if (ln == nlen && memcmp(PLUGINS[i].name, name, nlen) == 0) return PLUGINS[i].run;
     }
     return NULL;
 }
@@ -30,9 +30,8 @@ uint8_t *cur_key = NULL; uint32_t cur_key_len = 0;      /* 当前块 key（edito
 static uint32_t cur_i = 0;                               /* 当前 token 位置 */
 typedef struct { uint8_t *key; uint32_t klen; uint32_t i; } RetItem;
 static RetItem *ret = NULL; static uint32_t ret_n = 0;  /* 返回点栈 */
-static void (*imp)(const uint8_t*, uint32_t) = NULL;    /* 当前插件 */
-static const uint8_t *imp_payload; static uint32_t imp_plen;
-static uint8_t *imp_payload_buf = NULL;
+void (*imp)(void) = NULL;                              /* 当前插件（vm.c for(;;){imp()} 用） */
+const uint8_t *payload; uint32_t plen;                 /* 当前插件 payload（插件内部读） */
 
 /* ================= 块 token 流 ================= */
 /* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内） */
@@ -140,15 +139,15 @@ static void goto_block(const uint8_t *key, uint32_t klen) {
     cur_i = 0;
 }
 
-/* 设置当前插件（payload 深拷贝，保证执行期间有效） */
-static void set_imp(void (*run)(const uint8_t*, uint32_t), const Tok *t) {
-    if (imp_payload_buf) free(imp_payload_buf);
-    imp_payload_buf = NULL;
+/* 设置当前插件（payload 深拷贝到全局，保证执行期间有效） */
+static void set_imp(void (*run)(void), const Tok *t) {
+    if (payload) { free((void*)payload); payload = NULL; }
     if (t->plen) {
-        imp_payload_buf = (uint8_t*)malloc(t->plen);
-        memcpy(imp_payload_buf, t->payload, t->plen);
+        payload = (uint8_t*)malloc(t->plen);
+        memcpy((void*)payload, t->payload, t->plen);
     }
-    imp = run; imp_payload = imp_payload_buf; imp_plen = t->plen;
+    plen = t->plen;
+    imp = run;
 }
 
 /* ================= 下钻循环 ================= */
@@ -164,7 +163,7 @@ static int find_plugin(void) {
             imp = NULL; return 0;                         /* 全部走完 → 执行链结束 */
         }
         Tok t = next_token(&toks);                        /* 取当前 token */
-        void *run = find_hit(t.name, t.nlen);             /* 命中插件？ */
+        void (*run)(void) = find_hit(t.name, t.nlen);     /* 命中插件？ */
         if (run) {                                        /* 命中 → 执行 */
             set_imp(run, &t);
             free_fetched(&toks);
@@ -183,11 +182,7 @@ void run_block(const uint8_t *key, uint32_t klen) {
         cur_key = NULL; cur_key_len = 0;                  /* 从 token 大小为零开始 */
         cur_i = 0;
         find_plugin();                                    /* 下钻到首个命中插件 */
-        for (;;) {                                        /* while(1){exec(imp)} —— 零错误处理 */
-            if (!imp) break;                              /* 全部走完 */
-            imp(imp_payload, imp_plen);                   /* 执行当前插件（内部 run_next/reset/run_block 更新 imp） */
-        }
-        return;
+        return;                                           /* 返回 vm.c，由 for(;;){imp()} 主循环执行 */
     }
     goto_block(key, klen);                                /* 下钻（插件内回调）：压返回点 + 切块 */
     find_plugin();                                        /* 更新 imp（当前 for 循环继续执行） */

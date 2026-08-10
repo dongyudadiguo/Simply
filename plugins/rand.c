@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include <stdio.h>
-void rand_run(const uint8_t *payload, uint32_t plen) {
+void rand_run(void) {
     int lo = 1, hi = 100;
     if (plen) { char buf[64]; uint32_t n = plen < 63 ? plen : 63;
         memcpy(buf, payload, n); buf[n] = 0;

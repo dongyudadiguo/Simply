@@ -6,8 +6,7 @@
 
 static int first = 1;
 
-void editor_run(const uint8_t *payload, uint32_t plen) {
-    (void)payload; (void)plen;
+void editor_run(void) {
     if (first) {
         first = 0;
         SetTraceLogLevel(LOG_NONE);

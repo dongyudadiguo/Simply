@@ -26,6 +26,8 @@ uint8_t *net_fetch(const uint8_t *key, uint32_t klen, uint32_t *out_len);  /* ma
 int net_upload(const uint8_t *key, uint32_t klen, const uint8_t *data, uint32_t dlen);
 
 /* ---- block 执行器（全局） ---- */
+extern const uint8_t *payload; extern uint32_t plen;   /* 当前插件 payload（插件内部读） */
+extern void (*imp)(void);                               /* 当前插件（vm.c for(;;){imp()} 用） */
 extern uint8_t *cur_key; extern uint32_t cur_key_len;   /* 当前块 key（editor 用） */
 void run_block(const uint8_t *key, uint32_t klen);      /* 入口 key=NULL,0 或插件下钻 */
 void run_next(void);                                    /* 插件自主接棒 */
@@ -33,22 +35,22 @@ void reset(void);                                       /* 重跑当前块 */
 Toks load_toks(const uint8_t *key, uint32_t klen);      /* 每次现取（内存 cur 优先/server 兜底） */
 
 /* ---- 插件（内建函数表，编译进 vm） ---- */
-void boot_run(const uint8_t *payload, uint32_t plen);
-void editor_run(const uint8_t *payload, uint32_t plen);
-void rerun_run(const uint8_t *payload, uint32_t plen);
-void add_run(const uint8_t *payload, uint32_t plen);
-void read_run(const uint8_t *payload, uint32_t plen);
-void set_run(const uint8_t *payload, uint32_t plen);
-void cond_run(const uint8_t *payload, uint32_t plen);
-void handrun_run(const uint8_t *payload, uint32_t plen);
-void condrerun_run(const uint8_t *payload, uint32_t plen);
-void push_int_run(const uint8_t *payload, uint32_t plen);
-void in_int_run(const uint8_t *payload, uint32_t plen);
-void out_run(const uint8_t *payload, uint32_t plen);
-void rand_run(const uint8_t *payload, uint32_t plen);
-void gt_run(const uint8_t *payload, uint32_t plen);
-void lt_run(const uint8_t *payload, uint32_t plen);
-void eq_run(const uint8_t *payload, uint32_t plen);
-void mul_run(const uint8_t *payload, uint32_t plen);
-void ret_int_run(const uint8_t *payload, uint32_t plen);
+void boot_run(void);
+void editor_run(void);
+void rerun_run(void);
+void add_run(void);
+void read_run(void);
+void set_run(void);
+void cond_run(void);
+void handrun_run(void);
+void condrerun_run(void);
+void push_int_run(void);
+void in_int_run(void);
+void out_run(void);
+void rand_run(void);
+void gt_run(void);
+void lt_run(void);
+void eq_run(void);
+void mul_run(void);
+void ret_int_run(void);
 #endif

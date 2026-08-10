@@ -3,8 +3,7 @@
 #include <string.h>
 
 #include <stdio.h>
-void boot_run(const uint8_t *payload, uint32_t plen) {
-    (void)payload; (void)plen;
+void boot_run(void) {
     uint8_t id[32];
     FILE *f = fopen("id.bin", "rb");
     if (f) {

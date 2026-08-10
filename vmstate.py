@@ -19,3 +19,5 @@ def write_num(size):                   # 记录结果大小到 num 区
     num_off += 4
 
 hand_flags = {}                              # handrun id(bytes) -> [b1, b2]（editor 按钮写、插件读）
+
+pending = {}                              # 待上传改动：key(bytes) -> 块 bytes（run_block 运行前 flush）

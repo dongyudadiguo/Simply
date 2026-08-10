@@ -45,10 +45,10 @@ def encode_toks(ts):                     # 块序列化（tokens 的逆）→ up
         out += struct.pack("<I", len(pb)) + pb
     return out + struct.pack("<I", 0)
 
-def save_view(v):                        # 改动即上传：视图 v(-1=主视图) 编码后 upload
+def save_view(v):                        # 记录改动到 pending：run_block 运行前 flush 上传
     try:
-        if v < 0: upload(key_, encode_toks(toks))
-        else: upload(subviews[v]["bkey"], encode_toks(subviews[v]["toks"]))
+        if v < 0: vmstate.pending[key_] = encode_toks(toks)
+        else: vmstate.pending[subviews[v]["bkey"]] = encode_toks(subviews[v]["toks"])
     except Exception:
         pass
 

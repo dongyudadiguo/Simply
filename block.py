@@ -4,6 +4,7 @@ import hashlib          # 计算 token 的 sha256 作为插件文件名
 import os               # 拼接插件文件路径
 import socket           # TCP 连接本地服务器
 import struct           # 编解码 4 字节小端整数（协议头）
+import vmstate          # 共享 VM 状态（pending 待上传改动）
 
 HOST, PORT = "127.0.0.1", 8000   # 本地服务器地址与端口
 HERE = os.path.dirname(os.path.abspath(__file__))   # 本文件所在目录（插件放一起）
@@ -22,6 +23,17 @@ def fetch(key):                              # 服务端 op=2：按 key 取数�
 
 def next_key(block):                         # 取 block 第一条 token 作为下一个 key
     return block[4 : 4 + struct.unpack("<I", block[:4])[0]]  # 前4字节是 token 长度
+
+def upload(key, data):                       # 服务端 op=3：上传数据（覆盖）
+    with socket.create_connection((HOST, PORT), timeout=3) as s:
+        s.sendall(b"\x03" + struct.pack("<I", len(key)) + key +
+                  struct.pack("<I", len(data)) + data)
+        return struct.unpack("<I", recv_all(s, 4))[0]
+
+def flush_pending():                         # 运行前检查改动：有待上传就上传并清空
+    for k, blk in vmstate.pending.items():
+        upload(k, blk)
+    vmstate.pending.clear()
 
 def load_src(key):                           # key 的 sha256 十六进制就是插件文件名
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）
@@ -50,7 +62,8 @@ def _chain(toks, i):                          # 链式自主接棒：当前 toke
     exec(src, {"payload": payload, "run_next": run_next,
                "run_block": run_block})        # 注入 payload/run_next/run_block
 
-def run_block(start_key=b""):                 # 块入口：空 key 引导（boot 最低限度）用 next_key，否则链式执行
+def run_block(start_key=b""):                 # 块入口：运行前 flush 改动，再引导/执行
+    flush_pending()                          # 检查改动 → 上传
     blk = fetch(start_key)
     if start_key == b"":                      # 引导：boot 块最低限度 [n][name]，只取 name 走 _chain
         _chain([(next_key(blk).decode("utf-8","replace"), b"")], 0)

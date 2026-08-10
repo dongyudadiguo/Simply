@@ -5,3 +5,4 @@ from block import run_block
 target = payload[8:].decode("utf-8","replace") if len(payload) >= 8 else ""
 if target:
     run_block(target.encode())
+run_next()   # 自主接棒到下一个 token

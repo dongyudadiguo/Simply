@@ -13,3 +13,4 @@ while v > 0:
         vmstate.push(bytes(vmstate.stk[vptr:vptr+vsize]))  # 值在 stk（vptr 是 stk 偏移）
         break
     v -= 16 + nsize
+run_next()   # 自主接棒到下一个 token

@@ -14,3 +14,4 @@ struct.pack_into("<I", var, v, numsize); v += 4           # vsize
 vmstate.var_off = v
 vmstate.stk_off += numsize                                # 栈推进（值已登记）
 vmstate.num_off += 4                                      # 大小区推进
+run_next()   # 自主接棒到下一个 token

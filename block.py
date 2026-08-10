@@ -36,15 +36,19 @@ def iter_tokens(blk):                        # 解析块 → (name, payload) 序
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         yield name, blk[i:i+d]; i += d
 
-def run_token(name, payload=b""):            # 单个 token 接棒：命中插件则 exec 顶层，否则下钻其块
-    key = name.encode()
+def _chain(toks, i):                          # 链式自主接棒：当前 token 执行后，插件自主 run_next 继续
+    if i >= len(toks): return
+    name, payload = toks[i]
     try:
-        src = load_src(key)                  # 命中插件
-    except OSError:                          # 无插件 → 该 token 是块引用，下钻执行其块
-        run_block(key)
+        src = load_src(name.encode())          # 命中插件
+    except OSError:                            # 无插件 → 该 token 是块引用，下钻其块后继续链
+        run_block(name.encode())
+        _chain(toks, i+1)
         return
-    exec(src, {"payload": payload})          # 顶层直接执行（payload 注入）
+    def run_next():                            # 插件自主接棒：继续链的下一个 token
+        _chain(toks, i+1)
+    exec(src, {"payload": payload, "run_next": run_next,
+               "run_block": run_block})        # 注入 payload/run_next/run_block
 
-def run_block(start_key=b""):                 # 执行块：遍历 token，逐个 run_token 接棒
-    for name, payload in iter_tokens(fetch(start_key)):
-        run_token(name, payload)
+def run_block(start_key=b""):                 # 块入口：从第一个 token 开始链式执行
+    _chain(list(iter_tokens(fetch(start_key))), 0)

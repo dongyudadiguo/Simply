@@ -11,3 +11,4 @@ if vmstate.stk_off > 0 and vmstate.stk[0] != 0:
             key = fr.frame.f_locals.get("start_key", b""); break
     if key:
         run_block(key)
+run_next()   # 自主接棒到下一个 token

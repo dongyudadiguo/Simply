@@ -27,12 +27,14 @@ def load_src(key):                           # key 的 sha256 十六进制就是
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）
     return open(path, encoding="utf-8").read()   # 读插件源码（最直接）
 
-def iter_tokens(blk):                        # 解析块 → (name, payload) 序列
+def iter_tokens(blk):                        # 解析块 → (name, payload) 序列（最低限度 [n][name] 也支持）
     i = 0
     while i + 4 <= len(blk):
         n = struct.unpack_from("<I", blk, i)[0]; i += 4
         if not n: break
         name = blk[i:i+n].decode("utf-8","replace"); i += n
+        if i + 4 > len(blk):                 # 无 payload 长度字段（最低限度 [n][name]）
+            yield name, b""; break
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         yield name, blk[i:i+d]; i += d
 

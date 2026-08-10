@@ -201,8 +201,20 @@ def cursor_row():                              # 吸附到离鼠标最近的间�
     gs = gaps()
     return min(range(len(gs)), key=lambda i: abs(gs[i] - wy))
 
-def pointer_y():                              # 指针 = 最近间隙
-    return gaps()[cursor_row()]
+def subview_gaps(sv):                         # 子视图间隙（世界 y，节点头后）
+    by = sv["pos"][1]
+    n = len(build_lines(sv["toks"]))
+    gs = [by + 11.0]                        # 节点头与行0 之间
+    for i in range(1, n):
+        gs.append(by - (RH+GAP)*i - GAP/2)
+    gs.append(by - (RH+GAP)*(n-1) - RH - (RH+GAP)/2)
+    return gs
+
+def pointer_y():                              # 指针 = 鼠标所在视图的最近间隙
+    wx, wy = screen_to_world(*mpos)
+    si = hit_subview(wx, wy)
+    gs = subview_gaps(subviews[si]) if si >= 0 else gaps()
+    return gs[min(range(len(gs)), key=lambda i: abs(gs[i] - wy))]
 
 # —— 渲染 ——
 @win.event
@@ -232,9 +244,12 @@ def on_draw():
                 for bi in (0, 1):
                     bx = x + item_w(n,p) - 26 + bi*12
                     shapes.append(Circle(bx, y, 3, color=(255,200,80) if f[bi] else (70,80,90)))
-    # 指针：鼠标位置对应的插入行（参考 transition 的水平线）
+    # 指针：鼠标所在视图的插入行水平线（从视图起点到鼠标，对齐 transition）
+    wx, wy = screen_to_world(*mpos)
+    si = hit_subview(wx, wy)
+    sx0 = subviews[si]["pos"][0] if si >= 0 else 0.0
     py = pointer_y()
-    shapes.append(Line(0, py, 420, py, thickness=2, color=(150,160,170)))
+    shapes.append(Line(sx0, py, max(wx, sx0+20), py, thickness=2, color=(150,160,170)))
     # —— 拖出的子视图：显示其 token 行 + 父-子连线（对齐 transition：纯文字、锚点连线）——
     for si, sv in enumerate(subviews):
         bx, by = sv["pos"]
@@ -308,11 +323,12 @@ subviews = []                            # 右键拖出的独立子视图 [{"key
 drag_sv = -1                              # 正在拖动的子视图索引
 anchors = {}                              # (view_idx, token_idx) -> (world x, world y) 渲染时记录每个 token 锚点（对齐 transition func_pos）
 
-def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无；含空块）
+def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无；含空块，对齐节点头布局）
     for si, sv in enumerate(subviews):
         n = len(build_lines(sv["toks"]))
-        top = sv["pos"][1] + RH                    # 行0顶
-        bot = sv["pos"][1] - (n-1)*(RH+GAP) - RH   # 最后行底（空块也覆盖行0区）
+        by = sv["pos"][1]
+        top = by + RH                    # 节点头顶
+        bot = by - n*(RH+GAP)            # 内容行 n-1 底（n=0 → by，仅节点头行）
         if top >= wy >= bot and wx >= sv["pos"][0]-20:
             return si
     return -1

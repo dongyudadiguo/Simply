@@ -3,7 +3,7 @@
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os, importlib
-from block import fetch, recv_all, run_block, flush_pending, HOST, PORT, HERE
+from block import fetch, recv_all, run_block, HOST, PORT, HERE
 import socket, pyglet, ctypes, vmstate
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -476,6 +476,4 @@ def on_text(text):
     elif text.isalnum():
         inp += text.lower()
 
-pyglet.app.run()                       # 阻塞直到窗口关闭
-
-flush_pending()                        # 窗口关闭 → 保存所有改动（对比哈希上传）
+pyglet.app.run()                       # 阻塞直到窗口关闭（同步由 vm 入口统一处理，editor 零同步）

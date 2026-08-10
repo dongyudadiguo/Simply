@@ -1,5 +1,5 @@
 // editor.c —— 图形编辑器插件（raylib 替代 pyglet）
-#include "../vm.h"
+#include "vm.h"
 #include "raylib.h"
 #include <string.h>
 #include <stdlib.h>

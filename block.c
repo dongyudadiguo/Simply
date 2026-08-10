@@ -104,26 +104,31 @@ static void free_fetched(Toks *ts, VM *vm) {
     ts->tok = NULL; ts->n = ts->cap = 0;
 }
 
-/* ---------------- 迭代（find_plugin：每次动态 load_toks，不预读取） ---------------- */
+
+/* ---------------- 执行核心：尾调用连续执行，不压栈 ---------------- */
+static VM _vm;                        /* 全局执行上下文（vm.c 入口 run_block(NULL,...) 用） */
+static VM *G = &_vm;                  /* 插件拿到的 vm 指针 */
+
+/* 下钻循环（对齐：token 从空 key（大小为零）开始；
+ * 命中插件 → 设 imp（run_imp 随后执行）；否则压返回点 + 取块的第一个 data 作下一 token） */
 int find_plugin(VM *vm) {
     for (;;) {
-                Toks ts = load_toks(vm, vm->cur_key, vm->cur_key_len);   /* 每次现取（内存改动立即响应） */
-        if (vm->cur_i >= ts.n) {                                  /* 当前块走完 */
+        Toks ts = load_toks(vm, vm->cur_key, vm->cur_key_len);   /* 每次现取（内存改动立即响应） */
+        if (vm->cur_i >= ts.n) {                                  /* 当前块 token 走完 */
             free_fetched(&ts, vm);
-            if (vm->ret_n) {                                      /* 弹栈回上层 */
+            if (vm->ret_n) {                                      /* 弹返回点回上层 */
                 RetItem *r = &vm->ret[--vm->ret_n];
                 if (vm->cur_key) free(vm->cur_key);
                 vm->cur_key = r->key; vm->cur_key_len = r->klen; vm->cur_i = r->i;
                 continue;
             }
-            vm->imp = NULL;                                       /* 全部走完 → 结束 */
+            vm->imp = NULL;                                       /* 全部走完 → 执行链结束 */
             return 0;
         }
-        Tok t = ts.tok[vm->cur_i];
-        vm->cur_i++;
-        void *run = load_plugin(vm, t.name, t.nlen);
-        if (run) {                                                /* 命中插件 */
-            if (vm->imp_payload_buf) free(vm->imp_payload_buf);   /* 深拷贝 payload（exec 期间有效） */
+        Tok t = ts.tok[vm->cur_i]; vm->cur_i++;                   /* 取当前 token */
+        void *run = load_plugin(vm, t.name, t.nlen);              /* 命中插件？ */
+        if (run) {                                                /* 命中 → 执行 */
+            if (vm->imp_payload_buf) free(vm->imp_payload_buf);   /* payload 深拷贝（exec 期间有效） */
             vm->imp_payload_buf = NULL;
             if (t.plen) {
                 vm->imp_payload_buf = (uint8_t*)malloc(t.plen);
@@ -133,30 +138,40 @@ int find_plugin(VM *vm) {
             free_fetched(&ts, vm);
             return 1;
         }
-        /* 块引用 → 下钻（压栈返回点，切块） */
+        /* 块引用 → 压返回点 + 取块的第一个 data（下钻） */
         vm->ret = (RetItem*)realloc(vm->ret, (vm->ret_n + 1) * sizeof(RetItem));
         RetItem *r = &vm->ret[vm->ret_n++];
         r->key = vm->cur_key; r->klen = vm->cur_key_len; r->i = vm->cur_i;
         vm->cur_key = (uint8_t*)malloc(t.nlen); memcpy(vm->cur_key, t.name, t.nlen);
         vm->cur_key_len = t.nlen;
-        vm->cur_i = 0;
+        vm->cur_i = 0;                                            /* data 开头的第一个 token */
         free_fetched(&ts, vm);
     }
 }
 
+/* 执行链：尾调用无限连续（-O2 尾调用优化 → jump，函数栈不增长）；
+ * 插件内通过回调（run_next/reset/run_block）更新 imp，执行完尾调用继续 */
+static void run_imp(void) {
+    VM *vm = G;
+    if (!vm->imp) return;                                         /* 全部走完 */
+    vm->imp(vm, vm->imp_payload, vm->imp_plen);                   /* 执行当前插件 */
+    return run_imp();                                             /* 尾调用 → 接棒下一插件 */
+}
+
 /* ---------------- 入口 / 下钻 / 接棒 ---------------- */
 void run_block(VM *vm, const uint8_t *key, uint32_t klen) {
-    if (!vm->ret) {                                   /* —— 未启动：入口 —— */
-        vm->ret = (RetItem*)malloc(sizeof(RetItem));  /* 分配（空栈） */
+    if (!vm) {                                                    /* 入口（vm.c: run_block(NULL,NULL,0)） */
+        vm = G;
+        block_init(vm);                                           /* 首次：设回调表 */
+        vm->ret = (RetItem*)malloc(sizeof(RetItem));              /* 分配返回栈（空） */
         vm->ret_n = 0; vm->ret_cap = 1;
-        if (vm->cur_key) { free(vm->cur_key); vm->cur_key = NULL; }
-        if (klen) { vm->cur_key = (uint8_t*)malloc(klen); memcpy(vm->cur_key, key, klen); }
-        vm->cur_key_len = klen;
+        vm->cur_key = NULL; vm->cur_key_len = 0;                  /* 从 token 大小为零开始 */
         vm->cur_i = 0;
-        find_plugin(vm);
+        find_plugin(vm);                                          /* 下钻到首个命中插件 */
+        run_imp();                                                /* 启动执行链（尾调用） */
         return;
     }
-    /* —— 已启动：下钻（压栈切块） —— */
+    /* 下钻（插件内回调）：压返回点 + 切块 */
     vm->ret = (RetItem*)realloc(vm->ret, (vm->ret_n + 1) * sizeof(RetItem));
     RetItem *r = &vm->ret[vm->ret_n++];
     r->key = vm->cur_key; r->klen = vm->cur_key_len; r->i = vm->cur_i;
@@ -164,10 +179,10 @@ void run_block(VM *vm, const uint8_t *key, uint32_t klen) {
     vm->cur_key = (uint8_t*)malloc(klen ? klen : 1); memcpy(vm->cur_key, key, klen);
     vm->cur_key_len = klen;
     vm->cur_i = 0;
-    find_plugin(vm);
+    find_plugin(vm);                                              /* 更新 imp（当前 run_imp 链继续执行） */
 }
 
-void run_next(VM *vm) { find_plugin(vm); }          /* 插件自主接棒：位置已推进 */
+void run_next(VM *vm) { find_plugin(vm); }          /* 插件自主接棒：位置已推进，更新 imp */
 void reset(VM *vm)   { vm->cur_i = 0; find_plugin(vm); }   /* 重跑当前块 */
 
 /* ---------------- 初始化 ---------------- */

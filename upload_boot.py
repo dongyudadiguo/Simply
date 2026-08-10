@@ -1,8 +1,7 @@
 # upload_boot.py —— 向服务器上传 boot 到零大小 data（空 key）下
-# 上传 data（8 字节）：
-#   4 字节数字：4   (小端 u32int)  → 04 00 00 00
-#   4 字节文本：boot                → 62 6f 6f 74
-# 总共 8 字节。vm fetch(空key) 读前 4 字节=4 → key=p[4:8]="boot" → 加载 sha256("boot") 插件
+# 上传 data（12 字节，完整 token 格式）：
+#   [4B token长][boot][4B payload长][payload]  → 04 00 00 00 62 6f 6f 74 00 00 00 00
+# vm fetch(空key) → iter_tokens 解析第一条 token name="boot" → 加载 sha256("boot") 插件
 import socket, struct
 
 HOST, PORT = "127.0.0.1", 8000
@@ -21,9 +20,9 @@ def upload(key, data):                       # 服务端 op=3：上传数据
                   struct.pack("<I", len(data)) + data)
         return struct.unpack("<I", recv_all(s, 4))[0]
 
-# 8 字节：4 字节数字 4 + 4 字节 "boot"
-block = struct.pack("<I", 4) + b"boot"
-assert len(block) == 8, len(block)           # 确保总共 8 字节
+# 完整 token：4 字节数字 4 + "boot" + 4 字节 payload 长 0
+block = struct.pack("<I", 4) + b"boot" + struct.pack("<I", 0)
+assert len(block) == 12, len(block)          # 确保总共 12 字节
 print("data:", block.hex(), "长度:", len(block))
 
 idx = upload(b"", block)                     # 上传到空 key（零大小 data）

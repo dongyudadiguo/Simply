@@ -58,3 +58,8 @@ _editor_block_check.png
 # raylib 第三方库（build.bat 需要：下载 raylib-5.5_win64_mingw-w64 解压到项目根）
 raylib-*/
 raylib*.zip
+
+# .agent 尾调用实验文件
+.agent/t*.c
+.agent/t*_O0.s
+.agent/t*_O2.s

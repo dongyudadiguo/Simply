@@ -27,14 +27,24 @@ def load_src(key):                           # key 的 sha256 十六进制就是
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）
     return open(path, encoding="utf-8").read()   # 读插件源码（最直接）
 
-def run_block(start_key=b""):                 # 引导 + 沿引用链下钻到插件（vm 的为准）
-    key = start_key                          # 引导起点：默认空 key（取引导块）
-    while True:                              # 下钻循环：命中插件才跳出
-        p = fetch(key)                       # 取当前 key 的块（失败直接冒泡）
-        key = next_key(p)                    # 取块开头 token（引用目标）
-        try:
-            src = load_src(key)              # 命中插件 → 拿到源码跳出
-            break
-        except OSError:                      # 无插件 → 该 token 作为下一 key 继续下钻
-            pass
-    exec(src, {})                            # 执行插件（顶层代码，不加 run 层）
+def iter_tokens(blk):                        # 解析块 → (name, payload) 序列
+    i = 0
+    while i + 4 <= len(blk):
+        n = struct.unpack_from("<I", blk, i)[0]; i += 4
+        if not n: break
+        name = blk[i:i+n].decode("utf-8","replace"); i += n
+        d = struct.unpack_from("<I", blk, i)[0]; i += 4
+        yield name, blk[i:i+d]; i += d
+
+def run_token(name, payload=b""):            # 单个 token 接棒：命中插件则 exec 顶层，否则下钻其块
+    key = name.encode()
+    try:
+        src = load_src(key)                  # 命中插件
+    except OSError:                          # 无插件 → 该 token 是块引用，下钻执行其块
+        run_block(key)
+        return
+    exec(src, {"payload": payload})          # 顶层直接执行（payload 注入）
+
+def run_block(start_key=b""):                 # 执行块：遍历 token，逐个 run_token 接棒
+    for name, payload in iter_tokens(fetch(start_key)):
+        run_token(name, payload)

@@ -63,17 +63,19 @@ def iter_tokens(blk):                        # 解析块 → (name, payload) 生
         d = struct.unpack_from("<I", blk, i)[0]; i += 4      # 读 payload 长度并前进
         yield name, blk[i:i+d]; i += d       # 产出 (name, payload bytes)，前进到下一 token
 
-def _load_toks(key):                          # 取块并解析成 token 流（空 key 引导只取 name）
-    blk = fetch(key)                          # 从服务器取块数据
+def _load_toks(key):                          # 动态取块 token 流（每次现取，不固化缓存 → 内存改动立即响应）
+    c = vmstate.cur.get(key)                  # 内存优先：editor 实时维护的 toks（改动立即生效）
+    if c is not None:
+        return c
+    blk = fetch(key)                          # 兜底：从服务器取块数据
     if key == b"":                            # 引导：空 key 是系统 boot 引导块
         return [(next_key(blk).decode("utf-8","replace"), b"")]   # 最低限度：只取第一条 name（boot）
     return list(iter_tokens(blk))             # 普通块：严格完整解析全部 token
 
 # —— 全局执行上下文（find_plugin/exec_imp/run_block 共享，模块级）——
 _cur_key = None                               # 当前块 key
-_cur_toks = None                              # 当前块 token 流
 _cur_i = 0                                    # 当前 token 位置
-_retstack = None                              # 下钻返回栈（None=未启动=入口；[]=已启动）
+_retstack = None                              # 下钻返回栈（None=未启动=入口；[]=已启动，(key,i) 对）
 imp = None                                     # 当前插件源码（vm 主循环 exec(imp) 用）
 payload = None                                 # 当前插件 payload（vm exec(imp) 前取用）
 
@@ -91,23 +93,23 @@ def run_next():                               # 插件自主接棒：位置已�
     _set_imp()                                # 更新 imp 为下一个插件
 
 def find_plugin():                            # 下钻循环（对齐你的 while(1)）：找下一个命中插件的 token
-    global _cur_key, _cur_toks, _cur_i
+    global _cur_key, _cur_i
     while True:                               # —— 迭代下钻，不递归 ——
-        if _cur_i >= len(_cur_toks):          # 当前块走完
+        toks = _load_toks(_cur_key)           # 每次现取当前块（内存改动立即响应，不固化缓存）
+        if _cur_i >= len(toks):               # 当前块走完
             if _retstack:                     # 弹栈回上层
-                _cur_key, _cur_toks, _cur_i = _retstack.pop()
+                _cur_key, _cur_i = _retstack.pop()
                 continue
             return None                       # 全部走完 → 结束
-        name, payload = _cur_toks[_cur_i]     # 取当前 token（对齐 *(u32*)ptr, ptr+4）
+        name, payload = toks[_cur_i]          # 取当前 token（对齐 *(u32*)ptr, ptr+4）
         _cur_i += 1                           # 推进（run_next 语义）
         try:
             src = load_src(name.encode())     # 命中插件文件？
             return src, payload               # 是 → 返回 imp（插件源码 + payload，可直接 exec）
         except OSError:                       # 无插件 → 块引用，下钻
-            _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
+            _retstack.append((_cur_key, _cur_i))   # 保存返回点
             _cur_key = name.encode()          # 下钻（对齐 getfirstdata 取第一个 data）
             vmstate.cur_key = _cur_key        # 内存同步：暴露当前块 key
-            _cur_toks = _load_toks(_cur_key)
             _cur_i = 0
 
 def reset():                                   # 重跑当前块（rerun 用）：位置重置回块头
@@ -116,20 +118,18 @@ def reset():                                   # 重跑当前块（rerun 用）�
     _set_imp()                                # 更新 imp 为块头第一个插件（回到块首继续）
 
 def run_block(key=b""):                      # 唯一 run_block：入口（vm 调用）或下钻（插件调用）
-    global _cur_key, _cur_toks, _cur_i, _retstack
+    global _cur_key, _cur_i, _retstack
     if _retstack is None:                     # —— 未启动：入口（vm.py）——
         _retstack = []                        # 初始化返回栈
         flush_pending()                       # 内存同步：运行前保存编辑改动
         _cur_key = key                        # 起点 key（空 key 引导）
         vmstate.cur_key = key                 # 内存同步：暴露当前块 key
-        _cur_toks = _load_toks(key)           # 加载起始块
         _cur_i = 0                            # 从头执行
         _set_imp()                            # 设置首个 imp/env
         return
     # —— 已启动：下钻目标块（cond/handrun/运行按钮，压栈切块）——
-    _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
+    _retstack.append((_cur_key, _cur_i))      # 保存返回点（动态读，不存 token 快照）
     _cur_key = key                            # 切换当前块
     vmstate.cur_key = key                     # 内存同步：暴露当前块 key
-    _cur_toks = _load_toks(key)               # 加载目标块
     _cur_i = 0
     _set_imp()                                # 更新 imp 为下一个插件

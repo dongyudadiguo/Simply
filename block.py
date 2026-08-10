@@ -30,15 +30,24 @@ def upload(key, data):                       # 服务端 op=3：上传数据（�
                   struct.pack("<I", len(data)) + data)
         return struct.unpack("<I", recv_all(s, 4))[0]
 
-def flush_pending():                         # 运行前对比哈希：有改动才上传，再清空
-    for k, blk in vmstate.pending.items():
+def encode_toks(ts):                         # 块序列化（toks → bytes）
+    out = b""
+    for n, p in ts:
+        b = n.encode()
+        out += struct.pack("<I", len(b)) + b
+        pb = p if isinstance(p, bytes) else p.encode()
+        out += struct.pack("<I", len(pb)) + pb
+    return out + struct.pack("<I", 0)
+
+def flush_pending():                         # 运行前对比哈希：有改动才上传
+    for k, toks in vmstate.cur.items():
+        blk = encode_toks(toks)
         try:
             old = fetch(k)                      # 服务器当前版本
         except Exception:
             old = b""
         if hashlib.sha256(blk).digest() != hashlib.sha256(old).digest():
             upload(k, blk)                      # 哈希不同 → 有改动 → 上传
-    vmstate.pending.clear()
 
 def load_src(key):                           # key 的 sha256 十六进制就是插件文件名
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）

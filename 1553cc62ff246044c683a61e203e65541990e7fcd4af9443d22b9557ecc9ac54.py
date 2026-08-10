@@ -45,13 +45,6 @@ def encode_toks(ts):                     # 块序列化（tokens 的逆）→ up
         out += struct.pack("<I", len(pb)) + pb
     return out + struct.pack("<I", 0)
 
-def save_view(v):                        # 记录改动到 pending：run_block 运行前 flush 上传
-    try:
-        if v < 0: vmstate.pending[key_] = encode_toks(toks)
-        else: vmstate.pending[subviews[v]["bkey"]] = encode_toks(subviews[v]["toks"])
-    except Exception:
-        pass
-
 def exec_plugin(token):                  # 运行按钮：沿引用链下钻执行目标块
     if not token: return
     try:
@@ -147,6 +140,7 @@ def collect(key=b"", prio=1.0, depth=0):
 
 cands = sorted(collect(), key=lambda c: c[1])
 toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
+vmstate.cur[key_] = toks                 # 挂共享：run_block 运行前对比哈希用
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
 cam = [0., 0., 1.]
 inp, edit_i, edit_buf, edit_v = "", -1, "", -1
@@ -330,6 +324,7 @@ def on_mouse_press(x, y, button, mods):
                     upload(key, b"\x00\x00\x00\x00")
                     sub = tokens(try_fetch(key))   # 重新取（现在存在）
                 subviews.append({"key": n, "bkey": key, "toks": sub, "pos": (wx, wy)})   # 空块也拖出
+                vmstate.cur[key] = sub                  # 挂共享（子视图内容）
                 drag_sv = len(subviews)-1
     elif button == mouse.LEFT:
         si = hit_subview(wx, wy)
@@ -384,7 +379,6 @@ def alt_insert(kind):                     # 鼠标位置插入插件 token（当
     p = make_handrun("") if kind == "handrun" else ""
     ts.insert(pos, (kind, p))
     edit_i = pos; edit_buf = ""
-    save_view(edit_v)
 
 def space_insert():                       # 空格：插入补全匹配的 token（当前视图）
     global inp, edit_i, edit_v
@@ -396,7 +390,7 @@ def space_insert():                       # 空格：插入补全匹配的 token
             pos = insert_point(ts, ox, oy)
             ts.insert(pos, (t, ""))
             inp = ""; edit_i = -1
-            save_view(edit_v)
+
             return
 
 pressed, combo = set(), set()               # 当前按下的修饰键 / 本次组合
@@ -419,7 +413,6 @@ def on_key_press(symbol, mods):
     elif edit_i >= 0 and symbol == key.BACKSPACE:
         edit_buf = edit_buf[:-1]
         ts = cur_toks(); ts[edit_i] = (ts[edit_i][0], edit_buf)
-        save_view(edit_v)
     elif edit_i >= 0 and symbol == key.ESCAPE: edit_i = -1
     elif symbol == key.BACKSPACE: inp = inp[:-1]
     elif symbol == key.ENTER:
@@ -455,7 +448,7 @@ def on_text(text):
             elif n == "handrun":
                 _, hid = split_handrun(p)
                 ts[edit_i] = (n, hid + edit_buf.encode())
-            save_view(edit_v)
+
     elif text == " ":                     # 空格插入 token
         space_insert()
     elif text.isalnum():

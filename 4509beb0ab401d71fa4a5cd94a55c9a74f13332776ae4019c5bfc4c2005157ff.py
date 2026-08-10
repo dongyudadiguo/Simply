@@ -3,7 +3,7 @@
 # 直接代码（不加 run 层）：import block 后直接调用 run_block(get_id())
 import os, struct          # 文件/编解码
 import socket              # TCP 连接
-from block import recv_all, run_block   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
+from block import recv_all, run_block, fetch   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
 
 ID_FILE = "id.bin"                       # 机器 id 文件
 HOST, PORT = "127.0.0.1", 8000           # 本地服务器地址与端口
@@ -20,15 +20,20 @@ def vote(key, idx):                      # 服务端 op=1：投票
         return struct.unpack("<I", recv_all(s, 4))[0]
 
 def get_id():
-    if os.path.exists(ID_FILE):          # 已有 id 直接用
+    if os.path.exists(ID_FILE):          # 已有 id：server 有该块则直接用（保留用户编辑）
         new_id = open(ID_FILE, "rb").read()
+        try:
+            fetch(new_id)
+            return new_id
+        except Exception:                # server 重启后该块丢失 → 落到下方恢复引导块
+            pass
     else:
-        new_id = os.urandom(32)          # 生成 32 字节 id
+        new_id = os.urandom(32)          # 首次：生成 id
         open(ID_FILE, "wb").write(new_id)
     block = (bytes([6, 0, 0, 0]) + b"editor" + bytes([0, 0, 0, 0]) +   # 引导块 [editor][rerun]
              bytes([5, 0, 0, 0]) + b"rerun" + bytes([0, 0, 0, 0]) +
              bytes([0, 0, 0, 0]))
-    upload(new_id, block)                # 总是上传引导块（覆盖，server 重启后可恢复）
+    upload(new_id, block)                # 首次生成 / server 重启恢复：上传引导块
     return new_id
 
 run_block(get_id())                       # 直接执行：从 id key 引导（接管控制流）

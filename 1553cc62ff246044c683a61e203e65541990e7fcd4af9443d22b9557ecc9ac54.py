@@ -3,7 +3,7 @@
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os, importlib
-from block import fetch, recv_all, run_block, HOST, PORT, HERE
+from block import fetch, recv_all, run_block, flush_pending, HOST, PORT, HERE
 import socket, pyglet, ctypes, vmstate
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -55,10 +55,10 @@ def exec_plugin(token):                  # 运行按钮：沿引用链下钻执�
 def cur_toks():                          # 当前编辑视图的 token 流
     return toks if edit_v < 0 else subviews[edit_v]["toks"]
 
-def hit_view(sv, wx, wy):                # 子视图内命中 → 项索引（行0顶=pos.y+RH）
+def hit_view(sv, wx, wy):                # 子视图内命中 → 项索引（节点头顶=pos.y+RH）
     bx, by = sv["pos"]
     dist = (by + RH) - wy
-    row = int((max(0, dist) + GAP) // (RH+GAP))
+    row = int((max(0, dist) + GAP) // (RH+GAP)) - 1   # 节点头占一行
     lines = build_lines(sv["toks"])
     if not (0 <= row < len(lines)): return -1
     for kind, i, n, p, x in row_geom(lines[row])[0]:
@@ -70,13 +70,13 @@ def find_item_v(v, i):                   # 视图内项位置 → (world x, worl
     else: ts, ox, oy = subviews[v]["toks"], subviews[v]["pos"][0], subviews[v]["pos"][1]
     for r, line in enumerate(build_lines(ts)):
         for k, ii, n, p, x in row_geom(line)[0]:
-            if ii == i: return ox + x, oy - r*(RH+GAP), n, p
+            if ii == i: return ox + x, row_y(oy, r), n, p
     return None
 
-def insert_point(ts, ox, oy):            # 鼠标在视图(原点 ox,oy)内 → 插入位置
+def insert_point(ts, ox, oy):            # 鼠标在视图(原点 ox,oy=节点头行)内 → 插入位置
     wx, wy = screen_to_world(*mpos)
-    dist = oy - wy
-    row = int((max(0, dist) + GAP) // (RH+GAP))
+    dist = (oy + RH) - wy
+    row = int((max(0, dist) + GAP) // (RH+GAP)) - 1   # 节点头占一行
     lines = build_lines(ts)
     if 0 <= row < len(lines):
         f = min([ii for k, ii, n, p, x in row_geom(lines[row])[0]] or [len(ts)])
@@ -108,6 +108,9 @@ def crc_name(d):
     s = ""
     while n: s = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[n%32] + s; n //= 32
     return s
+
+def row_y(oy, row):                  # 视图内容行 row 中心 y（world）；视图原点=节点头行
+    return oy - (row+1)*(RH+GAP) + RH/2
 
 # —— 补全候选：零大小 data（空 key）递归收集 ——
 def try_fetch(key, t=1.0):
@@ -174,8 +177,8 @@ def row_geom(line):
 
 def hit(wx, wy):
     lines = build_lines(toks)
-    dist = RH - wy                             # 行0顶(y=RH)向下
-    row = int((max(0, dist) + GAP) // (RH+GAP))   # 与行底分界一致
+    dist = RH - wy                             # 节点头顶(y=RH)向下
+    row = int((max(0, dist) + GAP) // (RH+GAP)) - 1   # 节点头占一行 → 内容行减1
     if not (0 <= row < len(lines)): return -1
     for kind, i, n, p, x in row_geom(lines[row])[0]:
         if x <= wx <= x + item_w(n,p): return i
@@ -187,10 +190,10 @@ def screen_to_world(x, y):
 
 def gaps():                                     # 所有行间隙位置（世界 y）
     n = len(build_lines(toks))
-    gs = [RH]                               # editor 前
+    gs = [11.0]                             # 节点头与行0 之间
     for i in range(1, n):
-        gs.append(-i*(RH+GAP) + (RH+GAP) - GAP/2)   # 行 i-1 与行 i 间隙中间
-    gs.append(-(n-1)*(RH+GAP) - (RH+GAP)/2)         # 末尾下方
+        gs.append(-(RH+GAP)*i - GAP/2)      # 行 i-1 与 行 i 之间
+    gs.append(-(RH+GAP)*(n-1) - RH - (RH+GAP)/2)    # 末尾下方
     return gs
 
 def cursor_row():                              # 吸附到离鼠标最近的间隙
@@ -208,48 +211,60 @@ def on_draw():
     gl.glClearColor(*[c/255 for c in BG], 1); win.clear()
     win.view = Mat4.from_translation(Vec3(cam[0]+W/2, cam[1]+H/2, 0)) @ Mat4.from_scale(Vec3(cam[2], cam[2], 1))
     shapes, labels = [], []
+    anchors.clear()
+    # 节点头：初始节点显示块名（对齐拖出节点的节点头）
+    labels.append(pyglet.text.Label(crc_name(key_), x=2, y=RH/2, font_size=13,
+                                    color=(120,130,145)+(255,), anchor_y="center"))
     for row, line in enumerate(build_lines(toks)):
-        y = -row * (RH+GAP)
+        y = row_y(0.0, row)
         for kind, i, n, p, x in row_geom(line)[0]:
+            anchors[(-1, i)] = (x+2, y)            # 记录锚点（对齐 transition func_pos）
             lb = label(n, p)
             col = item_color(n)                    # 纯文字颜色（无矩形背景）
             if n in ("cond","handrun","condrerun") and heat.get(n):   # 热力：文字偏 HOT
                 col = tuple(int(col[j] + (HOT[j]-col[j])*min(heat.get(n,0)*.2,1)) for j in range(3))
             if i == edit_i and edit_v < 0: col = (255,255,255)    # 悬浮编辑项白字
-            labels.append(pyglet.text.Label(lb, x=x+2, y=y+RH/2, font_size=13,
+            labels.append(pyglet.text.Label(lb, x=x+2, y=y, font_size=13,
                                             color=col+(255,), anchor_y="center"))
             if n == "handrun":                     # handrun 两个按钮（小圆点）
                 _, hid = split_handrun(p)
                 f = vmstate.hand_flags.get(hid, [0, 0])
                 for bi in (0, 1):
                     bx = x + item_w(n,p) - 26 + bi*12
-                    shapes.append(Circle(bx, y+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
+                    shapes.append(Circle(bx, y, 3, color=(255,200,80) if f[bi] else (70,80,90)))
     # 指针：鼠标位置对应的插入行（参考 transition 的水平线）
     py = pointer_y()
     shapes.append(Line(0, py, 420, py, thickness=2, color=(150,160,170)))
-    # —— 拖出的子视图：显示其 token 行 + 父-子连线（可编辑：白字/按钮）——
+    # —— 拖出的子视图：显示其 token 行 + 父-子连线（对齐 transition：纯文字、锚点连线）——
     for si, sv in enumerate(subviews):
         bx, by = sv["pos"]
-        for row, line in enumerate(build_lines(sv["toks"])):
-            yy = by - row*(RH+GAP)
+        rows = build_lines(sv["toks"])
+        # 节点头：块名（空块也显示节点头，可点击插入）
+        nm = sv["bkey"].decode("utf-8","replace") if isinstance(sv["bkey"], bytes) else str(sv["bkey"])
+        col = item_color(nm)
+        if edit_v == si and (not rows or edit_i < 0): col = (255,255,255)   # 悬停节点头 → 白字
+        labels.append(pyglet.text.Label(nm or "(空)", x=bx+2, y=by+RH/2, font_size=13,
+                                        color=col+(255,), anchor_y="center"))
+        for row, line in enumerate(rows):
+            yy = row_y(by, row)
             for kind, ii, nn, pp, xx in row_geom(line)[0]:
+                anchors[(si, ii)] = (bx+xx+2, yy)    # 子视图 token 锚点（支持嵌套拖出）
                 lb = label(nn, pp)
                 col = item_color(nn)
                 if ii == edit_i and edit_v == si: col = (255,255,255)   # 子视图编辑态白字
-                labels.append(pyglet.text.Label(lb, x=bx+xx+2, y=yy+RH/2, font_size=13,
+                labels.append(pyglet.text.Label(lb, x=bx+xx+2, y=yy, font_size=13,
                                                 color=col+(255,), anchor_y="center"))
                 if nn == "handrun":                  # 子视图 handrun 按钮
                     _, hid = split_handrun(pp)
                     f = vmstate.hand_flags.get(hid, [0, 0])
                     for bi in (0, 1):
                         bx2 = bx + xx + item_w(nn,pp) - 26 + bi*12
-                        shapes.append(Circle(bx2, yy+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
-        # 父-子连线（主视图 token → 子视图左上）
-        for row, line in enumerate(build_lines(toks)):
-            for kind, ii, nn, pp, xx in row_geom(line)[0]:
-                if nn == sv["key"]:
-                    py = -row*(RH+GAP)
-                    shapes.append(Line(xx+20, py+RH/2, bx, by, thickness=1, color=(98,201,130)))
+                        shapes.append(Circle(bx2, yy, 3, color=(255,200,80) if f[bi] else (70,80,90)))
+    # 父-子连线：从源 token 锚点 → 子视图左上（对齐 transition func_pos → views_pos）
+    for si, sv in enumerate(subviews):
+        a = anchors.get(sv["src"])
+        if a:
+            shapes.append(Line(a[0], a[1], sv["pos"][0], sv["pos"][1], thickness=1, color=(98,201,130)))
     for s in shapes: s.draw()
     for l in labels: l.draw()
     # —— UI：补全跟随鼠标（pyglet y 向上，鼠标上=候选上）——
@@ -270,8 +285,10 @@ def on_draw():
 def on_mouse_drag(x, y, dx, dy, bt, mods):
     global cam, drag_sv
     if bt & mouse.MIDDLE: cam[0]+=dx; cam[1]+=dy
-    elif bt & mouse.RIGHT and drag_sv >= 0:   # 拖动子视图跟随鼠标
-        subviews[drag_sv]["pos"] = screen_to_world(x, y)
+    elif drag_sv >= 0 and (bt & mouse.LEFT or bt & mouse.RIGHT):   # 右键拖出 / 左键拖动 相对位移跟随（对齐 transition 增量）
+        s = cam[2]
+        p = subviews[drag_sv]["pos"]
+        subviews[drag_sv]["pos"] = (p[0] + dx/s, p[1] + dy/s)
 
 @win.event
 def on_mouse_scroll(x, y, sx, sy):
@@ -282,13 +299,14 @@ def on_mouse_scroll(x, y, sx, sy):
 
 def find_item(i):                          # toks 索引 → (行y, 项x, name, payload)
     for row, line in enumerate(build_lines(toks)):
-        y = -row * (RH+GAP)
+        y = row_y(0.0, row)
         for kind, ii, n, p, x in row_geom(line)[0]:
             if ii == i: return y, x, n, p
     return None
 
-subviews = []                            # 右键拖出的独立子视图 [{"key","toks","pos"}]
+subviews = []                            # 右键拖出的独立子视图 [{"key","bkey","toks","pos","src"}] src=(view,token_idx)
 drag_sv = -1                              # 正在拖动的子视图索引
+anchors = {}                              # (view_idx, token_idx) -> (world x, world y) 渲染时记录每个 token 锚点（对齐 transition func_pos）
 
 def hit_subview(wx, wy):                  # 命中子视图 → 索引（-1 无；含空块）
     for si, sv in enumerate(subviews):
@@ -306,31 +324,35 @@ def on_mouse_press(x, y, button, mods):
     if button == mouse.RIGHT:
         edit_i = -1
         si = hit_subview(wx, wy)
-        if si >= 0:
-            drag_sv = si
-        else:
-            i = hit(wx, wy)
-            if i >= 0:
-                n, pp = toks[i]
-                if n == "handrun":                 # handrun → 拖出 payload 里的目标 token
-                    target, _ = split_handrun(pp)
-                    if not target: return          # 无目标 → 不拖出
-                    key = target.encode()
-                else:                              # 普通 token → 自身名即块 key
-                    key = n.encode()
-                try:                               # 目标块存在 → 拖出子块为独立视图
-                    sub = tokens(try_fetch(key))
-                except Exception:                  # 服务器无 → 上传 4 字节全零占位
-                    upload(key, b"\x00\x00\x00\x00")
-                    sub = tokens(try_fetch(key))   # 重新取（现在存在）
-                subviews.append({"key": n, "bkey": key, "toks": sub, "pos": (wx, wy)})   # 空块也拖出
-                vmstate.cur[key] = sub                  # 挂共享（子视图内容）
-                drag_sv = len(subviews)-1
+        if si >= 0:                            # 右键点击子视图 → 关闭节点
+            del subviews[si]
+            drag_sv = -1
+            return
+        i = hit(wx, wy)                        # 主视图 token → 右键拖出（不变）
+        if i >= 0:
+            n, pp = toks[i]
+            if n == "handrun":                 # handrun → 拖出 payload 里的目标 token
+                target, _ = split_handrun(pp)
+                if not target: return          # 无目标 → 不拖出
+                key = target.encode()
+            else:                              # 普通 token → 自身名即块 key
+                key = n.encode()
+            try:                               # 目标块存在 → 拖出子块为独立视图
+                sub = tokens(try_fetch(key))
+            except Exception:                  # 服务器无 → 上传 4 字节全零占位
+                upload(key, b"\x00\x00\x00\x00")
+                sub = tokens(try_fetch(key))   # 重新取（现在存在）
+            subviews.append({"key": n, "bkey": key, "toks": sub, "pos": (wx, wy), "src": (-1, i)})
+            vmstate.cur[key] = sub             # 挂共享（子视图内容）
+            drag_sv = len(subviews)-1          # 新子视图跟随鼠标
     elif button == mouse.LEFT:
         si = hit_subview(wx, wy)
         if si >= 0:                            # 点的是子视图
             v, ts = si, subviews[si]["toks"]
             i = hit_view(subviews[si], wx, wy)
+            if i < 0:                          # 子视图空白 → 左键拖动节点
+                drag_sv = si
+                return
         else:                                  # 主视图
             v, ts = -1, toks
             i = hit(wx, wy)
@@ -349,7 +371,7 @@ def on_mouse_press(x, y, button, mods):
 @win.event
 def on_mouse_release(x, y, button, mods):
     global drag_sv
-    if button == mouse.RIGHT: drag_sv = -1
+    if button in (mouse.RIGHT, mouse.LEFT): drag_sv = -1
 
 @win.event
 def on_mouse_motion(x, y, dx, dy):
@@ -373,8 +395,8 @@ def on_mouse_motion(x, y, dx, dy):
 def alt_insert(kind):                     # 鼠标位置插入插件 token（当前视图）
     global edit_i, edit_buf, edit_v
     ts = cur_toks()
-    if edit_v < 0: ox, oy = 0.0, float(RH)
-    else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1] + RH
+    if edit_v < 0: ox, oy = 0.0, 0.0
+    else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1]
     pos = insert_point(ts, ox, oy)
     p = make_handrun("") if kind == "handrun" else ""
     ts.insert(pos, (kind, p))
@@ -385,8 +407,8 @@ def space_insert():                       # 空格：插入补全匹配的 token
     for t, p in cands:
         if t.startswith(inp):
             ts = cur_toks()
-            if edit_v < 0: ox, oy = 0.0, float(RH)
-            else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1] + RH
+            if edit_v < 0: ox, oy = 0.0, 0.0
+            else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1]
             pos = insert_point(ts, ox, oy)
             ts.insert(pos, (t, ""))
             inp = ""; edit_i = -1
@@ -454,4 +476,6 @@ def on_text(text):
     elif text.isalnum():
         inp += text.lower()
 
-pyglet.app.run()
+pyglet.app.run()                       # 阻塞直到窗口关闭
+
+flush_pending()                        # 窗口关闭 → 保存所有改动（对比哈希上传）

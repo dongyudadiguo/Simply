@@ -30,9 +30,14 @@ def upload(key, data):                       # 服务端 op=3：上传数据（�
                   struct.pack("<I", len(data)) + data)
         return struct.unpack("<I", recv_all(s, 4))[0]
 
-def flush_pending():                         # 运行前检查改动：有待上传就上传并清空
+def flush_pending():                         # 运行前对比哈希：有改动才上传，再清空
     for k, blk in vmstate.pending.items():
-        upload(k, blk)
+        try:
+            old = fetch(k)                      # 服务器当前版本
+        except Exception:
+            old = b""
+        if hashlib.sha256(blk).digest() != hashlib.sha256(old).digest():
+            upload(k, blk)                      # 哈希不同 → 有改动 → 上传
     vmstate.pending.clear()
 
 def load_src(key):                           # key 的 sha256 十六进制就是插件文件名

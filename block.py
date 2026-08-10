@@ -39,8 +39,9 @@ def encode_toks(ts):                         # 块序列化（toks → bytes）
         out += struct.pack("<I", len(pb)) + pb
     return out + struct.pack("<I", 0)
 
-def flush_pending():                         # 运行前对比哈希：有改动才上传
+def flush_pending():                         # 运行前对比哈希：有改动才上传（跳过空 key 系统引导块）
     for k, toks in vmstate.cur.items():
+        if not k: continue                   # b"" 是 boot 引导块，不覆盖
         blk = encode_toks(toks)
         try:
             old = fetch(k)                      # 服务器当前版本

@@ -175,15 +175,6 @@ static int find_plugin(void) {
     }
 }
 
-/* ================= 执行链 ================= */
-/* 尾调用无限连续（-O2 尾调用优化 → jump，函数栈不增长）；
- * 插件内通过 run_next/reset/run_block 更新 imp，执行完尾调用接棒下一插件 */
-static void run_imp(void) {
-    if (!imp) return;                                     /* 全部走完 */
-    imp(imp_payload, imp_plen);                           /* 执行当前插件 */
-    return run_imp();                                     /* 尾调用 → 接棒 */
-}
-
 /* ================= 入口 / 下钻 / 接棒 ================= */
 void run_block(const uint8_t *key, uint32_t klen) {
     if (!ret) {                                           /* 入口（vm.c: run_block(0,0)） */
@@ -192,11 +183,14 @@ void run_block(const uint8_t *key, uint32_t klen) {
         cur_key = NULL; cur_key_len = 0;                  /* 从 token 大小为零开始 */
         cur_i = 0;
         find_plugin();                                    /* 下钻到首个命中插件 */
-        run_imp();                                        /* 启动执行链（尾调用） */
+        for (;;) {                                        /* while(1){exec(imp)} —— 零错误处理 */
+            if (!imp) break;                              /* 全部走完 */
+            imp(imp_payload, imp_plen);                   /* 执行当前插件（内部 run_next/reset/run_block 更新 imp） */
+        }
         return;
     }
     goto_block(key, klen);                                /* 下钻（插件内回调）：压返回点 + 切块 */
-    find_plugin();                                        /* 更新 imp（当前 run_imp 链继续） */
+    find_plugin();                                        /* 更新 imp（当前 for 循环继续执行） */
 }
 
 void run_next(void) { find_plugin(); }                    /* 插件自主接棒：位置已推进，更新 imp */

@@ -1,0 +1,26 @@
+#include "../vm.h"
+#include <stdlib.h>
+#include <string.h>
+
+#include <stdio.h>
+void plugin_run(VM *vm, const uint8_t *payload, uint32_t plen) {
+    (void)payload; (void)plen;
+    uint8_t id[32];
+    FILE *f = fopen("id.bin", "rb");
+    if (f) {
+        if (fread(id, 1, 32, f) == 32) {
+            uint32_t blen = 0;
+            uint8_t *blk = vm->cb_fetch(id, 32, &blen);   /* server 有该块 → 直接用 */
+            if (blk) { free(blk); vm->cb_run_block(vm, id, 32); return; }
+        }
+        fclose(f);
+    }
+    for (int i = 0; i < 32; i++) id[i] = (uint8_t)(rand() & 0xff);   /* 生成新 id */
+    f = fopen("id.bin", "wb"); fwrite(id, 1, 32, f); fclose(f);
+    uint8_t block[31] = {                 /* 引导块 [editor][rerun] */
+        6,0,0,0,'e','d','i','t','o','r',0,0,0,0,
+        5,0,0,0,'r','e','r','u','n',0,0,0,0,
+        0,0,0,0};
+    vm->cb_upload(id, 32, block, 31);     /* 首次/恢复：上传引导块 */
+    vm->cb_run_block(vm, id, 32);
+}

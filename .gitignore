@@ -49,3 +49,13 @@ app.py.bak_pre_peak
 _default_net*.png
 _editor_block_check.png
 .agent/.ae_active_input
+
+# C 编译产物（不入库）
+c/*.exe
+c/*.dll
+c/plugins/*.dll
+c/*.o
+
+# raylib 第三方库（build.bat 需要：下载 raylib-5.5_win64_mingw-w64 解压到项目根）
+raylib-5.5_win64_mingw-w64/
+raylib.zip

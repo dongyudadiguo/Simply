@@ -73,8 +73,7 @@ def _load_toks(key):                          # 取块并解析成 token 流（�
 _cur_key = None                               # 当前块 key
 _cur_toks = None                              # 当前块 token 流
 _cur_i = 0                                    # 当前 token 位置
-_retstack = []                                # 下钻返回栈 [(key, toks, i)]（对齐你的 retpoint）
-_initialized = False                          # 是否已启动（首次 run_block=入口，之后=插件回调）
+_retstack = None                              # 下钻返回栈（None=未启动=入口；[]=已启动）
 imp = None                                     # 当前插件源码（vm 主循环 exec(imp) 用）
 payload = None                                 # 当前插件 payload（vm exec(imp) 前取用）
 
@@ -116,12 +115,11 @@ def reset():                                   # 重跑当前块（rerun 用）�
     _cur_i = 0                                # 对齐你的 ptr = blk（不压栈）
     _set_imp()                                # 更新 imp 为块头第一个插件（回到块首继续）
 
-def run_block(key=b""):                      # 唯一 run_block：首次=入口（vm 调用），之后=下钻
-    global _cur_key, _cur_toks, _cur_i, _retstack, _initialized
-    if not _initialized:                      # —— 首次（vm.py 入口）——
-        _initialized = True                   # 标记已启动
+def run_block(key=b""):                      # 唯一 run_block：入口（vm 调用）或下钻（插件调用）
+    global _cur_key, _cur_toks, _cur_i, _retstack
+    if _retstack is None:                     # —— 未启动：入口（vm.py）——
+        _retstack = []                        # 初始化返回栈
         flush_pending()                       # 内存同步：运行前保存编辑改动
-        _retstack = []                        # 清空返回栈
         _cur_key = key                        # 起点 key（空 key 引导）
         vmstate.cur_key = key                 # 内存同步：暴露当前块 key
         _cur_toks = _load_toks(key)           # 加载起始块

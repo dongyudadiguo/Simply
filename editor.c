@@ -1,5 +1,5 @@
 // editor.c —— 图形编辑器插件（raylib，内建编译进 vm）
-#include "api.h"
+#include "simply.h"
 #include "raylib.h"
 #include <string.h>
 #include <stdlib.h>

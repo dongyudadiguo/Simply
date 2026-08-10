@@ -1,5 +1,5 @@
 // vmstate.c —— 运行时共享状态（全局，对齐 vmstate.py）
-#include "api.h"
+#include "simply.h"
 #include <stdlib.h>
 #include <string.h>
 

@@ -1,5 +1,5 @@
 // upload_boot.c —— 上传空 key 引导块 = [boot] + 全部插件 sha256 名（payload 空）
-#include "api.h"
+#include "simply.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

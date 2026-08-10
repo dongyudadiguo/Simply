@@ -1,5 +1,5 @@
 // block.c —— 执行器：全局状态 + 尾调用连续执行（命中→imp；否则压返回点取第一个data）
-#include "api.h"
+#include "simply.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

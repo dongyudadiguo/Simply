@@ -141,7 +141,9 @@ def collect(key=b"", prio=1.0, depth=0):
         if depth < 3: out += collect(t.encode(), p, depth+1)
     return out
 
-cands = sorted(collect(), key=lambda c: c[1])
+# 补全候选 = 递归块引用（collect）+ 本地插件指令名（add/read/set/cond/handrun/condrerun 等）
+PLUGIN_NAMES = ["add","read","set","cond","handrun","condrerun","rerun","editor","boot"]
+cands = sorted(collect() + [(t, 100.0) for t in PLUGIN_NAMES], key=lambda c: c[1])
 toks = tokens(fetch(key_))                # 本地可编辑 [(name, payload)]
 vmstate.cur[key_] = toks                 # 挂共享：run_block 运行前对比哈希用
 win = pyglet.window.Window(W, H, caption="SelfEdit (editor 所在块)")
@@ -418,18 +420,29 @@ def alt_insert(kind):                     # 鼠标位置插入插件 token（当
     ts.insert(pos, (kind, p))
     edit_i = pos; edit_buf = ""
 
-def space_insert():                       # 空格：插入补全匹配的 token（当前视图）
+def space_insert():                       # 空格：插入补全匹配的 token；无匹配也直接插入输入的文本（当前视图）
     global inp, edit_i, edit_v
-    for t, p in cands:
-        if t.startswith(inp):
-            ts = cur_toks()
-            if edit_v < 0: ox, oy = 0.0, 0.0
-            else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1]
-            pos = insert_point(ts, ox, oy)
-            ts.insert(pos, (t, ""))
-            inp = ""; edit_i = -1
+    ts = cur_toks()
+    if edit_v < 0: ox, oy = 0.0, 0.0
+    else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1]
+    pos = insert_point(ts, ox, oy)
+    t = inp                                  # 默认：直接插入输入文本作为 token 名
+    for name, p in cands:
+        if name.startswith(inp):             # 有补全匹配 → 用补全名
+            t = name
+            break
+    ts.insert(pos, (t, ""))
+    inp = ""; edit_i = -1
 
-            return
+copy_buf = []                                 # 复制缓冲区（SHIFT 划选段）
+sel_start = -1                                # SHIFT 划选起点（对齐 transition copy2[0]）
+del_start = -1                                # DELETE 划选起点（对齐 transition copy=point）
+
+def cur_pos():                                # 鼠标在所在视图的插入位置（token 索引）
+    ts = cur_toks()
+    if edit_v < 0: ox, oy = 0.0, 0.0
+    else: ox, oy = subviews[edit_v]["pos"][0], subviews[edit_v]["pos"][1]
+    return insert_point(ts, ox, oy)
 
 pressed, combo = set(), set()               # 当前按下的修饰键 / 本次组合
 def skey(symbol):
@@ -441,10 +454,19 @@ def skey(symbol):
 
 @win.event
 def on_key_press(symbol, mods):
-    global edit_i, edit_buf, inp
+    global edit_i, edit_buf, inp, sel_start, del_start
     k = skey(symbol)
     if k:                                        # 修饰键：只记录，等松开判定组合
+        if k == "shift" and edit_i < 0 and not (mods & (key.MOD_CTRL | key.MOD_ALT)):
+            sel_start = cur_pos()                # SHIFT 划选起点（对齐 transition copy2[0]）
         pressed.add(k); combo.add(k)
+    elif symbol == key.DELETE and edit_i < 0:
+        del_start = cur_pos()                    # DELETE 划选起点（对齐 transition copy=point）
+    elif symbol == key.INSERT and edit_i < 0 and copy_buf:
+        ts = cur_toks()                          # INSERT 粘贴（对齐 transition memcpy+memmove）
+        pos = cur_pos()
+        for i, tok in enumerate(copy_buf):
+            ts.insert(pos + i, tok)
     elif symbol == key.SPACE:
         space_insert()
     elif edit_i >= 0 and symbol == key.ENTER: edit_i = -1
@@ -460,9 +482,22 @@ def on_key_press(symbol, mods):
 
 @win.event
 def on_key_release(symbol, mods):
-    global pressed, combo, edit_i, edit_buf
+    global pressed, combo, edit_i, edit_buf, sel_start, del_start
+    if symbol == key.DELETE and del_start >= 0:
+        ts = cur_toks()                          # DELETE 松开 → 删除划选段（对齐 transition memmove）
+        pos = cur_pos()
+        a, b = min(del_start, pos), max(del_start, pos)
+        del ts[a:b]
+        del_start = -1
+        return
     k = skey(symbol)
     if not k: return
+    if k == "shift" and sel_start >= 0 and not (mods & (key.MOD_CTRL | key.MOD_ALT)):
+        ts = cur_toks()                          # SHIFT 松开 → 记录复制段（对齐 transition copy2[1]）
+        pos = cur_pos()
+        a, b = min(sel_start, pos), max(sel_start, pos)
+        copy_buf = list(ts[a:b])
+        sel_start = -1
     pressed.discard(k)
     if pressed or edit_i >= 0: return            # 还有修饰键按着 / 编辑态 → 不判定
     c = frozenset(combo)                         # 本次完整组合（全部松开时）
@@ -487,9 +522,8 @@ def on_text(text):
                 _, hid = split_handrun(p)
                 ts[edit_i] = (n, hid + edit_buf.encode())
 
-    elif text == " ":                     # 空格插入 token
-        space_insert()
     elif text.isalnum():
         inp += text.lower()
 
-pyglet.app.run()                       # 阻塞直到窗口关闭（同步由 vm 入口统一处理，editor 零同步）
+pyglet.app.run()                       # 阻塞直到窗口关闭
+run_next()                             # 窗口关闭后自主接棒（与其他 token 一致）

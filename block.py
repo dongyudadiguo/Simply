@@ -27,14 +27,12 @@ def load_src(key):                           # key 的 sha256 十六进制就是
     path = os.path.join(HERE, hashlib.sha256(key).hexdigest() + ".py")  # 拼接插件路径（不存在即抛异常）
     return open(path, encoding="utf-8").read()   # 读插件源码（最直接）
 
-def iter_tokens(blk):                        # 解析块 → (name, payload) 序列（最低限度 [n][name] 也支持）
+def iter_tokens(blk):                        # 解析块 → (name, payload) 序列（严格完整格式，缺字段即越界）
     i = 0
     while i + 4 <= len(blk):
         n = struct.unpack_from("<I", blk, i)[0]; i += 4
         if not n: break
         name = blk[i:i+n].decode("utf-8","replace"); i += n
-        if i + 4 > len(blk):                 # 无 payload 长度字段（最低限度 [n][name]）
-            yield name, b""; break
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         yield name, blk[i:i+d]; i += d
 
@@ -52,5 +50,9 @@ def _chain(toks, i):                          # 链式自主接棒：当前 toke
     exec(src, {"payload": payload, "run_next": run_next,
                "run_block": run_block})        # 注入 payload/run_next/run_block
 
-def run_block(start_key=b""):                 # 块入口：从第一个 token 开始链式执行
-    _chain(list(iter_tokens(fetch(start_key))), 0)
+def run_block(start_key=b""):                 # 块入口：空 key 引导（boot 最低限度）用 next_key，否则链式执行
+    blk = fetch(start_key)
+    if start_key == b"":                      # 引导：boot 块最低限度 [n][name]，只取 name
+        run_token(next_key(blk).decode("utf-8","replace"), b"")
+        return
+    _chain(list(iter_tokens(blk)), 0)

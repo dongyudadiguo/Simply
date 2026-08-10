@@ -75,9 +75,22 @@ _cur_toks = None                              # 当前块 token 流
 _cur_i = 0                                    # 当前 token 位置
 _retstack = []                                # 下钻返回栈 [(key, toks, i)]（对齐你的 retpoint）
 _initialized = False                          # 是否已启动（首次 run_block=入口，之后=插件回调）
+imp = None                                     # 当前插件源码（vm 主循环 exec(imp) 用）
+env = None                                     # 注入环境（payload/run_next/run_block 绑定）
+
+def _set_imp():                               # 找下一个插件并设置全局 imp/env（exec(imp) 用）
+    global imp, env
+    r = find_plugin()                         # 下钻找下一个命中插件的 token
+    if r:                                     # 找到 → 更新 imp/env
+        src, payload = r
+        imp = src                             # 当前插件源码
+        env = {"payload": payload, "run_next": run_next,
+               "run_block": run_block}        # 注入环境
+    else:
+        imp = None                            # 全部走完 → imp=None（vm 循环 exec 崩溃/结束）
 
 def run_next():                               # 插件自主接棒：位置已推进（_cur_i += 1）
-    pass                                      # 纯指针推进（对齐你的 ptr += ... 两次）
+    _set_imp()                                # 更新 imp 为下一个插件
 
 def find_plugin():                            # 下钻循环（对齐你的 while(1)）：找下一个命中插件的 token
     global _cur_key, _cur_toks, _cur_i
@@ -90,8 +103,8 @@ def find_plugin():                            # 下钻循环（对齐你的 whil
         name, payload = _cur_toks[_cur_i]     # 取当前 token（对齐 *(u32*)ptr, ptr+4）
         _cur_i += 1                           # 推进（run_next 语义）
         try:
-            load_src(name.encode())           # 命中插件文件？
-            return name, payload              # 是 → 返回 imp（插件 key + payload）
+            src = load_src(name.encode())     # 命中插件文件？
+            return src, payload               # 是 → 返回 imp（插件源码 + payload，可直接 exec）
         except OSError:                       # 无插件 → 块引用，下钻
             _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
             _cur_key = name.encode()          # 下钻（对齐 getfirstdata 取第一个 data）
@@ -109,7 +122,8 @@ def run_block(key=b""):                      # 唯一 run_block：首次=入口�
         vmstate.cur_key = key                 # 内存同步：暴露当前块 key
         _cur_toks = _load_toks(key)           # 加载起始块
         _cur_i = 0                            # 从头执行
-        return find_plugin()                  # 下钻 → 返回 (name, payload) 作为 imp
+        _set_imp()                            # 设置首个 imp/env
+        return
     # —— 已启动：插件回调（rerun 重跑 / cond/handrun 下钻，只改状态）——
     if key == _cur_key:                       # 重跑当前块（rerun：重置位置）
         _cur_i = 0                            # 回块头（对齐 ptr = blk）
@@ -119,14 +133,4 @@ def run_block(key=b""):                      # 唯一 run_block：首次=入口�
         vmstate.cur_key = key                 # 内存同步：暴露当前块 key
         _cur_toks = _load_toks(key)           # 加载目标块
         _cur_i = 0
-
-def exec_imp(imp):                            # 执行当前插件（对齐你的 exec(imp)）
-    name, payload = imp                       # imp = (插件 key, payload)
-    src = load_src(name.encode())             # 读插件源码
-    try:
-        exec(src, {"payload": payload, "run_next": run_next,
-                   "run_block": run_block})   # 注入 payload/run_next/run_block（同一个 run_block）
-    except SystemExit:                        # 插件主动结束（editor 关闭/ret_int）
-        flush_pending()                       # 内存同步：保存并退出
-        return False
-    return True
+    _set_imp()                                # 更新 imp 为下一个插件

@@ -4,7 +4,7 @@
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
 import inspect, struct, binascii, hashlib, os, importlib
 from block import fetch, recv_all, run_block, HOST, PORT, HERE
-import socket, pyglet, ctypes
+import socket, pyglet, ctypes, vmstate
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
 from pyglet.math import Mat4, Vec3
@@ -91,7 +91,7 @@ def insert_point(ts, ox, oy):            # 鼠标在视图(原点 ox,oy)内 → 
     return len(ts)
 
 # —— handrun payload: 8字节id + 目标token；布尔由 id 索引 ——
-hand_flags = {}                           # id(bytes) -> [b1, b2]
+
 def split_handrun(p):
     return p[8:].decode("utf-8","replace"), p[:8] if len(p) >= 8 else b""
 def make_handrun(token):
@@ -226,7 +226,7 @@ def on_draw():
                                             color=col+(255,), anchor_y="center"))
             if n == "handrun":                     # handrun 两个按钮（小圆点）
                 _, hid = split_handrun(p)
-                f = hand_flags.get(hid, [0, 0])
+                f = vmstate.hand_flags.get(hid, [0, 0])
                 for bi in (0, 1):
                     bx = x + item_w(n,p) - 26 + bi*12
                     shapes.append(Circle(bx, y+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
@@ -246,7 +246,7 @@ def on_draw():
                                                 color=col+(255,), anchor_y="center"))
                 if nn == "handrun":                  # 子视图 handrun 按钮
                     _, hid = split_handrun(pp)
-                    f = hand_flags.get(hid, [0, 0])
+                    f = vmstate.hand_flags.get(hid, [0, 0])
                     for bi in (0, 1):
                         bx2 = bx + xx + item_w(nn,pp) - 26 + bi*12
                         shapes.append(Circle(bx2, yy+RH/2, 3, color=(255,200,80) if f[bi] else (70,80,90)))
@@ -341,15 +341,13 @@ def on_mouse_press(x, y, button, mods):
             i = hit(wx, wy)
         if i >= 0 and ts[i][0] == "handrun":   # 点 handrun 两个按钮（项右端 24px）
             _, hid = split_handrun(ts[i][1])
-            fl = hand_flags.setdefault(hid, [0, 0])
+            fl = vmstate.hand_flags.setdefault(hid, [0, 0])
             gi = find_item_v(v, i)
             rel = wx - (gi[0] + item_w(gi[2],gi[3]) - 24)
             hitb = 0 if 0 <= rel < 12 else (1 if 12 <= rel < 24 else -1)
-            if hitb >= 0:                      # 命中按钮 → 切换 + 执行目标（运行按钮）
+            if hitb >= 0:                      # 命中按钮 → 只改 id 指向的 flags（不执行）
                 fl[hitb] = 1 - fl[hitb]
-                hand_flags[hid] = fl
-                target, _ = split_handrun(gi[3])
-                if target: exec_plugin(target)
+                vmstate.hand_flags[hid] = fl
         else:
             edit_i = -1
 

@@ -17,3 +17,5 @@ def write_num(size):                   # 记录结果大小到 num 区
     global num_off
     num[num_off:num_off+4] = size.to_bytes(4, "little")
     num_off += 4
+
+hand_flags = {}                              # handrun id(bytes) -> [b1, b2]（editor 按钮写、插件读）

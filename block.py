@@ -74,20 +74,10 @@ _cur_key = None                               # 当前块 key
 _cur_toks = None                              # 当前块 token 流
 _cur_i = 0                                    # 当前 token 位置
 _retstack = []                                # 下钻返回栈 [(key, toks, i)]（对齐你的 retpoint）
+_initialized = False                          # 是否已启动（首次 run_block=入口，之后=插件回调）
 
 def run_next():                               # 插件自主接棒：位置已推进（_cur_i += 1）
     pass                                      # 纯指针推进（对齐你的 ptr += ... 两次）
-
-def run_block(key):                           # 插件下钻/重跑（只改状态，不新开循环）
-    global _cur_key, _cur_toks, _cur_i
-    if key == _cur_key:                       # 重跑当前块（rerun：重置位置）
-        _cur_i = 0                            # 回块头（对齐你的 ptr = blk）
-    else:                                     # 下钻目标块（cond/handrun：压栈切块）
-        _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点（对齐 *(void**)retpoint=ptr）
-        _cur_key = key                        # 切换当前块
-        vmstate.cur_key = key                 # 内存同步：暴露当前块 key
-        _cur_toks = _load_toks(key)           # 加载目标块（对齐 getfirstdata 下钻）
-        _cur_i = 0
 
 def find_plugin():                            # 下钻循环（对齐你的 while(1)）：找下一个命中插件的 token
     global _cur_key, _cur_toks, _cur_i
@@ -109,32 +99,33 @@ def find_plugin():                            # 下钻循环（对齐你的 whil
             _cur_toks = _load_toks(_cur_key)
             _cur_i = 0
 
-def run_block(start_key=b""):                 # 下钻到第一个命中插件的 token，返回 imp（对齐你的 runblock）
-    global _cur_key, _cur_toks, _cur_i, _retstack
-    flush_pending()                          # 内存同步：运行前保存编辑改动
-    _cur_key = start_key                      # 起点 key（空 key 引导）
-    vmstate.cur_key = start_key               # 内存同步：暴露当前块 key
-    _cur_toks = _load_toks(start_key)         # 加载起始块
-    _cur_i = 0                                # 从头执行
-    _retstack = []                            # 清空返回栈
-    return find_plugin()                      # 下钻 → 返回 (name, payload) 或 None
+def run_block(key=b""):                      # 唯一 run_block：首次=入口（vm 调用），之后=插件回调
+    global _cur_key, _cur_toks, _cur_i, _retstack, _initialized
+    if not _initialized:                      # —— 首次（vm.py 入口）——
+        _initialized = True                   # 标记已启动
+        flush_pending()                       # 内存同步：运行前保存编辑改动
+        _retstack = []                        # 清空返回栈
+        _cur_key = key                        # 起点 key（空 key 引导）
+        vmstate.cur_key = key                 # 内存同步：暴露当前块 key
+        _cur_toks = _load_toks(key)           # 加载起始块
+        _cur_i = 0                            # 从头执行
+        return find_plugin()                  # 下钻 → 返回 (name, payload) 作为 imp
+    # —— 已启动：插件回调（rerun 重跑 / cond/handrun 下钻，只改状态）——
+    if key == _cur_key:                       # 重跑当前块（rerun：重置位置）
+        _cur_i = 0                            # 回块头（对齐 ptr = blk）
+    else:                                     # 下钻目标块（压栈切块）
+        _retstack.append((_cur_key, _cur_toks, _cur_i))   # 保存返回点
+        _cur_key = key                        # 切换当前块
+        vmstate.cur_key = key                 # 内存同步：暴露当前块 key
+        _cur_toks = _load_toks(key)           # 加载目标块
+        _cur_i = 0
 
 def exec_imp(imp):                            # 执行当前插件（对齐你的 exec(imp)）
     name, payload = imp                       # imp = (插件 key, payload)
     src = load_src(name.encode())             # 读插件源码
-    def run_block_cb(key):                    # 注入给插件的 run_block 回调：只改状态
-        global _cur_key, _cur_toks, _cur_i
-        if key == _cur_key:                   # 重跑当前块（rerun：重置位置）
-            _cur_i = 0
-        else:                                 # 下钻目标块（cond/handrun：压栈切块）
-            _retstack.append((_cur_key, _cur_toks, _cur_i))
-            _cur_key = key
-            vmstate.cur_key = key
-            _cur_toks = _load_toks(key)
-            _cur_i = 0
     try:
         exec(src, {"payload": payload, "run_next": run_next,
-                   "run_block": run_block_cb})  # 注入 payload/run_next/run_block(回调)
+                   "run_block": run_block})   # 注入 payload/run_next/run_block（同一个 run_block）
     except SystemExit:                        # 插件主动结束（editor 关闭/ret_int）
         flush_pending()                       # 内存同步：保存并退出
         return False

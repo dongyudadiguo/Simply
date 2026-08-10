@@ -2,8 +2,8 @@
 # 空格=插入补全token | Ctrl=cond Ctrl+Alt=handrun Shift+Ctrl=condrerun | 右键拖出重排
 # read/set 贴指令左右；命中/未命中颜色；cond/handrun/condrerun 热力高亮+悬浮编辑+handrun按钮
 # 中键平移+滚轮缩放；补全跟随鼠标（零大小data，优先度=父优先度×排名×大小）
-import inspect, struct, binascii, hashlib, os, importlib
-from block import fetch, recv_all, run_block, HOST, PORT, HERE
+import struct, binascii, hashlib, os, importlib
+from block import fetch, recv_all, HOST, PORT, HERE
 import socket, pyglet, ctypes, vmstate, time
 from pyglet.shapes import Circle, Line
 from pyglet.window import mouse, key
@@ -17,10 +17,7 @@ HOT, HIT = (255,80,80), (90,160,220)     # 热力/命中
 
 # —— 定位 editor 所在块 ——
 if not hasattr(vmstate, "ed_init"):
-    key_ = b""
-    for f in inspect.stack()[1:]:
-        if f.function == "run_block":
-            key_ = f.frame.f_locals.get("start_key", b""); break
+    key_ = getattr(vmstate, "cur_key", b"")   # 当前块 key（run_block 迭代维护，替代 inspect 找递归帧）
 
     # —— 块 = [(name, payload)] ——
     def tokens(blk):
@@ -535,13 +532,16 @@ if not hasattr(vmstate, "ed_init"):
     vmstate.ed_win = win
     vmstate.ed_open = True
     vmstate.ed_init = True
-    while vmstate.ed_open:          # devdest 渲染主循环：窗口常驻，每帧处理输入+重绘
-        win.dispatch_events()
-        if not vmstate.ed_open: break   # dispatch 中可能触发 on_close 关窗 → 立即退出
+else:
+    win = vmstate.ed_win            # 重跑：复用窗口（runonece，对齐 transition devdest）
+
+# —— 每次 exec 渲染一帧后 run_next 接棒（VM 迭代主循环：rerun 重置 → 回到这里渲染下一帧，不阻塞不堆积）——
+if vmstate.ed_open:
+    win.dispatch_events()
+    if vmstate.ed_open:             # dispatch 中未关闭 → 重绘一帧 + 接棒
         win.dispatch_event('on_draw')
         win.flip()
         time.sleep(0.016)
-    run_next()                      # 窗口关闭 → 接棒（rerun 重跑触发 flush 保存后链结束）
-
-else:
-    pass                            # 重跑：已初始化，不渲染不接棒（不递归、不堆积）
+        run_next()
+    else:
+        raise SystemExit(0)         # 窗口关闭 → 正常结束（run_block 捕获后 flush 保存）

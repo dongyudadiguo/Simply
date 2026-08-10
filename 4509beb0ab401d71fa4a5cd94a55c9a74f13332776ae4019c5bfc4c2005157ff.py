@@ -3,7 +3,7 @@
 # 直接代码（不加 run 层）：import block 后直接调用 run_block(get_id())
 import os, struct          # 文件/编解码
 import socket              # TCP 连接
-from block import recv_all, run_block, fetch   # 公共逻辑（vm 主脚本已把目录放入 sys.path）
+from block import recv_all, fetch
 
 ID_FILE = "id.bin"                       # 机器 id 文件
 HOST, PORT = "127.0.0.1", 8000           # 本地服务器地址与端口

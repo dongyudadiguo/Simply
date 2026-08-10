@@ -63,24 +63,51 @@ def iter_tokens(blk):                        # 解析块 → (name, payload) 序
         d = struct.unpack_from("<I", blk, i)[0]; i += 4
         yield name, blk[i:i+d]; i += d
 
-def _chain(toks, i):                          # 链式自主接棒：当前 token 执行后，插件自主 run_next 继续
-    if i >= len(toks): return
-    name, payload = toks[i]
-    try:
-        src = load_src(name.encode())          # 命中插件
-    except OSError:                            # 无插件 → 该 token 是块引用，下钻其块后继续链
-        run_block(name.encode())
-        _chain(toks, i+1)
-        return
-    def run_next():                            # 插件自主接棒：继续链的下一个 token
-        _chain(toks, i+1)
-    exec(src, {"payload": payload, "run_next": run_next,
-               "run_block": run_block})        # 注入 payload/run_next/run_block
+def _load_toks(key):                          # 取块并解析 token 流（空 key 引导只取 name）
+    blk = fetch(key)
+    if key == b"":                            # 引导：boot 块最低限度 [n][name]，只取 name
+        return [(next_key(blk).decode("utf-8","replace"), b"")]
+    return list(iter_tokens(blk))
 
-def run_block(start_key=b""):                 # 块入口：运行前 flush 改动，再引导/执行
-    flush_pending()                          # 检查改动 → 上传
-    blk = fetch(start_key)
-    if start_key == b"":                      # 引导：boot 块最低限度 [n][name]，只取 name 走 _chain
-        _chain([(next_key(blk).decode("utf-8","replace"), b"")], 0)
-        return
-    _chain(list(iter_tokens(blk)), 0)
+def run_block(start_key=b""):                 # 迭代主循环（对齐 while(1) imp()）：显式栈下钻/重置，不递归
+    flush_pending()                          # 运行前 flush 改动（每次运行入口）
+    cur_key = start_key
+    vmstate.cur_key = cur_key                # 暴露当前块 key（editor 定位所在块用，替代 inspect）
+    cur_toks = _load_toks(cur_key)
+    cur_i = 0
+    stack = []                                # 下钻返回栈 [(key, toks, i)]（cond/handrun/块引用）
+    while True:                               # —— 迭代执行（不递归、不堆积）——
+        if cur_i >= len(cur_toks):            # 当前块走完
+            if stack:                         # 弹栈回上层继续
+                cur_key, cur_toks, cur_i = stack.pop()
+                continue
+            break                             # 全部走完 → 结束
+        name, payload = cur_toks[cur_i]
+        cur_i += 1                            # 默认推进（run_next 语义）
+        try:
+            src = load_src(name.encode())     # 命中插件
+        except OSError:                       # 无插件 → 块引用，下钻其块（压栈）
+            stack.append((cur_key, cur_toks, cur_i))
+            cur_key = name.encode()
+            vmstate.cur_key = cur_key
+            cur_toks = _load_toks(cur_key)
+            cur_i = 0
+            continue
+        def run_next():                       # 插件自主接棒：位置已推进（cur_i += 1）
+            pass
+        def run_block(k):                     # 插件下钻/重跑（迭代，不递归）
+            nonlocal cur_key, cur_toks, cur_i
+            if k == cur_key:                  # 重跑当前块（rerun：重置位置）
+                cur_i = 0
+            else:                             # 下钻目标块（cond/handrun/运行：压栈切块）
+                stack.append((cur_key, cur_toks, cur_i))
+                cur_key = k
+                vmstate.cur_key = cur_key
+                cur_toks = _load_toks(k)
+                cur_i = 0
+        try:
+            exec(src, {"payload": payload, "run_next": run_next,
+                       "run_block": run_block})   # 注入 payload/run_next/run_block
+        except SystemExit:                    # 正常结束信号（editor 关闭/ret_int）→ 保存并退出
+            flush_pending()
+            break

@@ -3,6 +3,8 @@
 #include <string.h>
 
 void cond_run(void) {
-    if (stk_off > 0 && stk[0] != 0 && plen) run_block(payload, plen);
-    else run_next();
+    if (stk_off > 0 && stk[0] != 0 && plen) {
+        uint32_t n = plen;
+        run_block((KEY){&n, payload});
+    } else run_next();
 }

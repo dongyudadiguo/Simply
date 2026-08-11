@@ -21,9 +21,6 @@
 
 typedef uint32_t u32;
 
-/* key：data 结构体，一个 u32 大小一个 ptr（n 指向 u32 大小字段，d 指向数据） */
-typedef struct { const u32 *n; const uint8_t *d; } KEY;
-
 /* ================= 插件表（内建，逻辑名 → 函数） ================= */
 typedef struct { const char *name; void (*run)(void); } Plugin;
 static const Plugin PLUGINS[] = {
@@ -199,8 +196,9 @@ static void drill(void) {
 /* ================= 入口 / 下钻 / 接棒 ================= */
 /* 入口 + 插件下钻：首次（booted==0）初始化并从空 key 引导；
    否则压返回点 + 切到 key 指向的块；最终都进 drill 下钻循环 */
-void run_block(const uint8_t *d, u32 n) {
-    if (!booted) {                                       /* 入口（vm: run_block(0,0)） */
+void run_block(KEY k) {
+
+    if (!booted) {                                       /* 入口（vm: run_block({0,0})） */
         booted = 1;
         retpoint = ret_slots;
         u32 zero = 0; key.d = NULL; key.n = &zero;       /* 空 key */
@@ -210,8 +208,8 @@ void run_block(const uint8_t *d, u32 n) {
         return;                                          /* 回 vm：for(;;){imp()} */
     }
     *(void**)retpoint = (void*)ptr; retpoint += 8;       /* 插件下钻：压父块位置（当前插件 token） */
-    push_key(d, n);                                     /* 当前块 key 写进栈顶（合成 [n][d]） */
-    u32 sz = n; key.d = d; key.n = &sz;
+    push_key(k.d, *k.n);                                /* 当前块 key 写进栈顶（合成 [n][d]） */
+    u32 sz = *k.n; key.d = k.d; key.n = &sz;
     ptr = getfirstdata(key);                            /* 取目标块第一个 data */
     key = (KEY){(u32*)ptr, ptr + 4};
     drill();

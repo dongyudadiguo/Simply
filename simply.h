@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* key：data 结构体，一个 u32 大小一个 ptr（n 指向 u32 大小字段，d 指向数据） */
+typedef struct { const uint32_t *n; const uint8_t *d; } KEY;
+
 /* ---- 块 token（数据容器，非 VM 结构体） ---- */
 typedef struct { uint8_t *name; uint32_t nlen; uint8_t *payload; uint32_t plen; } Tok;
 typedef struct { Tok *tok; size_t n, cap, owned; } Toks;
@@ -30,7 +33,7 @@ int net_upload(const uint8_t *key, uint32_t klen, const uint8_t *data, uint32_t 
 
 /* ---- block 执行器（全局） ---- */
 extern const uint8_t *payload; extern uint32_t plen;   /* 当前插件 payload（插件内部读） */
-void run_block(const uint8_t *key, uint32_t klen);      /* 入口 key=NULL,0 或插件下钻 */
+void run_block(KEY k);                                   /* 入口 k={0,0} 或插件下钻 */
 void cur_key_of(const uint8_t **out_d, uint32_t *out_n);  /* 当前块 key（从返回栈顶读） */
 void run_next(void);                                    /* 插件自主接棒 */
 void reset(void);                                       /* 重跑当前块 */

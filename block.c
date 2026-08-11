@@ -187,7 +187,8 @@ void drill(data k) {
         booted = 1;
         retbase = malloc(256 * sizeof(void*));
         retpoint = retbase;
-        /* 不取引导块：k={0,0} 留给循环第一次下钻 getfirstdata({0,0})（压 NULL + 空key，不弹回无害） */
+        ptr = getfirstdata((data){0, NULL});              /* 空 key → 引导块 */
+        k = (data){*(u32*)ptr, ptr + 4};                  /* 第一条 token */
     }
     for (;;) {
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */

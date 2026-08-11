@@ -5,8 +5,9 @@
 #include <stdio.h>
 __declspec(dllexport) void run(void) {
     int lo = 1, hi = 100;
+    const uint8_t *pay; u32 plen; cur_payload(&pay, &plen);
     if (plen) { char buf[64]; uint32_t n = plen < 63 ? plen : 63;
-        memcpy(buf, payload, n); buf[n] = 0;
+        memcpy(buf, pay, n); buf[n] = 0;
         int a = 0, b = 0; int cnt = sscanf(buf, "%d %d", &a, &b);
         if (cnt > 0) lo = a; if (cnt > 1) hi = b;
     }

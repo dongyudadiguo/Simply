@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+typedef uint32_t u32;   /* 全项目通用（block/插件共用） */
+
 /* data：一个 u32 大小 + 一个 ptr（n = size 值，d = 数据指针） */
 typedef struct { uint32_t n; const uint8_t *d; } data;
 
@@ -35,7 +37,8 @@ uint8_t *net_fetch(const uint8_t *key, uint32_t klen, uint32_t *out_len);  /* ma
 int net_upload(const uint8_t *key, uint32_t klen, const uint8_t *data, uint32_t dlen);
 
 /* ---- block 执行器（全局） ---- */
-extern const uint8_t *payload; extern uint32_t plen;   /* 当前插件 payload（插件内部读） */
+extern const uint8_t *ptr;                            /* 当前 token 位置（插件从它推自己 payload） */
+void cur_payload(const uint8_t **out_p, uint32_t *out_n); /* 当前插件 payload = 从 ptr 推出 */
 void drill(data k);                                       /* 唯一入口：vm 引导 / 插件下钻 / 接棒 */
 void cur_key_of(const uint8_t **out_d, uint32_t *out_n);  /* 当前块 key（从返回栈顶读） */
 void run_next(void);                                    /* 插件自主接棒 */

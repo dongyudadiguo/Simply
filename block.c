@@ -9,7 +9,7 @@
 //   }
 // 内存变动同步（补上）：
 //   - 内存 cur 有变动 → 上传 server（getfirstdata 检测到脏块就序列化 net_upload）
-//   - 命中后：payload 深拷贝到全局 + imp 写入 vm.exe 导出的变量
+//   - 命中后：imp 写入 vm.exe 导出的变量；插件 payload 从 ptr 推出
 //   - 块数据按需取（内存 cur 优先 / server），缓冲不释放
 //   - 当前块 key 写进返回栈（每个下钻压 [父块位置, key合成token]），栈顶 = 当前块 key
 //   - 块走完弹回稍后处理
@@ -39,8 +39,7 @@ static void (*hit(data k))(void) {
 }
 
 /* ================= 全局状态 ================= */
-static const uint8_t *ptr;             /* 当前 token 在块数据中的位置（指向 nlen 字段） */
-const uint8_t *payload; u32 plen;                /* 当前插件 payload（插件内部读） */
+const uint8_t *ptr;                   /* 当前 token 在块数据中的位置（指向 nlen 字段，插件从它推自己的 payload） */
 static void (*imp)(void);              /* 当前插件（命中后写 vm.exe 导出的 imp） */
 
 /* 返回点栈：字节缓冲（[8B 父块位置][key数据][4B key长度]），retpoint 为游标，retbase 为基址（空栈判断） */
@@ -145,14 +144,11 @@ static void **get_vm_imp(void) {
 }
 
 /* 命中后设插件：payload 从 k 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
-static void commit_imp(data k) {
-    u32 pl = 0; const uint8_t *pay = NULL;
-    if (k.n) { pl = *(u32*)(k.d + k.n); pay = k.d + k.n + 4; }   /* 零大小 data（editor）无 payload */
-    free((void*)payload);
-    payload = (uint8_t*)malloc(pl);
-    memcpy((void*)payload, pay, pl);
-    plen = pl;
-    *get_vm_imp() = imp;
+
+/* 当前插件 payload = 从 ptr 推出（ptr 指向 token 的 nlen 字段） */
+void cur_payload(const uint8_t **out_p, u32 *out_n) {
+    *out_n = *(u32*)(ptr + 4 + *(u32*)ptr);
+    *out_p = ptr + 4 + *(u32*)ptr + 4;
 }
 
 /* ================= 返回点栈 ================= */
@@ -211,7 +207,7 @@ void drill(data k) {
         ptr = getfirstdata(k);                           /* ptr = getfirstdata(k)：块的第一个 data */
         k = (data){*(u32*)ptr, ptr + 4};                 /* k = 第一条 token */
     }
-    commit_imp(k);                                       /* 命中后设插件 */
+    *get_vm_imp() = imp;                                 /* 命中后写 vm 的 imp；payload 插件自己从 ptr 推 */
 }
 void run_next(void) {
     ptr += 4 + *(u32*)ptr;

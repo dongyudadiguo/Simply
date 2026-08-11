@@ -8,6 +8,7 @@
 //     key = (KEY){(u32 *)ptr, ptr + 4};     key = 第一条 token（n 指向 u32 大小，d 指向数据）
 //   }
 // 内存变动同步（补上）：
+//   - 内存 cur 有变动 → 上传 server（getfirstdata 检测到脏块就序列化 net_upload）
 //   - 命中后：payload 深拷贝到全局 + imp 写入 vm.exe 导出的变量
 //   - 块 token 流走完（0 长 name 结束符）→ 弹返回点回上层；全部走完 → imp=NULL
 //   - 弹回后推进到该 token 的下一条（继续接棒）；块起点栈同步压/弹
@@ -139,6 +140,10 @@ static const uint8_t *getfirstdata(KEY k) {
         memcpy(buf + off, ts.tok[i].payload, ts.tok[i].plen); off += ts.tok[i].plen;
     }
     u32 z = 0; memcpy(buf + off, &z, 4);
+    if (cur_dirty(k.d, *k.n)) {                        /* 该块内存有变动 → 上传 server */
+        net_upload(k.d, *k.n, buf, sz);
+        cur_clean();
+    }
     free_fetched(&ts);
     return buf;
 }

@@ -17,6 +17,9 @@ const uint8_t *pop(uint32_t n);
 void write_num(uint32_t sz);
 void cur_set(const uint8_t *key, uint32_t klen, Tok *toks, size_t n);   /* 内存块表（editor 维护） */
 Tok *cur_get(const uint8_t *key, uint32_t klen, size_t *out_n);
+void cur_mark(const uint8_t *key, uint32_t klen);                         /* 标记该块内存有变动（待上传） */
+int cur_dirty(const uint8_t *key, uint32_t klen);                         /* 该块是否有变动待上传 */
+void cur_clean(void);                                                      /* 已上传，清标记 */
 void hand_set(const uint8_t *id, uint8_t b1, uint8_t b2);               /* handrun flags */
 void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2);
 

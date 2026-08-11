@@ -23,6 +23,7 @@ void cur_set(const uint8_t *key, uint32_t klen, Tok *toks, size_t n) {
         e->next = cur_list; cur_list = e;
     } else free(e->toks.tok);
     e->toks.tok = toks; e->toks.n = n; e->toks.cap = n;
+    cur_mark(key, klen);                             /* 内存有变动 → 标记待上传 */
 }
 Tok *cur_get(const uint8_t *key, uint32_t klen, size_t *out_n) {
     CurEntry *e = cur_list;
@@ -32,6 +33,17 @@ Tok *cur_get(const uint8_t *key, uint32_t klen, size_t *out_n) {
     }
     *out_n = 0; return NULL;
 }
+
+/* 内存变动标记：editor 编辑（cur_set）后置脏，runblock 检测到就上传 server */
+static uint8_t *dirty_key = NULL; static uint32_t dirty_len = 0; static int dirty = 0;
+void cur_mark(const uint8_t *key, uint32_t klen) {
+    dirty = 1;
+    free(dirty_key); dirty_key = (uint8_t*)malloc(klen); memcpy(dirty_key, key, klen); dirty_len = klen;
+}
+int cur_dirty(const uint8_t *key, uint32_t klen) {
+    return dirty && dirty_len == klen && memcmp(dirty_key, key, klen) == 0;
+}
+void cur_clean(void) { dirty = 0; }
 
 /* handrun flags（id 8B -> b1,b2） */
 typedef struct HandFlag { uint8_t id[8]; uint8_t b1, b2; struct HandFlag *next; } HandFlag;

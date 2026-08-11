@@ -163,10 +163,10 @@ static void commit_imp(void) {
 
 /* ================= 返回点栈 ================= */
 /* 把 key 写进返回栈：合成 token [n][d]，栈顶 = 当前块 key（泄漏，零错误处理） */
-static void push_key(const uint8_t *d, u32 n) {
-    uint8_t *k = (uint8_t*)malloc(4 + n);
-    memcpy(k, &n, 4); memcpy(k + 4, d, n);
-    *(void**)retpoint = k;
+static void push_key(KEY k) {
+    uint8_t *buf = (uint8_t*)malloc(4 + *k.n);
+    memcpy(buf, k.n, 4); memcpy(buf + 4, k.d, *k.n);
+    *(void**)retpoint = buf;
     retpoint += 8;
 }
 
@@ -186,7 +186,7 @@ static void drill(void) {
         if (imp = hit(key)) break;                       /* hit(key) → imp = 插件，回 vm */
         *(void**)retpoint = (void*)ptr;                   /* *(void**)retpoint = ptr（父块位置） */
         retpoint += 8;                                   /* retpoint += 8 */
-        push_key(key.d, *key.n);                         /* 当前块 key 写进栈顶（= 块引用 token 名） */
+        push_key(key);                                  /* 当前块 key 写进栈顶（= 块引用 token） */
         ptr = getfirstdata(key);                         /* ptr = getfirstdata(key)：块的第一个 data */
         key = (KEY){(u32*)ptr, ptr + 4};                 /* key = 第一条 token */
     }
@@ -208,7 +208,7 @@ void run_block(KEY k) {
         return;                                          /* 回 vm：for(;;){imp()} */
     }
     *(void**)retpoint = (void*)ptr; retpoint += 8;       /* 插件下钻：压父块位置（当前插件 token） */
-    push_key(k.d, *k.n);                                /* 当前块 key 写进栈顶（合成 [n][d]） */
+    push_key(k);                                        /* 当前块 key 写进栈顶（合成 [n][d]） */
     u32 sz = *k.n; key.d = k.d; key.n = &sz;
     ptr = getfirstdata(key);                            /* 取目标块第一个 data */
     key = (KEY){(u32*)ptr, ptr + 4};

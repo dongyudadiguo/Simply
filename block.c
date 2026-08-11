@@ -48,8 +48,8 @@ static const uint8_t *ptr;             /* 当前 token 在块数据中的位置�
 const uint8_t *payload; u32 plen;                /* 当前插件 payload（插件内部读） */
 static void (*imp)(void);              /* 当前插件（命中后写 vm.exe 导出的 imp） */
 
-/* 返回点栈：每项 8B = 保存的 ptr；retpoint==栈底即空；块缓冲不释放（零错误处理） */
-static void *ret_slots[256]; static void **retpoint = ret_slots;
+/* 返回点栈：字节缓冲（[8B 父块位置][key数据][4B key长度]），retpoint 为游标，retbase 为基址（空栈判断） */
+static void *retpoint = NULL; static void *retbase = NULL;
 static int booted = 0;                 /* 入口是否已初始化 */
 
 /* ================= 块 token 流（内存 cur 优先 / server 兜底） ================= */
@@ -161,20 +161,22 @@ static void commit_imp(data k) {
 }
 
 /* ================= 返回点栈 ================= */
-/* 把 key 写进返回栈：合成 token [n][d]，栈顶 = 当前块 key（泄漏，零错误处理） */
+/* 把 key 写进返回栈：[8B 父块位置][key数据][4B key长度]，栈顶（末尾）= 当前块 key */
 static void push_key(data k) {
-    uint8_t *buf = (uint8_t*)malloc(4 + k.n);
-    memcpy(buf, &k.n, 4); memcpy(buf + 4, k.d, k.n);
-    *(void**)retpoint = buf;
+    *(void**)retpoint = (void*)ptr;                   /* 8B：父块位置 */
     retpoint += 8;
+    memcpy(retpoint, k.d, k.n);                       /* key 数据 */
+    retpoint += k.n;
+    *(u32*)retpoint = k.n;                            /* 4B：key 长度 */
+    retpoint += 4;
 }
 
-/* 当前块 key = 读返回栈栈顶（token 从栈顶读出自己在哪个 key）；栈空 = 空 key */
+/* 当前块 key = 读返回栈末尾（[key数据][4B key长度]）；栈空 = 空 key */
 void cur_key_of(const uint8_t **out_d, u32 *out_n) {
-    if (retpoint == ret_slots) { *out_d = NULL; *out_n = 0; return; }
-    const uint8_t *p = (const uint8_t*)*(void**)(retpoint - 8);
-    *out_n = *(u32*)p;
-    *out_d = p + 4;
+    if (retpoint == retbase) { *out_d = NULL; *out_n = 0; return; }
+    u32 n = *(u32*)((const uint8_t*)retpoint - 4);
+    *out_n = n;
+    *out_d = (const uint8_t*)retpoint - 4 - n;
 }
 
 /* ================= drill：入口 + 下钻循环（用户结构） ================= */
@@ -183,14 +185,13 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {
 void drill(data k) {
     if (!booted) {                                       /* 入口（vm 直接调 drill({0,0})） */
         booted = 1;
-        retpoint = ret_slots;
+        retbase = malloc(256 * sizeof(void*));
+        retpoint = retbase;
         /* 不取引导块：k={0,0} 留给循环第一次下钻 getfirstdata({0,0})（压 NULL + 空key，不弹回无害） */
     }
     for (;;) {
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */
-        *(void**)retpoint = (void*)ptr;                   /* *(void**)retpoint = ptr（父块位置） */
-        retpoint += 8;                                   /* retpoint += 8 */
-        push_key(k);                                    /* 当前块 key 写进栈顶（= 块引用 token） */
+        push_key(k);
         ptr = getfirstdata(k);                           /* ptr = getfirstdata(k)：块的第一个 data */
         k = (data){*(u32*)ptr, ptr + 4};                 /* k = 第一条 token */
     }

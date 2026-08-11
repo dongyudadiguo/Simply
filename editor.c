@@ -7,9 +7,10 @@
 static int first = 1;
 
 __declspec(dllexport) void run(void) {
+    BlockAPI *B = block_import();
     /* 当前块 key 从返回栈顶读（写进 retpoint 的合成 token） */
     const uint8_t *ck; uint32_t ckl;
-    cur_key_of(&ck, &ckl);
+    B->cur_key_of(&ck, &ckl);
     if (first) {
         first = 0;
         SetTraceLogLevel(LOG_NONE);
@@ -17,9 +18,9 @@ __declspec(dllexport) void run(void) {
         SetTargetFPS(60);
         /* 当前块 toks 载入内存（editor 拥有，动态读取会响应） */
         size_t n = 0;
-        if (!cur_get(ck, ckl, &n)) {
-            Toks ts = load_toks(ck, ckl);
-            cur_set(ck, ckl, ts.tok, ts.n);
+        if (!B->cur_get(ck, ckl, &n)) {
+            Toks ts = B->load_toks(ck, ckl);
+            B->cur_set(ck, ckl, ts.tok, ts.n);
         }
     }
     /* 每帧渲染 */
@@ -31,7 +32,7 @@ __declspec(dllexport) void run(void) {
     cur[ck ? cl : 6] = 0;
     DrawText(cur, 20, 40, 16, DARKGRAY);
     size_t n = 0;
-    Tok *toks = cur_get(ck, ckl, &n);
+    Tok *toks = B->cur_get(ck, ckl, &n);
     int y = 70;
     for (size_t i = 0; i < n; i++) {
         char nm[64]; uint32_t ln = toks[i].nlen < 63 ? toks[i].nlen : 63;
@@ -43,5 +44,5 @@ __declspec(dllexport) void run(void) {
     EndDrawing();
     if (WindowShouldClose()) exit(0);
 
-    reset();                          /* editor 接棒 = rerun：重跑当前块（零大小 data = editor） */
+    B->reset();                       /* editor 接棒 = rerun：重跑当前块（零大小 data = editor） */
 }

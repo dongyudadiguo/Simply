@@ -45,4 +45,33 @@ void run_next(void);                                    /* 插件自主接棒 */
 void reset(void);                                       /* 重跑当前块 */
 Toks load_toks(const uint8_t *key, uint32_t klen);      /* 每次现取（内存 cur 优先/server 兜底） */
 
+/* ---- 显式动态链接：插件运行时 GetProcAddress("block_api") 拿 block.dll 的函数/全局表 ---- */
+typedef struct {
+    uint8_t *stk;   uint32_t *stk_off;              /* vmstate 全局 */
+    uint8_t *num;   uint32_t *num_off;
+    uint8_t *var;   uint32_t *var_off;
+    void (*push)(const uint8_t*, u32);
+    void (*write_num)(u32);
+    void (*cur_set)(const uint8_t*, u32, Tok*, size_t);
+    Tok *(*cur_get)(const uint8_t*, u32, size_t*);
+    void (*hand_set)(const uint8_t*, uint8_t, uint8_t);
+    void (*hand_get)(const uint8_t*, uint8_t*, uint8_t*);
+    void (*run_next)(void);
+    void (*reset)(void);
+    void (*drill)(data);
+    void (*cur_payload)(const uint8_t**, u32*);
+    void (*cur_key_of)(const uint8_t**, u32*);
+    Toks (*load_toks)(const uint8_t*, u32);
+} BlockAPI;
+BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
+#ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */
+extern void *GetModuleHandleA(const char *name);
+extern void *GetProcAddress(void *module, const char *name);
+#endif
+/* 插件显式动态链接：运行时从 block.dll GetProcAddress('block_api') 取函数/全局表 */
+static inline BlockAPI *block_import(void) {
+    typedef BlockAPI *(*fn)(void);
+    return ((fn)GetProcAddress(GetModuleHandleA("block.dll"), "block_api"))();
+}
+
 #endif

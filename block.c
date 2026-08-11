@@ -14,8 +14,8 @@
 //   - 当前块 key 写进返回栈（每个下钻压 [父块位置, key合成token]），栈顶 = 当前块 key
 //   - 块走完弹回稍后处理
 // 零错误处理：不检查任何返回值、不防御非预期
-#include "simply.h"
 #include <windows.h>
+#include "simply.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -223,3 +223,12 @@ void reset(void) {
     ptr = getfirstdata(bk);
     drill((data){*(u32*)ptr, ptr + 4});
 }
+
+/* ================= 显式动态链接接口 ================= */
+/* 插件 DLL 运行时 GetProcAddress("block_api") 取函数/全局表（不再 -lblock 隐式链接） */
+BlockAPI block_api_st = {
+    stk, &stk_off, num, &num_off, var, &var_off,
+    push, write_num, cur_set, cur_get, hand_set, hand_get,
+    run_next, reset, drill, cur_payload, cur_key_of, load_toks
+};
+BlockAPI *block_api(void) { return &block_api_st; }

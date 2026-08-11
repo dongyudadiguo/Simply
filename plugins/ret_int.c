@@ -5,9 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 __declspec(dllexport) void run(void) {
-    const uint8_t *pay; u32 plen; cur_payload(&pay, &plen);
+    BlockAPI *B = block_import();
+    const uint8_t *pay; u32 plen; B->cur_payload(&pay, &plen);
     if (plen) { fwrite(pay, 1, plen, stdout); }
-    else if (stk_off >= 4) { uint32_t v; memcpy(&v, stk + stk_off - 4, 4); printf("%u", v); }
+    else if (*B->stk_off >= 4) { uint32_t v; memcpy(&v, B->stk + *B->stk_off - 4, 4); printf("%u", v); }
     fflush(stdout);
     exit(0);
 }

@@ -3,11 +3,12 @@
 #include <string.h>
 
 __declspec(dllexport) void run(void) {
-    uint32_t o = stk_off;
-    uint32_t a, b; memcpy(&a, stk + o - 8, 4); memcpy(&b, stk + o - 4, 4);
+    BlockAPI *B = block_import();
+    uint32_t o = *B->stk_off;
+    uint32_t a, b; memcpy(&a, B->stk + o - 8, 4); memcpy(&b, B->stk + o - 4, 4);
     uint32_t r = a + b;
-    memcpy(stk + o - 8, &r, 4);
-    stk_off = o - 4;
-    write_num(4);
-    run_next();
+    memcpy(B->stk + o - 8, &r, 4);
+    *B->stk_off = o - 4;
+    B->write_num(4);
+    B->run_next();
 }

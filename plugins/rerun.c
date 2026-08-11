@@ -3,5 +3,6 @@
 #include <string.h>
 
 __declspec(dllexport) void run(void) {
-    reset();
+    BlockAPI *B = block_import();
+    B->reset();
 }

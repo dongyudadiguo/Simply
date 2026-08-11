@@ -177,38 +177,27 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {
     *out_d = p + 4;
 }
 
-/* ================= drill：内部下钻循环（用户结构） ================= */
-/* 注意与 run_block 区分：drill 是循环本身（static，被 run_block/run_next/reset 复用）；
-   run_block 是公共入口（vm/插件调用，负责入口初始化与下钻切块） */
-static void drill(data k) {
+/* ================= drill：入口 + 下钻循环（用户结构） ================= */
+/* 唯一入口：vm 直接调 drill({0,0}) 引导；插件（boot/cond/handrun）调 drill(目标key) 下钻；
+   非插件名 token → 循环内压父块 + push_key + getfirstdata 自动下钻；run_next/reset 接棒 */
+void drill(data k) {
+    if (!booted) {                                       /* 入口（vm 直接调 drill({0,0})） */
+        booted = 1;
+        retpoint = ret_slots;
+        u32 zero = 0;
+        ptr = getfirstdata((data){0, NULL});              /* 空 key → 引导块 */
+        k = (data){*(u32*)ptr, ptr + 4};                  /* 第一条 token */
+    }
     for (;;) {
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */
         *(void**)retpoint = (void*)ptr;                   /* *(void**)retpoint = ptr（父块位置） */
         retpoint += 8;                                   /* retpoint += 8 */
         push_key(k);                                    /* 当前块 key 写进栈顶（= 块引用 token） */
         ptr = getfirstdata(k);                           /* ptr = getfirstdata(k)：块的第一个 data */
-        k = (data){*(u32*)ptr, ptr + 4};                   /* k = 第一条 token */
+        k = (data){*(u32*)ptr, ptr + 4};                 /* k = 第一条 token */
     }
     commit_imp(k);                                       /* 命中后设插件 */
 }
-
-/* ================= 入口 / 下钻 / 接棒 ================= */
-/* 入口 + 插件下钻：首次（booted==0）初始化并从空 key 引导；
-   否则压返回点 + 切到 key 指向的块；最终都进 drill 下钻循环 */
-void run_block(data k) {
-    if (!booted) {                                       /* 入口（vm: run_block({0,0})） */
-        booted = 1;
-        retpoint = ret_slots;
-        u32 zero = 0;
-        ptr = getfirstdata((data){0, NULL});          /* 空 key → 引导块 */
-    } else {                                             /* 插件下钻：压父块位置 + 压当前块 key + 取目标块 */
-        *(void**)retpoint = (void*)ptr; retpoint += 8;
-        push_key(k);
-        ptr = getfirstdata(k);
-    }
-    drill((data){*(u32*)ptr, ptr + 4});                    /* 从第一条 token 开始钻 */
-}
-/* 插件接棒：从 ptr 读当前 token 跳过，k = 下一 token，进 drill */
 void run_next(void) {
     data k = (data){*(u32*)ptr, ptr + 4};                   /* 当前 token（ptr 正指向它） */
     ptr = (const uint8_t*)k.d + k.n + 4 + *(u32*)((const uint8_t*)k.d + k.n);

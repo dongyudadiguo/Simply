@@ -2,7 +2,7 @@
 typedef unsigned char u8;
 typedef unsigned int u32;
 typedef struct { u32 n; const u8 *d; } data;   /* 与 block.dll 的 run_block(data) 对齐 */
-typedef void (*run_block_fn)(data);
+typedef void (*drill_fn)(data);
 typedef void (*imp_fn)(void);
 
 extern void *LoadLibraryA(const char *name);
@@ -12,6 +12,6 @@ __declspec(dllexport) imp_fn imp;
 
 int main(void){
     data empty = {0, 0};                                            /* 空 key：入口引导 */
-    ((run_block_fn)GetProcAddress(LoadLibraryA("block.dll"), "run_block"))(empty);
+    ((drill_fn)GetProcAddress(LoadLibraryA("block.dll"), "drill"))(empty);
     for (;;){imp();}
 }

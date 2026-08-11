@@ -10,7 +10,7 @@ void boot_run(void) {
         if (fread(id, 1, 32, f) == 32) {
             uint32_t blen = 0;
             uint8_t *blk = net_fetch(id, 32, &blen);          /* server 有该块 → 直接用 */
-            if (blk) { free(blk); run_block((data){32, id}); return; }
+            if (blk) { free(blk); drill((data){32, id}); return; }
         }
         fclose(f);
     }
@@ -21,5 +21,5 @@ void boot_run(void) {
         5,0,0,0,'r','e','r','u','n',0,0,0,0,
         0,0,0,0};
     net_upload(id, 32, block, 31);        /* 首次/恢复：上传引导块 */
-    run_block((data){32, id});
+    drill((data){32, id});
 }

@@ -1,21 +1,27 @@
-// block.c —— 执行器：runblock 下钻循环
-// runblock 语义（对齐伪代码）：
-//   while(1){
-//     if(hit(key)){ imp = key }           命中插件 → 设 imp（随后回 vm 执行）
-//     *(void**)retpoint = ptr; retpoint+=8 压返回点
-//     ptr = getfirstdata(key)              取块的第一个 data
-//     key = (KEY){*(u32*)ptr, ptr+4}       下一条 token = data 开头的 size + data+4
+// block.c —— 执行器：runblock 下钻循环（用户结构）
+// runblock：
+//   for (;;){
+//     if (imp = hit(key))break;             命中插件 → imp = 插件，回 vm
+//     *(void **)retpoint = ptr;             压返回点（当前 token 位置）
+//     retpoint += 8;
+//     ptr = getfirstdata(key);              ptr = 块的第一个 data
+//     key = (KEY){(u32 *)ptr, ptr + 4};     key = 第一条 token（n 指向 u32 大小，d 指向数据）
 //   }
-// 我没写内存变动同步，这里加上：
-//   - 块 token 流取数：内存 cur 优先 / server 兜底（load_toks）
-//   - 命中 → 打破循环回 vm：for(;;){imp()}
-//   - 块 token 流走完 → 弹返回点回上层；全部走完 → imp=NULL
-//   - 返回点深拷贝（key + 位置）；payload 深拷贝到全局
+// 内存变动同步（补上）：
+//   - 命中后：payload 深拷贝到全局 + imp 写入 vm.exe 导出的变量
+//   - 块 token 流走完（0 长 name 结束符）→ 弹返回点回上层；全部走完 → imp=NULL
+//   - 弹回后推进到该 token 的下一条（继续接棒）；块起点栈同步压/弹
+//   - 块数据按需取（内存 cur 优先 / server）；当前块 key 深拷贝（editor 用）
 // 零错误处理：不检查任何返回值、不防御非预期
 #include "simply.h"
 #include <windows.h>
 #include <stdlib.h>
 #include <string.h>
+
+typedef uint32_t u32;
+
+/* key：data 结构体，一个 u32 大小一个 ptr（n 指向 u32 大小字段，d 指向数据） */
+typedef struct { const u32 *n; const uint8_t *d; } KEY;
 
 /* ================= 插件表（内建，逻辑名 → 函数） ================= */
 typedef struct { const char *name; void (*run)(void); } Plugin;
@@ -30,31 +36,37 @@ static const Plugin PLUGINS[] = {
 #define PLUGINS_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
 
 /* hit(key)：token 命中插件 → run；否则 NULL（= 块引用，下钻） */
-static void (*hit(const uint8_t *name, uint32_t nlen))(void) {
+static void (*hit(KEY k))(void) {
+    u32 n = *k.n;
     for (size_t i = 0; i < PLUGINS_N; i++) {
         size_t ln = strlen(PLUGINS[i].name);
-        if (ln == nlen && memcmp(PLUGINS[i].name, name, nlen) == 0) return PLUGINS[i].run;
+        if (ln == n && memcmp(PLUGINS[i].name, k.d, n) == 0) return PLUGINS[i].run;
     }
     return NULL;
 }
 
 /* ================= 全局状态 ================= */
-uint8_t *cur_key = NULL; uint32_t cur_key_len = 0;   /* 当前块 key（editor 用） */
-static uint32_t cur_i = 0;                            /* 当前块 token 流位置 */
-typedef struct { uint8_t *key; uint32_t klen; uint32_t i; } Ret;  /* 返回点 */
-static Ret *ret = NULL; static uint32_t ret_n = 0;    /* 返回点栈 */
+static KEY key;                        /* 当前 token（n 指向 u32 大小，d 指向数据） */
+static const uint8_t *ptr;             /* 当前 token 在块数据中的位置（指向 nlen 字段） */
+static const uint8_t *blk;             /* 当前块数据起点（reset 用） */
+uint8_t *cur_key = NULL; u32 cur_key_len = 0;   /* 当前块 key（editor 用） */
+const uint8_t *payload; u32 plen;                /* 当前插件 payload（插件内部读） */
+static void (*imp)(void);              /* 当前插件（命中后写 vm.exe 导出的 imp） */
 
-const uint8_t *payload; uint32_t plen;               /* 当前插件 payload（插件内部读） */
+/* 返回点栈：每项 8B = 保存的 ptr；块起点栈同步压/弹 */
+static void *ret_slots[256]; static void **retpoint = ret_slots; static u32 ret_n = 0;
+static const uint8_t *blk_slots[256];
+static int booted = 0;                 /* 入口是否已初始化 */
 
 /* ================= 块 token 流（内存 cur 优先 / server 兜底） ================= */
 /* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内）；0 长 name = 块结束 */
-static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t cap) {
-    uint32_t i = 0; size_t n = 0;
+static size_t iter_tokens(const uint8_t *blk, u32 blen, Tok *out, size_t cap) {
+    u32 i = 0; size_t n = 0;
     while (i + 4 <= blen) {
-        uint32_t nl; memcpy(&nl, blk + i, 4); i += 4;
+        u32 nl; memcpy(&nl, blk + i, 4); i += 4;
         if (!nl) break;                                    /* 块结束符 */
         out[n].name = (uint8_t*)blk + i; out[n].nlen = nl; i += nl;
-        uint32_t dl; memcpy(&dl, blk + i, 4); i += 4;
+        u32 dl; memcpy(&dl, blk + i, 4); i += 4;
         out[n].payload = (uint8_t*)blk + i; out[n].plen = dl; i += dl;
         n++;
     }
@@ -64,13 +76,13 @@ static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t ca
 
 /* 取块 token 流：内存 cur（editor 实时编辑）优先，否则 fetch server 解析；
    空 key（klen==0）= 引导，只取第一条 name */
-Toks load_toks(const uint8_t *key, uint32_t klen) {
+Toks load_toks(const uint8_t *key, u32 klen) {
     Toks ts = {0};
     size_t n = 0;
     Tok *m = cur_get(key, klen, &n);
     if (m) { ts.tok = m; ts.n = n; ts.cap = n; ts.owned = 0; return ts; }   /* 内存 cur：editor 拥有 */
 
-    uint32_t blen = 0;
+    u32 blen = 0;
     uint8_t *blk = net_fetch(key, klen, &blen);
 
     if (klen == 0) {                                         /* 引导：空 key 只取第一条 name */
@@ -113,85 +125,124 @@ static void free_fetched(Toks *ts) {
     ts->tok = NULL; ts->n = ts->cap = 0;
 }
 
-/* ================= 返回点栈 ================= */
-/* 压返回点（当前块 key + 下一位置；key 深拷贝，避免悬垂） */
-static void push_return(void) {
-    ret = (Ret*)realloc(ret, (ret_n + 1) * sizeof(Ret));
-    ret[ret_n].key = (uint8_t*)malloc(cur_key_len);
-    memcpy(ret[ret_n].key, cur_key, cur_key_len);
-    ret[ret_n].klen = cur_key_len;
-    ret[ret_n].i = cur_i;
-    ret_n++;
-}
-
-/* 弹返回点回上层；有则恢复并返回 1，没有返回 0 */
-static int pop_return(void) {
-    if (!ret_n) return 0;
-    Ret *r = &ret[--ret_n];
-    free(cur_key);
-    cur_key = r->key; cur_key_len = r->klen; cur_i = r->i;
-    return 1;
+/* getfirstdata(key)：取块的第一个 data（内存 cur 优先 / server），统一序列化为原始字节 */
+static const uint8_t *getfirstdata(KEY k) {
+    Toks ts = load_toks(k.d, *k.n);
+    u32 sz = 4;                                        /* 结束符 */
+    for (size_t i = 0; i < ts.n; i++) sz += 4 + ts.tok[i].nlen + 4 + ts.tok[i].plen;
+    uint8_t *buf = (uint8_t*)malloc(sz);
+    u32 off = 0;
+    for (size_t i = 0; i < ts.n; i++) {
+        memcpy(buf + off, &ts.tok[i].nlen, 4); off += 4;
+        memcpy(buf + off, ts.tok[i].name, ts.tok[i].nlen); off += ts.tok[i].nlen;
+        memcpy(buf + off, &ts.tok[i].plen, 4); off += 4;
+        memcpy(buf + off, ts.tok[i].payload, ts.tok[i].plen); off += ts.tok[i].plen;
+    }
+    u32 z = 0; memcpy(buf + off, &z, 4);
+    free_fetched(&ts);
+    return buf;
 }
 
 /* ================= vm imp（GetProcAddress 写 vm 导出的 imp） ================= */
+/* 取 vm.exe 导出的 imp 变量地址（缓存） */
 static void (**vm_imp)(void) = NULL;
 static void **get_vm_imp(void) {
     if (!vm_imp) vm_imp = (void (**)(void))GetProcAddress(GetModuleHandle(NULL), "imp");
     return (void**)vm_imp;
 }
 
-/* 设当前插件：payload 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
-static void set_imp(void (*run)(void), const Tok *t) {
+/* 命中后设插件：payload 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
+static void commit_imp(void) {
+    u32 pl = *(u32*)(key.d + *key.n);
+    const uint8_t *pay = key.d + *key.n + 4;
     free((void*)payload);
-    payload = (uint8_t*)malloc(t->plen);
-    memcpy((void*)payload, t->payload, t->plen);
-    plen = t->plen;
-    *get_vm_imp() = run;
+    payload = (uint8_t*)malloc(pl);
+    memcpy((void*)payload, pay, pl);
+    plen = pl;
+    *get_vm_imp() = imp;
 }
 
-/* ================= runblock：下钻循环 ================= */
-static int runblock(void) {
+/* 当前块 key 深拷贝（editor 显示/编辑用） */
+static void set_cur_key(const uint8_t *d, u32 n) {
+    free(cur_key);
+    cur_key = (uint8_t*)malloc(n);
+    memcpy(cur_key, d, n);
+    cur_key_len = n;
+}
+
+/* ================= 返回点栈 ================= */
+/* 弹返回点回上层：释放子块数据、恢复父块起点，并推进到弹回 token 的下一条 */
+static int pop_ret(void) {
+    if (!ret_n) return 0;
+    free((void*)blk);                                    /* 释放刚走完的子块数据 */
+    ret_n--;
+    retpoint = ret_slots + ret_n;
+    ptr = (const uint8_t*)ret_slots[ret_n];              /* 弹回：块引用 token 的位置 */
+    blk = blk_slots[ret_n];
+    key = (KEY){(u32*)ptr, ptr + 4};                     /* 弹回的 token */
+    ptr = (const uint8_t*)key.d + *key.n + 4 + *(u32*)((const uint8_t*)key.d + *key.n);  /* 推进到下一 token */
+    key = (KEY){(u32*)ptr, ptr + 4};                     /* key = 下一 token */
+    return 1;
+}
+
+/* ================= runblock：下钻循环（用户结构） ================= */
+static void runblock(void) {
     for (;;) {
-        Toks toks = load_toks(cur_key, cur_key_len);      /* 取当前块的 token 流 */
-        if (cur_i >= toks.n) {                            /* 块走完 → 弹返回点回上层 */
-            free_fetched(&toks);
-            if (!pop_return()) { *get_vm_imp() = NULL; return 0; }   /* 全部走完 → imp=NULL */
+        if (imp = hit(key)) break;                       /* hit(key) → imp = 插件，回 vm */
+        if (*(u32*)ptr == 0) {                           /* 内存同步：块走完 → 弹返回点 */
+            if (!pop_ret()) { *get_vm_imp() = NULL; return; }   /* 全部走完 → imp=NULL */
             continue;
         }
-        Tok t = toks.tok[cur_i++];                        /* key = 当前 token */
-        void (*run)(void) = hit(t.name, t.nlen);          /* hit(key) */
-        if (run) {                                        /* 命中插件 → imp = key，回 vm */
-            set_imp(run, &t);
-            free_fetched(&toks);
-            return 1;
-        }
-        push_return();                                    /* 压返回点 */
-        free(cur_key);                                    /* 切块：key = 块的第一个 data */
-        cur_key = (uint8_t*)malloc(t.nlen);
-        memcpy(cur_key, t.name, t.nlen); cur_key_len = t.nlen; cur_i = 0;
-        free_fetched(&toks);
+        *(void**)retpoint = (void*)ptr;                   /* *(void**)retpoint = ptr */
+        retpoint += 8;                                   /* retpoint += 8 */
+        blk_slots[ret_n++] = blk;                        /* 内存同步：压当前块起点 */
+        set_cur_key(key.d, *key.n);                      /* 内存同步：当前块 key（editor 用） */
+        ptr = getfirstdata(key);                         /* ptr = getfirstdata(key)：块的第一个 data */
+        blk = ptr;                                       /* 内存同步：当前块起点 */
+        key = (KEY){(u32*)ptr, ptr + 4};                 /* key = 第一条 token */
     }
+    commit_imp();                                        /* 内存同步：命中后设插件 */
 }
 
 /* ================= 入口 / 下钻 / 接棒 ================= */
-/* 入口 + 插件下钻：首次（ret==NULL）初始化返回栈并从空 key 引导；
-   否则压返回点 + 切到 key 指向的块；两者最终都进 runblock 下钻循环 */
-void run_block(const uint8_t *key, uint32_t klen) {
-    if (!ret) {                                           /* 入口（vm: run_block(0,0)） */
-        ret = (Ret*)malloc(sizeof(Ret));
-        ret_n = 0; cur_key = NULL; cur_key_len = 0; cur_i = 0;
+/* 入口 + 插件下钻：首次（booted==0）初始化并从空 key 引导；
+   否则压返回点 + 切到 key 指向的块；最终都进 runblock 下钻循环 */
+void run_block(const uint8_t *d, u32 n) {
+    if (!booted) {                                       /* 入口（vm: run_block(0,0)） */
+        booted = 1;
+        retpoint = ret_slots; ret_n = 0;
+        cur_key = NULL; cur_key_len = 0;
+        u32 zero = 0; key.d = NULL; key.n = &zero;       /* 空 key */
+        ptr = getfirstdata(key);                        /* 空 key → 引导块第一条 */
+        blk = ptr;
+        key = (KEY){(u32*)ptr, ptr + 4};
         runblock();
-        return;                                           /* 回 vm：for(;;){imp()} */
+        return;                                          /* 回 vm：for(;;){imp()} */
     }
-    push_return();                                        /* 插件下钻：压返回点 + 切块 */
-    free(cur_key);
-    cur_key = (uint8_t*)malloc(klen);
-    memcpy(cur_key, key, klen); cur_key_len = klen; cur_i = 0;
+    *(void**)retpoint = (void*)ptr; retpoint += 8;       /* 插件下钻：压返回点（当前插件 token） */
+    blk_slots[ret_n++] = blk;
+    set_cur_key(d, n);                                   /* 当前块 key = 目标 key */
+    u32 sz = n; key.d = d; key.n = &sz;
+    ptr = getfirstdata(key);                            /* 取目标块第一个 data */
+    blk = ptr;
+    key = (KEY){(u32*)ptr, ptr + 4};
     runblock();
 }
 
-/* 插件接棒：继续当前块下一 token（位置已推进，进 runblock 更新 imp） */
-void run_next(void) { runblock(); }
+/* 插件接棒：跳过当前 token，key = 下一 token，进 runblock */
+void run_next(void) {
+    ptr = (const uint8_t*)key.d + *key.n + 4 + *(u32*)((const uint8_t*)key.d + *key.n);
+    key = (KEY){(u32*)ptr, ptr + 4};
+    runblock();
+}
 
-/* 重跑当前块：位置回到块起点，进 runblock 更新 imp（rerun 用） */
-void reset(void)     { cur_i = 0; runblock(); }
+/* 重跑当前块：重新取块数据（内存 cur 优先 → 编辑立即响应），进 runblock */
+void reset(void) {
+    free((void*)blk);
+    u32 sz = cur_key_len;
+    KEY bk = (KEY){&sz, cur_key};
+    ptr = getfirstdata(bk);
+    blk = ptr;
+    key = (KEY){(u32*)ptr, ptr + 4};
+    runblock();
+}

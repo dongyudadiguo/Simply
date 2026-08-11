@@ -5,7 +5,7 @@
 //     *(void **)retpoint = ptr;             压返回点（当前 token 位置）
 //     retpoint += 8;
 //     ptr = getfirstdata(key);              ptr = 块的第一个 data
-//     key = (KEY){(u32 *)ptr, ptr + 4};     key = 第一条 token（n 指向 u32 大小，d 指向数据）
+//     key = (data){(u32 *)ptr, ptr + 4};     key = 第一条 token（n 指向 u32 大小，d 指向数据）
 //   }
 // 内存变动同步（补上）：
 //   - 内存 cur 有变动 → 上传 server（getfirstdata 检测到脏块就序列化 net_upload）
@@ -34,8 +34,8 @@ static const Plugin PLUGINS[] = {
 #define PLUGINS_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
 
 /* hit(key)：token 命中插件 → run；否则 NULL（= 块引用，下钻） */
-static void (*hit(KEY k))(void) {
-    u32 n = *k.n;
+static void (*hit(data k))(void) {
+    u32 n = k.n;
     for (size_t i = 0; i < PLUGINS_N; i++) {
         size_t ln = strlen(PLUGINS[i].name);
         if (ln == n && memcmp(PLUGINS[i].name, k.d, n) == 0) return PLUGINS[i].run;
@@ -120,8 +120,8 @@ static void free_fetched(Toks *ts) {
 }
 
 /* getfirstdata(key)：取块的第一个 data（内存 cur 优先 / server），统一序列化为原始字节 */
-static const uint8_t *getfirstdata(KEY k) {
-    Toks ts = load_toks(k.d, *k.n);
+static const uint8_t *getfirstdata(data k) {
+    Toks ts = load_toks(k.d, k.n);
     u32 sz = 4;                                        /* 结束符 */
     for (size_t i = 0; i < ts.n; i++) sz += 4 + ts.tok[i].nlen + 4 + ts.tok[i].plen;
     uint8_t *buf = (uint8_t*)malloc(sz);
@@ -133,8 +133,8 @@ static const uint8_t *getfirstdata(KEY k) {
         memcpy(buf + off, ts.tok[i].payload, ts.tok[i].plen); off += ts.tok[i].plen;
     }
     u32 z = 0; memcpy(buf + off, &z, 4);
-    if (cur_dirty(k.d, *k.n)) {                        /* 该块内存有变动 → 上传 server */
-        net_upload(k.d, *k.n, buf, sz);
+    if (cur_dirty(k.d, k.n)) {                        /* 该块内存有变动 → 上传 server */
+        net_upload(k.d, k.n, buf, sz);
         cur_clean();
     }
     free_fetched(&ts);
@@ -150,9 +150,9 @@ static void **get_vm_imp(void) {
 }
 
 /* 命中后设插件：payload 从 k 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
-static void commit_imp(KEY k) {
-    u32 pl = *(u32*)(k.d + *k.n);
-    const uint8_t *pay = k.d + *k.n + 4;
+static void commit_imp(data k) {
+    u32 pl = *(u32*)(k.d + k.n);
+    const uint8_t *pay = k.d + k.n + 4;
     free((void*)payload);
     payload = (uint8_t*)malloc(pl);
     memcpy((void*)payload, pay, pl);
@@ -162,9 +162,9 @@ static void commit_imp(KEY k) {
 
 /* ================= 返回点栈 ================= */
 /* 把 key 写进返回栈：合成 token [n][d]，栈顶 = 当前块 key（泄漏，零错误处理） */
-static void push_key(KEY k) {
-    uint8_t *buf = (uint8_t*)malloc(4 + *k.n);
-    memcpy(buf, k.n, 4); memcpy(buf + 4, k.d, *k.n);
+static void push_key(data k) {
+    uint8_t *buf = (uint8_t*)malloc(4 + k.n);
+    memcpy(buf, &k.n, 4); memcpy(buf + 4, k.d, k.n);
     *(void**)retpoint = buf;
     retpoint += 8;
 }
@@ -180,14 +180,14 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {
 /* ================= drill：内部下钻循环（用户结构） ================= */
 /* 注意与 run_block 区分：drill 是循环本身（static，被 run_block/run_next/reset 复用）；
    run_block 是公共入口（vm/插件调用，负责入口初始化与下钻切块） */
-static void drill(KEY k) {
+static void drill(data k) {
     for (;;) {
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */
         *(void**)retpoint = (void*)ptr;                   /* *(void**)retpoint = ptr（父块位置） */
         retpoint += 8;                                   /* retpoint += 8 */
         push_key(k);                                    /* 当前块 key 写进栈顶（= 块引用 token） */
         ptr = getfirstdata(k);                           /* ptr = getfirstdata(k)：块的第一个 data */
-        k = (KEY){(u32*)ptr, ptr + 4};                   /* k = 第一条 token */
+        k = (data){*(u32*)ptr, ptr + 4};                   /* k = 第一条 token */
     }
     commit_imp(k);                                       /* 命中后设插件 */
 }
@@ -195,32 +195,31 @@ static void drill(KEY k) {
 /* ================= 入口 / 下钻 / 接棒 ================= */
 /* 入口 + 插件下钻：首次（booted==0）初始化并从空 key 引导；
    否则压返回点 + 切到 key 指向的块；最终都进 drill 下钻循环 */
-void run_block(KEY k) {
+void run_block(data k) {
     if (!booted) {                                       /* 入口（vm: run_block({0,0})） */
         booted = 1;
         retpoint = ret_slots;
         u32 zero = 0;
-        ptr = getfirstdata((KEY){&zero, NULL});          /* 空 key → 引导块 */
+        ptr = getfirstdata((data){0, NULL});          /* 空 key → 引导块 */
     } else {                                             /* 插件下钻：压父块位置 + 压当前块 key + 取目标块 */
         *(void**)retpoint = (void*)ptr; retpoint += 8;
         push_key(k);
         ptr = getfirstdata(k);
     }
-    drill((KEY){(u32*)ptr, ptr + 4});                    /* 从第一条 token 开始钻 */
+    drill((data){*(u32*)ptr, ptr + 4});                    /* 从第一条 token 开始钻 */
 }
 /* 插件接棒：从 ptr 读当前 token 跳过，k = 下一 token，进 drill */
 void run_next(void) {
-    KEY k = (KEY){(u32*)ptr, ptr + 4};                   /* 当前 token（ptr 正指向它） */
-    ptr = (const uint8_t*)k.d + *k.n + 4 + *(u32*)((const uint8_t*)k.d + *k.n);
-    drill((KEY){(u32*)ptr, ptr + 4});                    /* 下一条 token */
+    data k = (data){*(u32*)ptr, ptr + 4};                   /* 当前 token（ptr 正指向它） */
+    ptr = (const uint8_t*)k.d + k.n + 4 + *(u32*)((const uint8_t*)k.d + k.n);
+    drill((data){*(u32*)ptr, ptr + 4});                    /* 下一条 token */
 }
 
 /* 重跑当前块：从返回栈顶读当前块 key，重新取数据（内存 cur 优先 → 编辑立即响应），进 drill */
 void reset(void) {
     const uint8_t *d; u32 n;
     cur_key_of(&d, &n);
-    u32 sz = n;
-    KEY bk = (KEY){&sz, d};
+    data bk = (data){n, d};
     ptr = getfirstdata(bk);
-    drill((KEY){(u32*)ptr, ptr + 4});
+    drill((data){*(u32*)ptr, ptr + 4});
 }

@@ -184,9 +184,7 @@ void drill(data k) {
     if (!booted) {                                       /* 入口（vm 直接调 drill({0,0})） */
         booted = 1;
         retpoint = ret_slots;
-        u32 zero = 0;
-        ptr = getfirstdata((data){0, NULL});              /* 空 key → 引导块 */
-        k = (data){*(u32*)ptr, ptr + 4};                  /* 第一条 token */
+        /* 不取引导块：k={0,0} 留给循环第一次下钻 getfirstdata({0,0})（压 NULL + 空key，不弹回无害） */
     }
     for (;;) {
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */
@@ -199,8 +197,8 @@ void drill(data k) {
     commit_imp(k);                                       /* 命中后设插件 */
 }
 void run_next(void) {
-    data k = (data){*(u32*)ptr, ptr + 4};                   /* 当前 token（ptr 正指向它） */
-    ptr = (const uint8_t*)k.d + k.n + 4 + *(u32*)((const uint8_t*)k.d + k.n);
+    ptr += 4 + *(u32*)ptr;
+    ptr += 4 + *(u32*)ptr;
     drill((data){*(u32*)ptr, ptr + 4});                    /* 下一条 token */
 }
 

@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include <stdio.h>
-void in_int_run(void) {
+__declspec(dllexport) void run(void) {
     int v; if (scanf("%d", &v) != 1) v = 0;
     uint32_t u = (uint32_t)v;
     push((uint8_t*)&u, 4);

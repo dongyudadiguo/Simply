@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void handrun_run(void) {
+__declspec(dllexport) void run(void) {
     if (plen >= 8) {
         uint8_t b1, b2;
         hand_get(payload, &b1, &b2);

@@ -22,27 +22,20 @@
 
 typedef uint32_t u32;
 
-/* ================= 插件表（内建，逻辑名 → 函数） ================= */
-typedef struct { const char *name; void (*run)(void); } Plugin;
-static const Plugin PLUGINS[] = {
-    {"editor", editor_run}, {"rerun", rerun_run},
-    {"add", add_run}, {"read", read_run}, {"set", set_run},
-    {"cond", cond_run}, {"handrun", handrun_run}, {"condrerun", condrerun_run},
-    {"push_int", push_int_run}, {"in-int", in_int_run}, {"out", out_run},
-    {"rand", rand_run}, {"gt", gt_run}, {"lt", lt_run}, {"eq", eq_run},
-    {"mul", mul_run}, {"ret_int", ret_int_run},
-};
-#define PLUGINS_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
-
-/* hit(key)：token 命中插件 → run；否则 NULL（= 块引用，下钻） */
+/* hit(token)：token → sha256 → <sha256>.dll 文件名 → LoadLibrary → GetProcAddress("run")
+   零大小 data = editor（按 "editor" 哈希）；加载失败 → NULL（= 块引用，下钻） */
 static void (*hit(data k))(void) {
-    if (k.n == 0) return editor_run;                     /* 零大小 data = editor */
-    u32 n = k.n;
-    for (size_t i = 0; i < PLUGINS_N; i++) {
-        size_t ln = strlen(PLUGINS[i].name);
-        if (ln == n && memcmp(PLUGINS[i].name, k.d, n) == 0) return PLUGINS[i].run;
-    }
-    return NULL;
+    const uint8_t *name = k.d; u32 nlen = k.n;
+    uint8_t zero_editor[6];
+    if (!nlen) { memcpy(zero_editor, "editor", 6); name = zero_editor; nlen = 6; }   /* 零大小 data = editor */
+    uint8_t h[32];
+    sha256(name, nlen, h);
+    char fn[70];
+    for (int i = 0; i < 32; i++) sprintf(fn + 2*i, "%02x", h[i]);
+    fn[64] = 0;
+    strcat(fn, ".dll");
+    HMODULE m = LoadLibraryA(fn);
+    return (void (*)(void))GetProcAddress(m, "run");
 }
 
 /* ================= 全局状态 ================= */

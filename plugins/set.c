@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-void set_run(void) {
+__declspec(dllexport) void run(void) {
     uint32_t numsize; memcpy(&numsize, num + num_off - 4, 4);   /* 结果大小（刚写入） */
     uint32_t v = var_off;
     memcpy(var + v, payload, plen); v += plen;                  /* name */

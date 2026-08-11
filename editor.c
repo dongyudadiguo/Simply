@@ -6,7 +6,7 @@
 
 static int first = 1;
 
-void editor_run(void) {
+__declspec(dllexport) void run(void) {
     /* 当前块 key 从返回栈顶读（写进 retpoint 的合成 token） */
     const uint8_t *ck; uint32_t ckl;
     cur_key_of(&ck, &ckl);

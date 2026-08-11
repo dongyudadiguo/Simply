@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include <stdio.h>
-void rand_run(void) {
+__declspec(dllexport) void run(void) {
     int lo = 1, hi = 100;
     if (plen) { char buf[64]; uint32_t n = plen < 63 ? plen : 63;
         memcpy(buf, payload, n); buf[n] = 0;

@@ -26,6 +26,9 @@ void cur_clean(void);                                                      /* �
 void hand_set(const uint8_t *id, uint8_t b1, uint8_t b2);               /* handrun flags */
 void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2);
 
+/* ---- sha256（token → 插件 DLL 文件名） ---- */
+void sha256(const uint8_t *data, uint32_t len, uint8_t out[32]);
+
 /* ---- 网络 ---- */
 int net_init(void);
 uint8_t *net_fetch(const uint8_t *key, uint32_t klen, uint32_t *out_len);  /* malloc，失败 NULL */
@@ -39,22 +42,4 @@ void run_next(void);                                    /* 插件自主接棒 */
 void reset(void);                                       /* 重跑当前块 */
 Toks load_toks(const uint8_t *key, uint32_t klen);      /* 每次现取（内存 cur 优先/server 兜底） */
 
-/* ---- 插件（内建函数表，编译进 vm） ---- */
-void editor_run(void);
-void rerun_run(void);
-void add_run(void);
-void read_run(void);
-void set_run(void);
-void cond_run(void);
-void handrun_run(void);
-void condrerun_run(void);
-void push_int_run(void);
-void in_int_run(void);
-void out_run(void);
-void rand_run(void);
-void gt_run(void);
-void lt_run(void);
-void eq_run(void);
-void mul_run(void);
-void ret_int_run(void);
 #endif

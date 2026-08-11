@@ -2,6 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-void rerun_run(void) {
+__declspec(dllexport) void run(void) {
     reset();
 }

@@ -62,6 +62,8 @@ static size_t iter_tokens(const uint8_t *blk, uint32_t blen, Tok *out, size_t ca
     return n;
 }
 
+/* 取块 token 流：内存 cur（editor 实时编辑）优先，否则 fetch server 解析；
+   空 key（klen==0）= 引导，只取第一条 name */
 Toks load_toks(const uint8_t *key, uint32_t klen) {
     Toks ts = {0};
     size_t n = 0;
@@ -172,6 +174,8 @@ static int runblock(void) {
 }
 
 /* ================= 入口 / 下钻 / 接棒 ================= */
+/* 入口 + 插件下钻：首次（ret==NULL）初始化返回栈并从空 key 引导；
+   否则压返回点 + 切到 key 指向的块；两者最终都进 runblock 下钻循环 */
 void run_block(const uint8_t *key, uint32_t klen) {
     if (!ret) {                                           /* 入口（vm: run_block(0,0)） */
         ret = (Ret*)malloc(sizeof(Ret));
@@ -186,5 +190,8 @@ void run_block(const uint8_t *key, uint32_t klen) {
     runblock();
 }
 
-void run_next(void) { runblock(); }                       /* 插件接棒：继续当前块下一 token */
-void reset(void)     { cur_i = 0; runblock(); }           /* 重跑当前块 */
+/* 插件接棒：继续当前块下一 token（位置已推进，进 runblock 更新 imp） */
+void run_next(void) { runblock(); }
+
+/* 重跑当前块：位置回到块起点，进 runblock 更新 imp（rerun 用） */
+void reset(void)     { cur_i = 0; runblock(); }

@@ -1,5 +1,5 @@
-// block.c —— 执行器：runblock 下钻循环（用户结构）
-// runblock：
+// block.c —— 执行器：drill 下钻循环（用户结构）
+// drill：
 //   for (;;){
 //     if (imp = hit(key))break;             命中插件 → imp = 插件，回 vm
 //     *(void **)retpoint = ptr;             压返回点（当前 token 位置）
@@ -190,8 +190,10 @@ static int pop_ret(void) {
     return 1;
 }
 
-/* ================= runblock：下钻循环（用户结构） ================= */
-static void runblock(void) {
+/* ================= drill：内部下钻循环（用户结构） ================= */
+/* 注意与 run_block 区分：drill 是循环本身（static，被 run_block/run_next/reset 复用）；
+   run_block 是公共入口（vm/插件调用，负责入口初始化与下钻切块） */
+static void drill(void) {
     for (;;) {
         if (imp = hit(key)) break;                       /* hit(key) → imp = 插件，回 vm */
         if (*(u32*)ptr == 0) {                           /* 内存同步：块走完 → 弹返回点 */
@@ -211,7 +213,7 @@ static void runblock(void) {
 
 /* ================= 入口 / 下钻 / 接棒 ================= */
 /* 入口 + 插件下钻：首次（booted==0）初始化并从空 key 引导；
-   否则压返回点 + 切到 key 指向的块；最终都进 runblock 下钻循环 */
+   否则压返回点 + 切到 key 指向的块；最终都进 drill 下钻循环 */
 void run_block(const uint8_t *d, u32 n) {
     if (!booted) {                                       /* 入口（vm: run_block(0,0)） */
         booted = 1;
@@ -221,7 +223,7 @@ void run_block(const uint8_t *d, u32 n) {
         ptr = getfirstdata(key);                        /* 空 key → 引导块第一条 */
         blk = ptr;
         key = (KEY){(u32*)ptr, ptr + 4};
-        runblock();
+        drill();
         return;                                          /* 回 vm：for(;;){imp()} */
     }
     *(void**)retpoint = (void*)ptr; retpoint += 8;       /* 插件下钻：压返回点（当前插件 token） */
@@ -231,17 +233,17 @@ void run_block(const uint8_t *d, u32 n) {
     ptr = getfirstdata(key);                            /* 取目标块第一个 data */
     blk = ptr;
     key = (KEY){(u32*)ptr, ptr + 4};
-    runblock();
+    drill();
 }
 
-/* 插件接棒：跳过当前 token，key = 下一 token，进 runblock */
+/* 插件接棒：跳过当前 token，key = 下一 token，进 drill */
 void run_next(void) {
     ptr = (const uint8_t*)key.d + *key.n + 4 + *(u32*)((const uint8_t*)key.d + *key.n);
     key = (KEY){(u32*)ptr, ptr + 4};
-    runblock();
+    drill();
 }
 
-/* 重跑当前块：重新取块数据（内存 cur 优先 → 编辑立即响应），进 runblock */
+/* 重跑当前块：重新取块数据（内存 cur 优先 → 编辑立即响应），进 drill */
 void reset(void) {
     free((void*)blk);
     u32 sz = cur_key_len;
@@ -249,5 +251,5 @@ void reset(void) {
     ptr = getfirstdata(bk);
     blk = ptr;
     key = (KEY){(u32*)ptr, ptr + 4};
-    runblock();
+    drill();
 }

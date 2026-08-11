@@ -40,7 +40,6 @@ void reset(void);                                       /* 重跑当前块 */
 Toks load_toks(const uint8_t *key, uint32_t klen);      /* 每次现取（内存 cur 优先/server 兜底） */
 
 /* ---- 插件（内建函数表，编译进 vm） ---- */
-void boot_run(void);
 void editor_run(void);
 void rerun_run(void);
 void add_run(void);

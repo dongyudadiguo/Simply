@@ -43,5 +43,5 @@ void editor_run(void) {
     EndDrawing();
     if (WindowShouldClose()) exit(0);
 
-    run_next();                        /* 自主接棒（rerun 循环回 editor 每帧） */
+    reset();                          /* editor 接棒 = rerun：重跑当前块（零大小 data = editor） */
 }

@@ -18,13 +18,14 @@
 #include <windows.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef uint32_t u32;
 
 /* ================= 插件表（内建，逻辑名 → 函数） ================= */
 typedef struct { const char *name; void (*run)(void); } Plugin;
 static const Plugin PLUGINS[] = {
-    {"boot", boot_run}, {"editor", editor_run}, {"rerun", rerun_run},
+    {"editor", editor_run}, {"rerun", rerun_run},
     {"add", add_run}, {"read", read_run}, {"set", set_run},
     {"cond", cond_run}, {"handrun", handrun_run}, {"condrerun", condrerun_run},
     {"push_int", push_int_run}, {"in-int", in_int_run}, {"out", out_run},
@@ -35,6 +36,7 @@ static const Plugin PLUGINS[] = {
 
 /* hit(key)：token 命中插件 → run；否则 NULL（= 块引用，下钻） */
 static void (*hit(data k))(void) {
+    if (k.n == 0) return editor_run;                     /* 零大小 data = editor */
     u32 n = k.n;
     for (size_t i = 0; i < PLUGINS_N; i++) {
         size_t ln = strlen(PLUGINS[i].name);
@@ -58,8 +60,8 @@ static size_t iter_tokens(const uint8_t *blk, u32 blen, Tok *out, size_t cap) {
     u32 i = 0; size_t n = 0;
     while (i + 4 <= blen) {
         u32 nl; memcpy(&nl, blk + i, 4); i += 4;
-        if (!nl) break;                                    /* 块结束符 */
         out[n].name = (uint8_t*)blk + i; out[n].nlen = nl; i += nl;
+        if (i + 4 > blen) break;                           /* 名字后无 plen 字段 = 尾标记 */
         u32 dl; memcpy(&dl, blk + i, 4); i += 4;
         out[n].payload = (uint8_t*)blk + i; out[n].plen = dl; i += dl;
         n++;
@@ -151,8 +153,8 @@ static void **get_vm_imp(void) {
 
 /* 命中后设插件：payload 从 k 深拷贝到全局；imp 写入 vm.exe 导出的变量 */
 static void commit_imp(data k) {
-    u32 pl = *(u32*)(k.d + k.n);
-    const uint8_t *pay = k.d + k.n + 4;
+    u32 pl = 0; const uint8_t *pay = NULL;
+    if (k.n) { pl = *(u32*)(k.d + k.n); pay = k.d + k.n + 4; }   /* 零大小 data（editor）无 payload */
     free((void*)payload);
     payload = (uint8_t*)malloc(pl);
     memcpy((void*)payload, pay, pl);
@@ -183,11 +185,31 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {
 /* 唯一入口：vm 直接调 drill({0,0}) 引导；插件（boot/cond/handrun）调 drill(目标key) 下钻；
    非插件名 token → 循环内压父块 + push_key + getfirstdata 自动下钻；run_next/reset 接棒 */
 void drill(data k) {
-    if (!booted) {                                       /* 入口（vm 直接调 drill({0,0})） */
+    if (!booted) {                                       /* 入口（vm 直接调 drill({0,0})）—— 引导逻辑集成在此（原 boot 插件） */
         booted = 1;
         retbase = malloc(256 * sizeof(void*));
         retpoint = retbase;
-        ptr = getfirstdata((data){0, NULL});              /* 空 key → 引导块 */
+        /* 有 id 运行 id；没有新建随机 id 并上传零 data + 尾标记（4+4+4=12B）到 id */
+        uint8_t id[32];
+        FILE *f = fopen("id.bin", "rb");
+        int fresh = 1;
+        if (f) {
+            if (fread(id, 1, 32, f) == 32) {
+                u32 blen = 0;
+                uint8_t *blk = net_fetch(id, 32, &blen);
+                if (blk) { free(blk); fresh = 0; }       /* server 有该块 → 直接用 */
+            }
+            fclose(f);
+        }
+        if (fresh) {
+            for (int i = 0; i < 32; i++) id[i] = (uint8_t)(rand() & 0xff);   /* 新 id */
+            f = fopen("id.bin", "wb"); fwrite(id, 1, 32, f); fclose(f);
+            uint8_t block[12] = {0,0,0,0, 0,0,0,0, 0,0,0,0};   /* 零 data + 尾标记 */
+            net_upload(id, 32, block, 12);
+        }
+        data idd = {32, id};
+        ptr = getfirstdata(idd);                          /* 进 id 块 */
+        push_key(idd);                                    /* 压 id key（reset/cur_key_of 用） */
         k = (data){*(u32*)ptr, ptr + 4};                  /* 第一条 token */
     }
     for (;;) {

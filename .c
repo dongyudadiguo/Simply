@@ -194,7 +194,7 @@ static void item_label(const Tok *t, char *out) {
         memcpy(out, t->payload + 8, c); out[c] = 0;
         return;
     }
-    if ((name_is(t,"read")||name_is(t,"set")||name_is(t,"cond")||name_is(t,"condrerun")) && t->plen > 0) {
+    if ((name_is(t,"read")||name_is(t,"set")||name_is(t,"cond")||name_is(t,"condrerun")||name_is(t,"push_int")) && t->plen > 0) {
         u32 c = t->plen < 100 ? t->plen : 100;
         memcpy(out, t->payload, c); out[c] = 0;
         return;

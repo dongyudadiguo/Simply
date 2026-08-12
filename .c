@@ -126,7 +126,7 @@ static const char *PLUGINS[] = {
 
 /* ================= 常量（对齐 Python editor） ================= */
 #define RH 20.0f          /* 行高（对齐 transition 每行 +20） */
-#define GAP 0.0f          /* 行距（平铺无嵌套，行距=行高） */
+#define GAP 4.0f          /* 行间距（4px，指针/插入指示有独立空间，token 间隙仍紧凑） */
 #define MAX_VIEW 64
 #define MAX_LINE 512
 #define MAX_ITEM 1024
@@ -257,10 +257,12 @@ static void build_lines(Tok *toks, size_t n) {
 /* ================= 视图坐标 ================= */
 /* 视图节点头顶部 = v->pos.y；内容行 row 中心 y = pos.y + RH + row*(RH+GAP) + RH/2 */
 static float row_y(const View *v, int row) { return v->pos.y + RH + row*(RH+GAP) + RH/2; }
-/* 间隙 j（0..line_n）：j=0 节点头与行0 间；j=i(1..n) 行 i-1 与 i 间；j=n 末尾 */
+#define TEXT_H 18.0f      /* 20 号文字高（行内文字占高） */
+/* 间隙 j（0..line_n）：j=0 节点头与行0 间；j=i(1..n) 行 i-1 与 i 间（行底+行顶 中点，不压文字）；j=n 末尾 */
 static float gap_y(const View *v, int j) {
-    if (j <= 0) return v->pos.y + RH + GAP/2;
-    return v->pos.y + RH + j*(RH+GAP) - GAP/2;
+    if (j <= 0) return (v->pos.y + RH + row_y(v, 0)) / 2;                     /* 节点头底与行0 顶中点 */
+    if (j >= line_n) return row_y(v, line_n - 1) + TEXT_H + GAP;               /* 末尾：最后一行底 + 间距 */
+    return (row_y(v, j - 1) + TEXT_H + row_y(v, j)) / 2;                        /* 行 j-1 底与行 j 顶中点 */
 }
 /* 鼠标 world → 最近间隙 → 行号 */
 static int nearest_gap(const View *v, float wy, int maxj) {

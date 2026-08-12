@@ -476,6 +476,17 @@ static int insert_pos(BlockAPI *B) {
     return (int)n;   /* 插入到当前视图末尾（可靠；指针仍指示间隙） */
 }
 
+/* 选择位置（当前视图，鼠标最近间隙 → token 索引；选择/划删用，可跨指针选区） */
+static int pointer_pos(BlockAPI *B) {
+    size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
+    build_lines(ts, n);
+    int j = nearest_gap(&views[cur_v], mouse_world.y, line_n);
+    int pos = line_first(j);
+    free_fetched(&f);
+    if (pos < 0) pos = (int)n;
+    return pos;
+}
+
 /* 视图 toks 深拷贝（编辑用：复制 + 修改后 cur_set） */
 static Tok *dup_toks(Tok *src, size_t n) {
     Tok *nt = (Tok*)calloc(n + 1, sizeof(Tok));
@@ -533,7 +544,7 @@ static void combo_insert(BlockAPI *B, int combo) {
 
 /* 划选/删除/粘贴 */
 static void sel_copy(BlockAPI *B) {
-    int pos = insert_pos(B);
+    int pos = pointer_pos(B);
     int a = sel_start < pos ? sel_start : pos, b = sel_start < pos ? pos : sel_start;
     if (a >= b) return;
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
@@ -545,7 +556,7 @@ static void sel_copy(BlockAPI *B) {
     free_fetched(&f);
 }
 static void sel_del(BlockAPI *B) {
-    int pos = insert_pos(B);
+    int pos = pointer_pos(B);
     int a = del_start < pos ? del_start : pos, b = del_start < pos ? pos : del_start;
     if (a >= b) return;
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
@@ -739,10 +750,10 @@ __declspec(dllexport) void run(void) {
             }
         }
         /* SHIFT 划选：按下记起点，松开复制 */
-        if (IsKeyPressed(KEY_LEFT_SHIFT) || IsKeyPressed(KEY_RIGHT_SHIFT)) { if (!(ctrl)) sel_start = insert_pos(B); }
+        if (IsKeyPressed(KEY_LEFT_SHIFT) || IsKeyPressed(KEY_RIGHT_SHIFT)) { if (!(ctrl)) sel_start = pointer_pos(B); }
         if ((!shift) && sel_start >= 0) { sel_copy(B); sel_start = -1; }
         /* DELETE 划删：按下记起点，松开删 */
-        if (IsKeyPressed(KEY_DELETE)) del_start = insert_pos(B);
+        if (IsKeyPressed(KEY_DELETE)) del_start = pointer_pos(B);
         if (IsKeyReleased(KEY_DELETE) && del_start >= 0) { sel_del(B); del_start = -1; }
         /* INSERT 粘贴 */
         if (IsKeyPressed(KEY_INSERT)) paste(B);

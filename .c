@@ -1,4 +1,4 @@
-// editor.c —— 图形编辑器插件（raylib，内建编译进 vm）
+// .c —— 图形编辑器插件（raylib，固定编译成 sha256("") = e3b0c442….dll）
 #include <stdint.h>
 #include <stddef.h>
 
@@ -73,5 +73,5 @@ __declspec(dllexport) void run(void) {
     EndDrawing();
     if (WindowShouldClose()) exit(0);
 
-    B->reset();                       /* editor 接棒 = rerun：重跑当前块（零大小 data = editor） */
+    B->reset();                       /* editor 接棒 = rerun：重跑当前块（零大小 data → e3b0c442….dll 命中） */
 }

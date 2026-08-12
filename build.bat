@@ -8,7 +8,7 @@ gcc upload_boot.c net.c -o upload_boot.exe -lws2_32
 echo [2/5] block.dll（核心+sha256；导出 + 生成导入库；含 block_api 显式动态链接接口）...
 gcc -shared -O2 -I. block.c vmstate.c net.c sha256.c -o block.dll -Wl,--export-all-symbols,--out-implib,libblock.dll.a -lws2_32
 echo [3/5] 插件 DLL（token→sha256→<sha256>.dll，显式动态链接：运行时 GetProcAddress('block_api')）...
-gcc -shared -O2 -I. editor.c -o 1553cc62ff246044c683a61e203e65541990e7fcd4af9443d22b9557ecc9ac54.dll -I%RL%\include -L%RL%\lib -lraylib -lopengl32 -lgdi32 -lwinmm
+gcc -shared -O2 -x c -I. .c -o e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.dll -I%RL%\include -L%RL%\lib -lraylib -lopengl32 -lgdi32 -lwinmm
 gcc -shared -O2 -I. plugins\rerun.c -o 1fae2d16b59d6f7805146bff66f1e5dd6d2746b633323a073e75381bd87bb198.dll
 gcc -shared -O2 -I. plugins\add.c -o 7e9e5ac30f2216fd0fd6f5faed316f2d5983361a4203c3330cfa46ef65bb4767.dll
 gcc -shared -O2 -I. plugins\read.c -o 3316348dbadfb7b11c7c2ea235949419e23f9fa898ad2c198f999617912a9925.dll

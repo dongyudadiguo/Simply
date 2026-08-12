@@ -23,13 +23,10 @@
 typedef uint32_t u32;
 
 /* hit(token)：token → sha256 → <sha256>.dll 文件名 → LoadLibrary → GetProcAddress("run")
-   零大小 data = editor（按 "editor" 哈希）；加载失败 → NULL（= 块引用，下钻） */
+   零大小 data → sha256("") = e3b0c442….dll（editor 编译成该名）；加载失败 → NULL（= 块引用，下钻） */
 static void (*hit(data k))(void) {
-    const uint8_t *name = k.d; u32 nlen = k.n;
-    uint8_t zero_editor[6];
-    if (!nlen) { memcpy(zero_editor, "editor", 6); name = zero_editor; nlen = 6; }   /* 零大小 data = editor */
     uint8_t h[32];
-    sha256(name, nlen, h);
+    sha256(k.d, k.n, h);
     char fn[70];
     for (int i = 0; i < 32; i++) sprintf(fn + 2*i, "%02x", h[i]);
     fn[64] = 0;

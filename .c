@@ -139,7 +139,7 @@ static const Color C_COND  = {208, 128, 224, 255};   /* cond */
 static const Color C_HAND  = {247, 118, 142, 255};   /* handrun */
 static const Color C_CRUN  = {255, 158, 100, 255};   /* condrerun */
 static const Color C_HEAD  = {120, 130, 145, 255};   /* 节点头 */
-static const Color C_PTR   = {200, 200, 200, 255};   /* 指针 */
+static const Color C_PTR   = {0, 228, 48, 255};       /* 指针（对齐 transition 横向指针：绿色） */
 static const Color C_INP   = {232, 236, 239, 255};   /* 输入 */
 static const Color C_LINE  = {0, 255, 0, 255};       /* LIME 连线 */
 
@@ -836,13 +836,14 @@ __declspec(dllexport) void run(void) {
     ClearBackground(C_BG);
     BeginMode2D(camera);
     for (int i = 0; i < view_n; i++) draw_view(B, i);
-    /* 指针：鼠标所在视图最近间隙横线 */
+    /* 指针：鼠标所在视图最近间隙横线（对齐 transition 横向指针：绿色，延伸到窗口右缘） */
     {
         size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
         build_lines(ts, n);
         int j = nearest_gap(&views[cur_v], mouse_world.y, line_n);
         float gy = gap_y(&views[cur_v], j);
-        DrawLine(views[cur_v].pos.x, gy, mouse_world.x, gy, C_PTR);
+        float rx = camera.target.x + (GetScreenWidth() / 2.0f) / camera.zoom;   /* 窗口右缘世界 x */
+        DrawLine(views[cur_v].pos.x, gy, rx, gy, C_PTR);
         free_fetched(&f);
     }
     EndMode2D();

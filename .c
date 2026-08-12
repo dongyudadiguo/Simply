@@ -372,14 +372,29 @@ static void free_fetched(Toks *ts) {
 }
 
 /* ================= 渲染一个视图 ================= */
+/* 节点头文字：key 可打印 → 原文；否则（如二进制 id）→ 十六进制（截断防溢出） */
+static void header_text(const View *v, char *out) {
+    int printable = v->klen > 0;
+    for (u32 i = 0; i < v->klen; i++)
+        if (v->key[i] < 0x20 || v->key[i] > 0x7E) { printable = 0; break; }
+    if (printable) {
+        u32 c = v->klen < 200 ? v->klen : 200;
+        memcpy(out, v->key, c); out[c] = 0;
+    } else {
+        u32 c = v->klen < 16 ? v->klen : 16;            /* 最多 16 字节 = 32 位 hex */
+        for (u32 i = 0; i < c; i++) sprintf(out + 2*i, "%02x", v->key[i]);
+        if (v->klen > c) strcat(out, "...");
+    }
+}
+
 static void draw_view(BlockAPI *B, int vi) {
     View *v = &views[vi];
     Toks fetched; size_t n = 0;
     Tok *toks = view_toks(B, vi, &n, &fetched);
     build_lines(toks, n);
 
-    /* 节点头（CRC 短名） */
-    char kt[32]; crc_name(v->key, v->klen, kt);
+    /* 节点头（key 文字） */
+    char kt[256]; header_text(v, kt);
     DrawText(kt, v->pos.x + 2, v->pos.y + 6, 13, C_HEAD);
     /* 父-子 LIME 连线 */
     if (v->src_v >= 0 && v->src_i >= 0 && v->src_i < anchor_n[v->src_v]) {

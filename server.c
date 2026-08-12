@@ -35,6 +35,60 @@ static void store(const uint8_t *key, uint32_t klen, const uint8_t *data, uint32
     e->items = it;
 }
 
+/* ================= 文件持久化（db.bin）：上传/投票后保存，启动时加载 ================= */
+#define DB_FILE "db.bin"
+static void db_save(void) {
+    FILE *f = fopen(DB_FILE ".tmp", "wb");
+    if (!f) return;
+    uint32_t kcount = 0;
+    for (KeyEnt *e = db; e; e = e->next) kcount++;
+    fwrite(&kcount, 4, 1, f);
+    for (KeyEnt *e = db; e; e = e->next) {
+        uint32_t icount = 0;
+        for (Item *it = e->items; it; it = it->next) icount++;
+        fwrite(&e->klen, 4, 1, f);
+        fwrite(e->key, 1, e->klen, f);
+        fwrite(&icount, 4, 1, f);
+        for (Item *it = e->items; it; it = it->next) {
+            fwrite(&it->votes, 4, 1, f);
+            fwrite(&it->plen, 4, 1, f);
+            fwrite(it->payload, 1, it->plen, f);
+        }
+    }
+    fclose(f);
+    remove(DB_FILE);
+    rename(DB_FILE ".tmp", DB_FILE);
+}
+static void db_load(void) {
+    FILE *f = fopen(DB_FILE, "rb");
+    if (!f) return;
+    uint32_t kcount;
+    if (fread(&kcount, 4, 1, f) != 1) { fclose(f); return; }
+    for (uint32_t i = 0; i < kcount; i++) {
+        uint32_t klen;
+        if (fread(&klen, 4, 1, f) != 1) break;
+        uint8_t *key = (uint8_t*)malloc(klen);
+        if (fread(key, 1, klen, f) != klen) { free(key); break; }
+        KeyEnt *e = (KeyEnt*)calloc(1, sizeof(KeyEnt));
+        e->key = key; e->klen = klen;
+        e->next = db; db = e;
+        uint32_t icount;
+        if (fread(&icount, 4, 1, f) != 1) break;
+        Item *tail = NULL;
+        for (uint32_t j = 0; j < icount; j++) {
+            uint32_t votes, plen;
+            if (fread(&votes, 4, 1, f) != 1 || fread(&plen, 4, 1, f) != 1) break;
+            uint8_t *payload = (uint8_t*)malloc(plen ? plen : 1);
+            if (plen && fread(payload, 1, plen, f) != plen) { free(payload); break; }
+            Item *it = (Item*)calloc(1, sizeof(Item));
+            it->votes = votes; it->plen = plen; it->payload = payload;
+            if (tail) { tail->next = it; tail = it; } else { e->items = it; tail = it; }
+        }
+    }
+    fclose(f);
+    printf("db loaded %d keys\n", (int)kcount); fflush(stdout);
+}
+
 static int recv_exact(SOCKET s, uint8_t *buf, uint32_t n) {
     uint32_t got = 0;
     while (got < n) {
@@ -69,6 +123,7 @@ static void handle(SOCKET c) {
             while (it && k < idx) { it = it->next; k++; }
             if (it) { it->votes++; votes = it->votes; } }
         LeaveCriticalSection(&lock);
+        db_save();
         send_exact(c, (uint8_t*)&votes, 4);
     }
     else if (op == 2) {                  /* 获取：[2][key] → 票数最高（最早插入）payload */
@@ -90,6 +145,7 @@ static void handle(SOCKET c) {
                 EnterCriticalSection(&lock);
                 store(key, klen, data, dlen);
                 LeaveCriticalSection(&lock);
+                db_save();
             }
         }
         uint32_t zero = 0; send_exact(c, (uint8_t*)&zero, 4);
@@ -105,6 +161,7 @@ int main(void) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
     InitializeCriticalSection(&lock);
+    db_load();
     SOCKET ls = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in a;
     a.sin_family = AF_INET; a.sin_port = htons(PORT); a.sin_addr.s_addr = INADDR_ANY;

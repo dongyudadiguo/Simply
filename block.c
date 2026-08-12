@@ -72,6 +72,7 @@ Toks load_toks(const uint8_t *key, u32 klen) {
 
     if (klen == 0) {                                         /* 引导：空 key 只取第一条 name */
         Tok tmp[1];
+        if (!blk) { ts.tok = (Tok*)calloc(1, sizeof(Tok)); ts.tok[0].name = NULL; ts.tok[0].nlen = 0; ts.n = ts.cap = 1; ts.owned = 1; return ts; }
         iter_tokens(blk, blen, tmp, 1);
         ts.tok = (Tok*)calloc(1, sizeof(Tok));
         ts.n = ts.cap = 1; ts.owned = 1;

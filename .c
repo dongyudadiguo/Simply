@@ -400,12 +400,6 @@ static void draw_view(BlockAPI *B, int vi) {
     if (v->src_v >= 0 && v->src_i >= 0 && v->src_i < anchor_n[v->src_v]) {
         DrawLineV(anchor[v->src_v][v->src_i], (Vector2){v->pos.x, v->pos.y}, C_LINE);
     }
-    /* 右键点击节点头 → 关闭（非主视图） */
-    if (vi > 0 && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !prev_rb
-        && CheckCollisionPointRec(mouse_world, (Rectangle){v->pos.x, v->pos.y, 200, RH})) {
-        v->klen = 0;
-    }
-
     anchor_n[vi] = 0;
     for (int r = 0; r < line_n; r++) {
         Line *L = &lines[r];
@@ -816,10 +810,22 @@ __declspec(dllexport) void run(void) {
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) ldrag = -1;
 
     if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !prev_rb) {   /* 右键边沿（down 更可靠） */
-        int si = hit_view(mouse_world);
-        if (si >= 0) {
-            int i = hit_item(B, si, mouse_world);
-            if (i >= 0) drag_out(B, si, i);
+        /* 右键点击子视图节点头 → 关闭（先于拖出，避免误关刚拖出的子视图） */
+        int closed = 0;
+        for (int i = 1; i < view_n; i++) {
+            if (CheckCollisionPointRec(mouse_world, (Rectangle){views[i].pos.x, views[i].pos.y, 200, RH})) {
+                views[i].klen = 0; closed = 1;
+                compact_views();              /* 立即移除，避免本帧 draw_view/sync_views 处理 klen=0 视图 */
+                cur_v = 0; edit_i = -1; edit_v = 0;   /* 清掉可能指向已关视图的当前/编辑状态 */
+                break;
+            }
+        }
+        if (!closed) {
+            int si = hit_view(mouse_world);
+            if (si >= 0) {
+                int i = hit_item(B, si, mouse_world);
+                if (i >= 0) drag_out(B, si, i);
+            }
         }
     }
     prev_rb = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);

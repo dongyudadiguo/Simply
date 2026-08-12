@@ -45,6 +45,8 @@ static inline BlockAPI *block_import(void) {
 /* windows API 手动声明（插件不 include windows.h，保持自包含） */
 extern unsigned int __stdcall GetFileAttributesA(const char *name);
 extern unsigned int __stdcall GetTickCount(void);
+extern void *__stdcall SetFocus(void *hwnd);
+extern void *__stdcall GetFocus(void);
 #define INVALID_FILE_ATTRIBUTES 0xFFFFFFFF
 
 /* ================= 内嵌 sha256（判定 token 是否命中插件 DLL） ================= */
@@ -700,6 +702,15 @@ __declspec(dllexport) void run(void) {
         free_fetched(&f);
     }
     if (edit_i >= 0 && IsKeyPressed(KEY_ENTER)) edit_i = -1;
+
+    /* 鼠标进窗口自动获取键盘焦点（对齐 Python on_mouse_motion） */
+    {
+        Vector2 mp = GetMousePosition();
+        if (mp.x >= 0 && mp.y >= 0 && mp.x < GetScreenWidth() && mp.y < GetScreenHeight()) {
+            void *wh = GetWindowHandle();
+            if (GetFocus() != wh) SetFocus(wh);
+        }
+    }
 
     /* 鼠标交互 */
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {

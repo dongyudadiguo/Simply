@@ -258,6 +258,7 @@ static void build_lines(Tok *toks, size_t n) {
 /* 视图节点头顶部 = v->pos.y；内容行 row 中心 y = pos.y + RH + row*(RH+GAP) + RH/2 */
 static float row_y(const View *v, int row) { return v->pos.y + RH + row*(RH+GAP) + RH/2; }
 #define TEXT_H 18.0f      /* 20 号文字高（行内文字占高） */
+#define TOFF 8.0f       /* 文字相对 row_y 的视觉下移量（DrawText 基线），命中/绘制对齐用 */
 /* 间隙 j（0..line_n）：j=0 节点头与行0 间；j=i(1..n) 行 i-1 与 i 间（行底+行顶 中点，不压文字）；j=n 末尾 */
 static float gap_y(const View *v, int j) {
     if (j <= 0) return (v->pos.y + RH + row_y(v, 0)) / 2;                     /* 节点头底与行0 顶中点 */
@@ -295,6 +296,7 @@ static int sel_start = -1; static int del_start = -1;
 static Tok copy_buf[256]; static int copy_n = 0;
 static int drag_sv = -1; static int ldrag = -1; static Vector2 ldrag_off;
 static int prev_rb = 0;
+static int show_dragout = 1;   /* 右键拖出判定区可视化（检查用） */
 static int prev_space = 0;
 static int idle_frames = 0;
 
@@ -410,14 +412,19 @@ static void draw_view(BlockAPI *B, int vi) {
             char lb[128]; item_label(t, lb);
             Color c = item_color(B, t);
             /* 锚点（连线/拖出用）：token 文字右端 + 行中心（对齐 transition func_pos） */
-            if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2 + MeasureText(lb, 20), y}; anchor_n[vi] = it->idx + 1; }
+            if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2 + MeasureText(lb, 20), y + TOFF}; anchor_n[vi] = it->idx + 1; }
+            /* 右键拖出判定区（非插件 token = 块引用 item 矩形）高亮 */
+            if (show_dragout && !has_plugin(t->name, t->nlen)) {
+                DrawRectangle((int)(v->pos.x + it->x), (int)(y + TOFF - RH/2), (int)it->w, (int)RH, (Color){255, 200, 0, 70});
+                DrawRectangleLines((int)(v->pos.x + it->x), (int)(y + TOFF - RH/2), (int)it->w, (int)RH, (Color){255, 220, 0, 255});
+            }
             DrawText(lb, v->pos.x + it->x + 2, y, 20, c);
             /* handrun 双按钮 */
             if (name_is(t, "handrun")) {
                 uint8_t b1, b2; B->hand_get(t->payload, &b1, &b2);
                 float bx = v->pos.x + it->x + it->w - 22;
-                DrawRectangle(bx, y, 10, 20, b1 ? C_GREEN : (Color){40,40,40,255});
-                DrawRectangle(bx + 12, y, 10, 20, b2 ? C_GREEN : (Color){40,40,40,255});
+                DrawRectangle(bx, y + TOFF, 10, 20, b1 ? C_GREEN : (Color){40,40,40,255});
+                DrawRectangle(bx + 12, y + TOFF, 10, 20, b2 ? C_GREEN : (Color){40,40,40,255});
             }
         }
     }
@@ -442,7 +449,7 @@ static int hit_item(BlockAPI *B, int vi, Vector2 w) {
     int hit = -1;
     for (int r = 0; r < line_n && hit < 0; r++) {
         float y = row_y(&views[vi], r);
-        if (w.y < y - RH/2 || w.y > y + RH/2) continue;
+        if (w.y < y + TOFF - RH/2 || w.y > y + TOFF + RH/2) continue;
         for (int k = 0; k < lines[r].n; k++) {
             Item *it = &lines[r].items[k];
             if (w.x >= views[vi].pos.x + it->x && w.x <= views[vi].pos.x + it->x + it->w) { hit = it->idx; break; }

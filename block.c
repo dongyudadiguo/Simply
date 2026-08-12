@@ -167,6 +167,14 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {
     *out_d = (const uint8_t*)retpoint - 4 - n;
 }
 
+/* 弹回：块结束 → 恢复父块 ptr（父块的块引用 token 位置），并弹掉该项 */
+static void pop_ret(void) {
+    u32 n = *(u32*)((const uint8_t*)retpoint - 4);                 /* 最后一项 key 长度 */
+    const uint8_t *start = (const uint8_t*)retpoint - 4 - n - 8;    /* 该项起点（[8B父ptr][key][4B len]） */
+    ptr = *(const void**)start;                                    /* 恢复父块 ptr */
+    retpoint = (void*)start;                                       /* 弹掉该项 */
+}
+
 /* ================= drill：入口 + 下钻循环（用户结构） ================= */
 /* 唯一入口：vm 直接调 drill({0,0}) 引导；插件（boot/cond/handrun）调 drill(目标key) 下钻；
    非插件名 token → 循环内压父块 + push_key + getfirstdata 自动下钻；run_next/reset 接棒 */
@@ -209,6 +217,15 @@ void drill(data k) {
 void run_next(void) {
     ptr += 4 + *(u32*)ptr;
     ptr += 4 + *(u32*)ptr;
+    while (*(u32*)ptr == 0) {                              /* 块结束（零长名尾标记）→ 弹回父块 */
+        if (retpoint == retbase) {                          /* 根块结束 → editor（原行为） */
+            drill((data){*(u32*)ptr, ptr + 4});
+            return;
+        }
+        pop_ret();                                         /* 恢复父块 ptr（块引用 token 位置） */
+        ptr += 4 + *(u32*)ptr;                             /* 跳过父块的块引用 token */
+        ptr += 4 + *(u32*)ptr;
+    }
     drill((data){*(u32*)ptr, ptr + 4});                    /* 下一条 token */
 }
 

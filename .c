@@ -125,8 +125,8 @@ static const char *PLUGINS[] = {
 #define PLUGIN_N (sizeof(PLUGINS)/sizeof(PLUGINS[0]))
 
 /* ================= 常量（对齐 Python editor） ================= */
-#define RH 30.0f          /* 行高 */
-#define GAP 8.0f          /* 行距 */
+#define RH 20.0f          /* 行高（对齐 transition 每行 +20） */
+#define GAP 0.0f          /* 行距（平铺无嵌套，行距=行高） */
 #define MAX_VIEW 64
 #define MAX_LINE 512
 #define MAX_ITEM 1024
@@ -381,7 +381,7 @@ static void draw_view(BlockAPI *B, int vi) {
     DrawText(kt, v->pos.x + 2, v->pos.y + 6, 13, C_HEAD);
     /* 父-子 LIME 连线 */
     if (v->src_v >= 0 && v->src_i >= 0 && v->src_i < anchor_n[v->src_v]) {
-        DrawLineV(anchor[v->src_v][v->src_i], (Vector2){v->pos.x, v->pos.y + RH/2}, C_LINE);
+        DrawLineV(anchor[v->src_v][v->src_i], (Vector2){v->pos.x, v->pos.y}, C_LINE);
     }
     /* 右键点击节点头 → 关闭（非主视图） */
     if (vi > 0 && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !prev_rb
@@ -398,8 +398,8 @@ static void draw_view(BlockAPI *B, int vi) {
             Tok *t = &toks[it->idx];
             char lb[128]; item_label(t, lb);
             Color c = item_color(B, t);
-            /* 锚点（连线/拖出用） */
-            if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2, y}; anchor_n[vi] = it->idx + 1; }
+            /* 锚点（连线/拖出用）：token 文字右端 + 行中心（对齐 transition func_pos） */
+            if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2 + MeasureText(lb, 20), y}; anchor_n[vi] = it->idx + 1; }
             DrawText(lb, v->pos.x + it->x + 2, y, 20, c);
             /* handrun 双按钮 */
             if (name_is(t, "handrun")) {
@@ -689,10 +689,13 @@ __declspec(dllexport) void run(void) {
 
     /* 相机：滚轮缩放（鼠标锚点）+ 中键平移 */
     float wheel = GetMouseWheelMove();
-    if (wheel != 0) {
-        Vector2 before = GetScreenToWorld2D(GetMousePosition(), camera);
+    if (wheel != 0) {                                      /* 滚轮缩放（鼠标锚点） */
+        Vector2 mpos = GetMousePosition();
+        Vector2 before = GetScreenToWorld2D(mpos, camera); /* 缩放前鼠标下的世界点 */
         camera.zoom += wheel * (0.1f * camera.zoom);
-        camera.target = Vector2Add(before, Vector2Scale(Vector2Subtract(GetMousePosition(), (Vector2){GetScreenWidth()/2, GetScreenHeight()/2}), -1.0f/camera.zoom));
+        camera.offset = (Vector2){GetScreenWidth()/2, GetScreenHeight()/2};
+        Vector2 after = GetScreenToWorld2D(mpos, camera);  /* 缩放后（target 未变）鼠标下世界点 */
+        camera.target = Vector2Add(camera.target, Vector2Subtract(before, after)); /* 保持鼠标点 */
     }
     camera.offset = (Vector2){GetScreenWidth() / 2, GetScreenHeight() / 2};
     mouse_world = GetScreenToWorld2D(GetMousePosition(), camera);

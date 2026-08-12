@@ -296,7 +296,6 @@ static int sel_start = -1; static int del_start = -1;
 static Tok copy_buf[256]; static int copy_n = 0;
 static int drag_sv = -1; static int ldrag = -1; static Vector2 ldrag_off;
 static int prev_rb = 0;
-static int show_dragout = 1;   /* 右键拖出判定区可视化（检查用） */
 static int prev_space = 0;
 static int idle_frames = 0;
 
@@ -413,11 +412,6 @@ static void draw_view(BlockAPI *B, int vi) {
             Color c = item_color(B, t);
             /* 锚点（连线/拖出用）：token 文字右端 + 行中心（对齐 transition func_pos） */
             if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2 + MeasureText(lb, 20), y + TOFF}; anchor_n[vi] = it->idx + 1; }
-            /* 右键拖出判定区（非插件 token = 块引用 item 矩形）高亮 */
-            if (show_dragout && !has_plugin(t->name, t->nlen)) {
-                DrawRectangle((int)(v->pos.x + it->x), (int)(y + TOFF - RH/2), (int)it->w, (int)RH, (Color){255, 200, 0, 70});
-                DrawRectangleLines((int)(v->pos.x + it->x), (int)(y + TOFF - RH/2), (int)it->w, (int)RH, (Color){255, 220, 0, 255});
-            }
             DrawText(lb, v->pos.x + it->x + 2, y, 20, c);
             /* handrun 双按钮 */
             if (name_is(t, "handrun")) {

@@ -27,6 +27,8 @@ typedef struct {
     Toks (*load_toks)(const uint8_t*, u32);
     void (*load_names)(const uint8_t*, u32, uint8_t (*)[64], u32*, u32);
     int (*net_upload_fn)(const uint8_t*, u32, const uint8_t*, u32);
+    void (*heat_add)(const uint8_t*, u32);
+    u32 (*heat_get)(const uint8_t*, u32);
 } BlockAPI;
 extern void *GetModuleHandleA(const char *name);
 extern void *GetProcAddress(void *module, const char *name);
@@ -157,6 +159,14 @@ static Vector2 anchor[MAX_VIEW][512]; static int anchor_n[MAX_VIEW];  /* 每视�
 
 /* 当前编辑目标视图（鼠标所在） */
 static int cur_v = 0;
+static BlockAPI *GB = NULL;   /* block_import 缓存（item_color 热力用） */
+
+/* 热力色：向 HOT(255,80,80) 插值，量 = heat*0.2（对齐 Python） */
+static Color heat_color(Color base, u32 heat) {
+    if (!heat) return base;
+    float f = heat * 0.2f; if (f > 1.0f) f = 1.0f;
+    return (Color){ (uint8_t)(base.r + (255 - base.r)*f), (uint8_t)(base.g + (80 - base.g)*f), (uint8_t)(base.b + (80 - base.b)*f), 255 };
+}
 
 /* ================= token 名字/属性判定 ================= */
 static int name_is(const Tok *t, const char *s) {
@@ -195,12 +205,12 @@ static float item_w(const Tok *t) {
     if (name_is(t, "handrun")) w += 26;         /* handrun 双按钮宽 */
     return w;
 }
-static Color item_color(const Tok *t) {
+static Color item_color(BlockAPI *B, const Tok *t) {
     if (name_is(t,"read")) return C_GREEN;
     if (name_is(t,"set")) return C_YELLOW;
-    if (name_is(t,"cond")) return C_COND;
-    if (name_is(t,"handrun")) return C_HAND;
-    if (name_is(t,"condrerun")) return C_CRUN;
+    if (name_is(t,"cond")) return heat_color(C_COND, B->heat_get(t->name, t->nlen));
+    if (name_is(t,"handrun")) return heat_color(C_HAND, B->heat_get(t->name, t->nlen));
+    if (name_is(t,"condrerun")) return heat_color(C_CRUN, B->heat_get(t->name, t->nlen));
     if (t->nlen == 0) return C_HIT;             /* editor 自身 */
     return has_plugin(t->name, t->nlen) ? C_HIT : C_DIM;
 }
@@ -376,7 +386,7 @@ static void draw_view(BlockAPI *B, int vi) {
             Item *it = &L->items[k];
             Tok *t = &toks[it->idx];
             char lb[128]; item_label(t, lb);
-            Color c = item_color(t);
+            Color c = item_color(B, t);
             /* 锚点（连线/拖出用） */
             if (anchor_n[vi] <= it->idx) { while (anchor_n[vi] < it->idx) anchor[vi][anchor_n[vi]++] = (Vector2){v->pos.x + L->width, y}; anchor[vi][it->idx] = (Vector2){v->pos.x + it->x + 2, y}; anchor_n[vi] = it->idx + 1; }
             DrawText(lb, v->pos.x + it->x + 2, y, 20, c);
@@ -592,6 +602,7 @@ __declspec(dllexport) void run(void) {
     BlockAPI *B = block_import();
     const uint8_t *ck; u32 ckl;
     B->cur_key_of(&ck, &ckl);
+    GB = B;
     if (first) {
         first = 0;
         SetTraceLogLevel(LOG_NONE);

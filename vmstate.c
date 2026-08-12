@@ -60,3 +60,19 @@ void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2) {
     while (h) { if (memcmp(h->id, id, 8) == 0) { *b1 = h->b1; *b2 = h->b2; return; } h = h->next; }
     *b1 = *b2 = 0;
 }
+
+/* 热力计数（cond/handrun/condrerun 执行次数，editor 显示热力高亮） */
+typedef struct Heat { uint8_t name[64]; u32 nlen; u32 count; struct Heat *next; } Heat;
+static Heat *heat_list;
+void heat_add(const uint8_t *name, u32 nlen) {
+    Heat *h = heat_list;
+    while (h) { if (h->nlen == nlen && memcmp(h->name, name, nlen) == 0) { h->count++; return; } h = h->next; }
+    h = (Heat*)calloc(1, sizeof(Heat));
+    u32 c = nlen < 64 ? nlen : 64; memcpy(h->name, name, c); h->nlen = c; h->count = 1;
+    h->next = heat_list; heat_list = h;
+}
+u32 heat_get(const uint8_t *name, u32 nlen) {
+    Heat *h = heat_list;
+    while (h) { if (h->nlen == nlen && memcmp(h->name, name, nlen) == 0) return h->count; h = h->next; }
+    return 0;
+}

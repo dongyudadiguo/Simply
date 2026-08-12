@@ -21,6 +21,10 @@ typedef struct {
     void (*cur_payload)(const uint8_t**, u32*);
     void (*cur_key_of)(const uint8_t**, u32*);
     Toks (*load_toks)(const uint8_t*, u32);
+    void (*load_names)(const uint8_t*, u32, uint8_t (*)[64], u32*, u32);
+    int (*net_upload_fn)(const uint8_t*, u32, const uint8_t*, u32);
+    void (*heat_add)(const uint8_t*, u32);
+    u32 (*heat_get)(const uint8_t*, u32);
 } BlockAPI;
 extern void *GetModuleHandleA(const char *name);
 extern void *GetProcAddress(void *module, const char *name);
@@ -33,6 +37,7 @@ static inline BlockAPI *block_import(void) {
 
 __declspec(dllexport) void run(void) {
     BlockAPI *B = block_import();
+    B->heat_add((const uint8_t*)"condrerun", 9);
     if (*B->stk_off > 0 && B->stk[0] != 0) B->reset();
     else B->run_next();
 }

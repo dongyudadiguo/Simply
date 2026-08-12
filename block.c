@@ -250,6 +250,7 @@ BlockAPI block_api_st = {
     stk, &stk_off, num, &num_off, var, &var_off,
     push, write_num, cur_set, cur_get, hand_set, hand_get,
     run_next, reset, drill, cur_payload, cur_key_of, load_toks,
-    load_names, net_upload_fn
+    load_names, net_upload_fn,
+    heat_add, heat_get
 };
 BlockAPI *block_api(void) { return &block_api_st; }

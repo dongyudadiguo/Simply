@@ -27,6 +27,8 @@ int cur_dirty(const uint8_t *key, uint32_t klen);                         /* 该
 void cur_clean(void);                                                      /* 已上传，清标记 */
 void hand_set(const uint8_t *id, uint8_t b1, uint8_t b2);               /* handrun flags */
 void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2);
+void heat_add(const uint8_t *name, u32 nlen);                            /* 热力计数（插件执行上报） */
+u32 heat_get(const uint8_t *name, u32 nlen);
 
 /* ---- sha256（token → 插件 DLL 文件名） ---- */
 void sha256(const uint8_t *data, uint32_t len, uint8_t out[32]);
@@ -64,6 +66,8 @@ typedef struct {
     Toks (*load_toks)(const uint8_t*, u32);
     void (*load_names)(const uint8_t*, u32, uint8_t (*)[64], u32*, u32);   /* 取块全部 token 名（补全用） */
     int (*net_upload_fn)(const uint8_t*, u32, const uint8_t*, u32);        /* 上传（拖出占位用） */
+    void (*heat_add)(const uint8_t*, u32);                                /* 热力计数上报 */
+    u32 (*heat_get)(const uint8_t*, u32);                                 /* 热力读取 */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */

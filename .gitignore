@@ -63,3 +63,4 @@ raylib*.zip
 .agent/t*.c
 .agent/t*_O0.s
 .agent/t*_O2.s
+db.bin

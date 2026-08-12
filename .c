@@ -446,7 +446,7 @@ static void update_edit(BlockAPI *B) {
     edit_v = cur_v;
     int i = hit_item(B, cur_v, mouse_world);
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
-    if (i >= 0 && (name_is(&ts[i],"read")||name_is(&ts[i],"set")||name_is(&ts[i],"cond")||name_is(&ts[i],"handrun")||name_is(&ts[i],"condrerun"))) {
+    if (i >= 0 && (name_is(&ts[i],"read")||name_is(&ts[i],"set")||name_is(&ts[i],"cond")||name_is(&ts[i],"handrun")||name_is(&ts[i],"condrerun")||name_is(&ts[i],"push_int"))) {
         if (edit_i != i) { edit_i = i; edit_len = 0; edit_buf[0] = 0; }
     } else edit_i = -1;
     free_fetched(&f);
@@ -661,9 +661,29 @@ __declspec(dllexport) void run(void) {
         memcpy(views[0].key, ck ? ck : (const uint8_t*)"", kl); views[0].klen = kl;
     }
 
-    /* 输入收集 */
+    /* 输入收集：edit 模式（悬浮编辑 payload）分流，否则进 input_str */
     int ch = GetCharPressed();
-    while (ch > 0) { if (input_len < 250) { input_str[input_len++] = (char)ch; input_str[input_len] = 0; } ch = GetCharPressed(); }
+    while (ch > 0) {
+        if (edit_i >= 0 && edit_v >= 0 && edit_i < 1000) {
+            if (edit_len < 100) { edit_buf[edit_len++] = (char)ch; edit_buf[edit_len] = 0; }
+            size_t n2; Toks f2; Tok *ts2 = view_toks(B, edit_v, &n2, &f2);
+            if (edit_i < (int)n2) {
+                Tok *nt2 = dup_toks(ts2, n2);
+                Tok *e = &nt2[edit_i];
+                if (name_is(e, "handrun")) {
+                    uint8_t id[8]; memcpy(id, e->payload, e->plen > 8 ? 8 : e->plen);
+                    free(e->payload); e->payload = (uint8_t*)malloc(8 + edit_len); memcpy(e->payload, id, 8); memcpy(e->payload + 8, edit_buf, edit_len); e->plen = 8 + edit_len;
+                } else {
+                    free(e->payload); e->payload = (uint8_t*)malloc(edit_len ? edit_len : 1); memcpy(e->payload, edit_buf, edit_len); e->plen = edit_len;
+                }
+                commit_toks(B, &views[edit_v], nt2, n2);
+            }
+            free_fetched(&f2);
+        } else if (input_len < 250) {
+            input_str[input_len++] = (char)ch; input_str[input_len] = 0;
+        }
+        ch = GetCharPressed();
+    }
     if (IsKeyPressed(KEY_BACKSPACE) && input_len > 0) input_str[--input_len] = 0;
     update_completion(B);
 
@@ -717,7 +737,7 @@ __declspec(dllexport) void run(void) {
         if (input_len > 0) {
             if (ch == 0) idle_frames++;
             else idle_frames = 0;
-            if (idle_frames > 30) { space_insert(B); idle_frames = 0; }
+            if (idle_frames > 120) { space_insert(B); idle_frames = 0; }
         } else idle_frames = 0;
     }
     /* 回车补全确认（inp 替换为匹配） */
@@ -729,21 +749,6 @@ __declspec(dllexport) void run(void) {
     /* ESC 关窗 */
     if (IsKeyPressed(KEY_ESCAPE)) exit(0);
 
-    /* 悬浮编辑 payload：read/set/cond/condrerun/handrun 目标 */
-    if (edit_i >= 0 && ch > 0) {
-        size_t n; Toks f; Tok *ts = view_toks(B, edit_v, &n, &f);
-        if (edit_len < 100) { edit_buf[edit_len++] = (char)ch; edit_buf[edit_len] = 0; }
-        Tok *nt = dup_toks(ts, n);
-        Tok *e = &nt[edit_i];
-        if (name_is(e, "handrun")) {
-            uint8_t id[8]; memcpy(id, e->payload, e->plen > 8 ? 8 : e->plen);
-            free(e->payload); e->payload = (uint8_t*)malloc(8 + edit_len); memcpy(e->payload, id, 8); memcpy(e->payload + 8, edit_buf, edit_len); e->plen = 8 + edit_len;
-        } else {
-            free(e->payload); e->payload = (uint8_t*)malloc(edit_len ? edit_len : 1); memcpy(e->payload, edit_buf, edit_len); e->plen = edit_len;
-        }
-        commit_toks(B, &views[edit_v], nt, n);
-        free_fetched(&f);
-    }
     if (edit_i >= 0 && IsKeyPressed(KEY_ENTER)) edit_i = -1;
 
     /* 鼠标进窗口自动获取键盘焦点（对齐 Python on_mouse_motion） */

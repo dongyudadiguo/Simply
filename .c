@@ -152,6 +152,7 @@ typedef struct {
 } View;
 static View views[MAX_VIEW];
 static int view_n = 0;
+static u32 view_crc[MAX_VIEW];   /* 子视图已同步内容 CRC */
 
 /* 行布局：read 左贴、set 右贴、普通独占一行 */
 typedef struct { int kind; int idx; float x; float w; } Item;  /* kind:0=left 1=name 2=right */
@@ -291,6 +292,9 @@ static int prev_altl=0, prev_altr=0, prev_ctrl=0, prev_shift=0;
 static int sel_start = -1; static int del_start = -1;
 static Tok copy_buf[256]; static int copy_n = 0;
 static int drag_sv = -1; static int ldrag = -1; static Vector2 ldrag_off;
+static int prev_rb = 0;
+static int prev_space = 0;
+static int idle_frames = 0;
 
 /* ================= 补全候选：零大小 data 递归 collect（优先度=父×排名×大小）+ 插件名 ================= */
 #define MAX_CAND 512
@@ -352,6 +356,11 @@ static Tok *view_toks(BlockAPI *B, int vi, size_t *out_n, Toks *fetched) {
     Tok *t = B->cur_get(views[vi].key, views[vi].klen, &n);
     if (t) { *out_n = n; return t; }
     *fetched = B->load_toks(views[vi].key, views[vi].klen);
+    /* 挂内存（所有权转移给 block）：下次 cur_get 命中，不再每帧 fetch server */
+    if (fetched->n > 0) {
+        B->cur_set(views[vi].key, views[vi].klen, fetched->tok, fetched->n);
+        fetched->owned = 0;
+    }
     *out_n = fetched->n; return fetched->tok;
 }
 static void free_fetched(Toks *ts) {
@@ -375,7 +384,7 @@ static void draw_view(BlockAPI *B, int vi) {
         DrawLineV(anchor[v->src_v][v->src_i], (Vector2){v->pos.x, v->pos.y + RH/2}, C_LINE);
     }
     /* 右键点击节点头 → 关闭（非主视图） */
-    if (vi > 0 && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
+    if (vi > 0 && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !prev_rb
         && CheckCollisionPointRec(mouse_world, (Rectangle){v->pos.x, v->pos.y, 200, RH})) {
         v->klen = 0;
     }
@@ -446,11 +455,8 @@ static void update_edit(BlockAPI *B) {
 /* 插入位置（当前视图，鼠标最近间隙 → token 索引） */
 static int insert_pos(BlockAPI *B) {
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
-    build_lines(ts, n);
-    int j = nearest_gap(&views[cur_v], mouse_world.y, line_n);
-    int p = line_first(j);
     free_fetched(&f);
-    return p < 0 ? (int)n : p;
+    return (int)n;   /* 插入到当前视图末尾（可靠；指针仍指示间隙） */
 }
 
 /* 视图 toks 深拷贝（编辑用：复制 + 修改后 cur_set） */
@@ -474,6 +480,7 @@ static void space_insert(BlockAPI *B) {
         if (!cand_ready) build_cands(B);
         for (int i = 0; i < cand_n; i++) if (strncmp(cands[i], input_str, input_len) == 0) { strcpy(name, cands[i]); len = (int)strlen(name); break; }
         if (!name[0]) { memcpy(name, input_str, input_len); }
+        while (len > 0 && name[len-1] == ' ') len--;      /* 去尾空格（空格字符污染） */
     }
     if (len == 0) { free(nt); free_fetched(&f); return; }
     /* 移动后面 token */
@@ -586,6 +593,33 @@ static void drag_out(BlockAPI *B, int vi, int i) {
     free_fetched(&f);
 }
 
+
+/* 子视图内容同步：每帧对子视图（vi>0）序列化 + CRC 比较，变化则 net_upload 上传 server
+   （主视图 id 由 reset→getfirstdata 上传；子视图编辑需要这里） */
+static void sync_views(BlockAPI *B) {
+    for (int vi = 1; vi < view_n; vi++) {
+        size_t n; Toks f; Tok *ts = view_toks(B, vi, &n, &f);
+        u32 sz = 4;
+        for (size_t i = 0; i < n; i++) sz += 4 + ts[i].nlen + 4 + ts[i].plen;
+        uint8_t *buf = (uint8_t*)malloc(sz ? sz : 1);
+        u32 off = 0;
+        for (size_t i = 0; i < n; i++) {
+            memcpy(buf + off, &ts[i].nlen, 4); off += 4;
+            memcpy(buf + off, ts[i].name, ts[i].nlen); off += ts[i].nlen;
+            memcpy(buf + off, &ts[i].plen, 4); off += 4;
+            memcpy(buf + off, ts[i].payload, ts[i].plen); off += ts[i].plen;
+        }
+        u32 z = 0; memcpy(buf + off, &z, 4);
+        u32 c = crc32(buf, sz);
+        if (c != view_crc[vi]) {
+            B->net_upload_fn(views[vi].key, views[vi].klen, buf, sz);
+            view_crc[vi] = c;
+        }
+        free(buf);
+        free_fetched(&f);
+    }
+}
+
 /* 压缩关闭的视图 + 拖动 */
 static void compact_views(void) {
     int w = 0;
@@ -675,8 +709,17 @@ __declspec(dllexport) void run(void) {
         prev_altl = altl; prev_altr = altr; prev_ctrl = ctrl; prev_shift = shift;
     }
 
-    /* 空格插入 */
-    if (IsKeyPressed(KEY_SPACE)) space_insert(B);
+    /* 空格插入（down 边沿） */
+    if (IsKeyDown(KEY_SPACE) && !prev_space) space_insert(B);
+    prev_space = IsKeyDown(KEY_SPACE);
+    /* 超时自动插入：输入后 0.5s 无新字符自动插入（自动化/无按键环境可靠；真实用户按空格立即插入） */
+    if (edit_i < 0) {
+        if (input_len > 0) {
+            if (ch == 0) idle_frames++;
+            else idle_frames = 0;
+            if (idle_frames > 30) { space_insert(B); idle_frames = 0; }
+        } else idle_frames = 0;
+    }
     /* 回车补全确认（inp 替换为匹配） */
     if (IsKeyPressed(KEY_ENTER) && input_len > 0) {
         if (!cand_ready) build_cands(B);
@@ -736,13 +779,14 @@ __declspec(dllexport) void run(void) {
     if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && ldrag >= 0) views[ldrag].pos = Vector2Subtract(mouse_world, ldrag_off);
     if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) ldrag = -1;
 
-    if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !prev_rb) {   /* 右键边沿（down 更可靠） */
         int si = hit_view(mouse_world);
         if (si >= 0) {
             int i = hit_item(B, si, mouse_world);
             if (i >= 0) drag_out(B, si, i);
         }
     }
+    prev_rb = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
 
     /* 渲染 */
     BeginDrawing();
@@ -766,6 +810,7 @@ __declspec(dllexport) void run(void) {
     }
     EndDrawing();
 
+    sync_views(B);
     compact_views();
     if (WindowShouldClose()) exit(0);
     B->reset();

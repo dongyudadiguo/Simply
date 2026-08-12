@@ -221,11 +221,35 @@ void reset(void) {
     drill((data){*(u32*)ptr, ptr + 4});
 }
 
+
+/* 取块全部 token 名（补全用）：不解析 payload，只收集名字 */
+void load_names(const uint8_t *key, u32 klen, uint8_t (*names)[64], u32 *out_n, u32 maxn) {
+    u32 blen = 0;
+    uint8_t *blk = net_fetch(key, klen, &blen);
+    if (!blk) { *out_n = 0; return; }
+    u32 i = 0, n = 0;
+    while (i + 4 <= blen && n < maxn) {
+        u32 nl; memcpy(&nl, blk + i, 4); i += 4;
+        if (!nl) break;                          /* 零长名 = 结束 */
+        u32 c = nl < 64 ? nl : 64;
+        memcpy(names[n], blk + i, c); names[n][c] = 0; n++;
+        i += nl;
+        if (i + 4 > blen) break;
+        u32 dl; memcpy(&dl, blk + i, 4); i += 4 + dl;
+    }
+    free(blk);
+    *out_n = n;
+}
+static int net_upload_fn(const uint8_t *key, u32 klen, const uint8_t *data, u32 dlen) {
+    return net_upload(key, klen, data, dlen);
+}
+
 /* ================= 显式动态链接接口 ================= */
 /* 插件 DLL 运行时 GetProcAddress("block_api") 取函数/全局表（不再 -lblock 隐式链接） */
 BlockAPI block_api_st = {
     stk, &stk_off, num, &num_off, var, &var_off,
     push, write_num, cur_set, cur_get, hand_set, hand_get,
-    run_next, reset, drill, cur_payload, cur_key_of, load_toks
+    run_next, reset, drill, cur_payload, cur_key_of, load_toks,
+    load_names, net_upload_fn
 };
 BlockAPI *block_api(void) { return &block_api_st; }

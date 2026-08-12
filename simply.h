@@ -62,6 +62,8 @@ typedef struct {
     void (*cur_payload)(const uint8_t**, u32*);
     void (*cur_key_of)(const uint8_t**, u32*);
     Toks (*load_toks)(const uint8_t*, u32);
+    void (*load_names)(const uint8_t*, u32, uint8_t (*)[64], u32*, u32);   /* 取块全部 token 名（补全用） */
+    int (*net_upload_fn)(const uint8_t*, u32, const uint8_t*, u32);        /* 上传（拖出占位用） */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */

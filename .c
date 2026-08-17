@@ -1,5 +1,5 @@
 // .c —— 图形编辑器插件（raylib，transition/Python-editor 风格）
-// 布局：read 左贴、set 右贴、普通 token 独占一行；payload 显示；颜色区分；指针吸附行间隙
+// 布局：read 左贴、set 右贴、普通 token 独占一行；payload 显示；颜色区分；指针行内逐 token、行间隙吸附
 // 交互：中键平移+滚轮缩放(鼠标锚点)、空格插入、Alt/Ctrl 组合插入(松开判定)、SHIFT划选/INSERT粘贴/DELETE划删
 //      右键拖出块引用子视图、左键拖动、右键点节点头关闭、handrun 双按钮、补全跟随鼠标
 #include <stdint.h>
@@ -287,7 +287,7 @@ static char completion[128];
 static Camera2D camera;
 static int first = 1;
 static Vector2 mouse_world;
-static Vector2 ptr_pos; static int has_ptr = 0;   /* 指针（最近间隙） */
+static Vector2 ptr_pos; static int has_ptr = 0;   /* 指针（行内逐 token / 行间隙） */
 static int edit_v = 0; static int edit_i = -1;    /* 悬浮编辑目标 */
 static char edit_buf[256]; static int edit_len = 0;
 static int pressed_combo = 0;                     /* 本次组合位：1=altl 2=altr 4=ctrl 8=shift */
@@ -471,15 +471,44 @@ static int insert_pos(BlockAPI *B) {
     return (int)n;   /* 插入到当前视图末尾（可靠；指针仍指示间隙） */
 }
 
-/* 选择位置（当前视图，鼠标最近间隙 → token 索引；选择/划删用，可跨指针选区） */
-static int pointer_pos(BlockAPI *B) {
+/* 指针定位（对齐 transition：行内按 token.x 吸附，行间隙仍整行）。
+   行内：鼠标 x 落在 item 左半 → 该 token 前；右半 → 该 token 后。
+   行间隙：最近间隙 → 行首。ox/oy = 绿线起点（行内=该边界，行间隙=视图左缘）。 */
+static int pointer_locate(BlockAPI *B, float *ox, float *oy) {
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
     build_lines(ts, n);
-    int j = nearest_gap(&views[cur_v], mouse_world.y, line_n);
-    int pos = line_first(j);
+    View *v = &views[cur_v];
+    int pos = (int)n;
+    int inrow = 0;
+    for (int r = 0; r < line_n; r++) {
+        float y = row_y(v, r);
+        if (mouse_world.y < y + TOFF - RH/2 || mouse_world.y > y + TOFF + RH/2) continue;
+        inrow = 1;
+        *oy = y;                                          /* 与 DrawText / transition last_point_pos.y 对齐 */
+        *ox = v->pos.x;
+        pos = (int)n;
+        for (int k = 0; k < lines[r].n; k++) {
+            Item *it = &lines[r].items[k];
+            float x0 = v->pos.x + it->x;
+            if (mouse_world.x < x0 + it->w / 2) { pos = it->idx; *ox = x0; break; }
+            pos = it->idx + 1;
+            *ox = x0 + it->w;
+        }
+        break;
+    }
+    if (!inrow) {                                         /* 行间隙：整行，从视图左缘 */
+        int j = nearest_gap(v, mouse_world.y, line_n);
+        pos = line_first(j);
+        if (pos < 0) pos = (int)n;
+        *ox = v->pos.x;
+        *oy = gap_y(v, j);
+    }
     free_fetched(&f);
-    if (pos < 0) pos = (int)n;
     return pos;
+}
+static int pointer_pos(BlockAPI *B) {
+    float x, y;
+    return pointer_locate(B, &x, &y);
 }
 
 /* 视图 toks 深拷贝（编辑用：复制 + 修改后 cur_set） */
@@ -836,15 +865,13 @@ __declspec(dllexport) void run(void) {
     ClearBackground(C_BG);
     BeginMode2D(camera);
     for (int i = 0; i < view_n; i++) draw_view(B, i);
-    /* 指针：鼠标所在视图最近间隙横线（对齐 transition 横向指针：绿色，延伸到窗口右缘） */
+    /* 指针：行内从 token 边界拉到窗口右缘；行间隙仍整行（对齐 transition：绿线起于当前 token.x） */
     {
-        size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
-        build_lines(ts, n);
-        int j = nearest_gap(&views[cur_v], mouse_world.y, line_n);
-        float gy = gap_y(&views[cur_v], j);
+        float px, py;
+        pointer_locate(B, &px, &py);
+        ptr_pos = (Vector2){px, py}; has_ptr = 1;
         float rx = camera.target.x + (GetScreenWidth() / 2.0f) / camera.zoom;   /* 窗口右缘世界 x */
-        DrawLine(views[cur_v].pos.x, gy, rx, gy, C_PTR);
-        free_fetched(&f);
+        DrawLine(px, py, rx, py, C_PTR);
     }
     EndMode2D();
     if (input_len > 0) {

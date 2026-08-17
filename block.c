@@ -12,7 +12,7 @@
 //   - 命中后：imp 写入 vm.exe 导出的变量；插件 payload 从 ptr 推出
 //   - 块数据按需取（内存 cur 优先 / server），缓冲不释放
 //   - 当前块 key 写进返回栈（每个下钻压 [父块位置, key合成token]），栈顶 = 当前块 key
-//   - 块走完弹回稍后处理
+//   - 块走完弹回 / server 无 key 补空块：均为非标准/未定义行为（见下方标注）
 // 零错误处理：不检查任何返回值、不防御非预期
 #include <windows.h>
 #include "simply.h"
@@ -23,7 +23,8 @@
 typedef uint32_t u32;
 
 /* hit(token)：token → sha256 → <sha256>.dll 文件名 → LoadLibrary → GetProcAddress("run")
-   零大小 data → sha256("") = e3b0c442….dll（editor 编译成该名）；加载失败 → NULL（= 块引用，下钻） */
+   加载失败 → NULL（= 块引用，下钻）——标准接棒
+   非标准/未定义行为：零大小 data（nlen=0 / 结尾标记）→ sha256("") = e3b0c442….dll（editor） */
 static void (*hit(data k))(void) {
     uint8_t h[32];
     sha256(k.d, k.n, h);
@@ -44,13 +45,14 @@ static void *retpoint = NULL; static void *retbase = NULL;
 static int booted = 0;                 /* 入口是否已初始化 */
 
 /* ================= 块 token 流（内存 cur 优先 / server 兜底） ================= */
-/* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内）；0 长 name = 块结束 */
+/* 解析 server 原始字节 → tok 数组（name/payload 指向 blk 内）
+   非标准/未定义行为：0 长 name / 名字后无 plen = 结尾标记（不计入 token） */
 static size_t iter_tokens(const uint8_t *blk, u32 blen, Tok *out, size_t cap) {
     u32 i = 0; size_t n = 0;
     while (i + 4 <= blen) {
         u32 nl; memcpy(&nl, blk + i, 4); i += 4;
         out[n].name = (uint8_t*)blk + i; out[n].nlen = nl; i += nl;
-        if (i + 4 > blen) break;                           /* 名字后无 plen 字段 = 尾标记 */
+        if (i + 4 > blen) break;                           /* 非标准/未定义：名字后无 plen = 结尾标记 */
         u32 dl; memcpy(&dl, blk + i, 4); i += 4;
         out[n].payload = (uint8_t*)blk + i; out[n].plen = dl; i += dl;
         n++;
@@ -69,16 +71,25 @@ Toks load_toks(const uint8_t *key, u32 klen) {
 
     u32 blen = 0;
     uint8_t *blk = net_fetch(key, klen, &blen);
+    /* 非标准/未定义行为：server 无此 key → 自动上传 4 字节全零（结尾标记=空块），再按空块继续 */
+    if (!blk) {
+        static const uint8_t endmk[4] = {0, 0, 0, 0};
+        net_upload(key, klen, endmk, 4);
+        blk = (uint8_t*)malloc(4);
+        memcpy(blk, endmk, 4);
+        blen = 4;
+    }
 
     if (klen == 0) {                                         /* 引导：空 key 只取第一条 name */
-        Tok tmp[1];
-        if (!blk) { ts.tok = (Tok*)calloc(1, sizeof(Tok)); ts.tok[0].name = NULL; ts.tok[0].nlen = 0; ts.n = ts.cap = 1; ts.owned = 1; return ts; }
-        iter_tokens(blk, blen, tmp, 1);
+        Tok tmp[1] = {0};
+        size_t cnt = iter_tokens(blk, blen, tmp, 1);
         ts.tok = (Tok*)calloc(1, sizeof(Tok));
         ts.n = ts.cap = 1; ts.owned = 1;
-        ts.tok[0].name = (uint8_t*)malloc(tmp[0].nlen);
-        memcpy(ts.tok[0].name, tmp[0].name, tmp[0].nlen);
-        ts.tok[0].nlen = tmp[0].nlen;
+        /* 非标准/未定义：空块（仅结尾标记）→ 零长名 = editor */
+        u32 nl = cnt ? tmp[0].nlen : 0;
+        ts.tok[0].name = (uint8_t*)malloc(nl ? nl : 1);
+        if (nl) memcpy(ts.tok[0].name, tmp[0].name, nl);
+        ts.tok[0].nlen = nl;
         ts.tok[0].payload = NULL; ts.tok[0].plen = 0;
         free(blk);
         return ts;
@@ -184,7 +195,7 @@ void drill(data k) {
         booted = 1;
         retbase = malloc(256 * sizeof(void*));
         retpoint = retbase;
-        /* 有 id 运行 id；没有新建随机 id 并上传零 data + 尾标记（4+4+4=12B）到 id */
+        /* 非标准/未定义：无 id / server 无该 id → 新建随机 id，上传零 data + 结尾标记（12B） */
         uint8_t id[32];
         FILE *f = fopen("id.bin", "rb");
         int fresh = 1;
@@ -199,7 +210,7 @@ void drill(data k) {
         if (fresh) {
             for (int i = 0; i < 32; i++) id[i] = (uint8_t)(rand() & 0xff);   /* 新 id */
             f = fopen("id.bin", "wb"); fwrite(id, 1, 32, f); fclose(f);
-            uint8_t block[12] = {0,0,0,0, 0,0,0,0, 0,0,0,0};   /* 零 data + 尾标记 */
+            uint8_t block[12] = {0,0,0,0, 0,0,0,0, 0,0,0,0};   /* 非标准/未定义：零 data（editor）+ 结尾标记 */
             net_upload(id, 32, block, 12);
         }
         data idd = {32, id};
@@ -218,16 +229,17 @@ void drill(data k) {
 void run_next(void) {
     ptr += 4 + *(u32*)ptr;
     ptr += 4 + *(u32*)ptr;
-    while (*(u32*)ptr == 0) {                              /* 块结束（零长名尾标记）→ 弹回父块 */
-        if (retpoint == retbase) {                          /* 根块结束 → editor（原行为） */
+    /* 非标准/未定义行为：下一条为结尾标记（零长名）→ 块返回（弹父块继续下一条）；根块则 drill 该零长名 → editor */
+    while (*(u32*)ptr == 0) {
+        if (retpoint == retbase) {                          /* 非标准/未定义：根块结束 → editor */
             drill((data){*(u32*)ptr, ptr + 4});
             return;
         }
-        pop_ret();                                         /* 恢复父块 ptr（块引用 token 位置） */
+        pop_ret();                                         /* 非标准/未定义：恢复父块 ptr（块引用 token 位置） */
         ptr += 4 + *(u32*)ptr;                             /* 跳过父块的块引用 token */
         ptr += 4 + *(u32*)ptr;
     }
-    drill((data){*(u32*)ptr, ptr + 4});                    /* 下一条 token */
+    drill((data){*(u32*)ptr, ptr + 4});                    /* 下一条 token（标准接棒） */
 }
 
 /* 重跑当前块：从返回栈顶读当前块 key，重新取数据（内存 cur 优先 → 编辑立即响应），进 drill */
@@ -248,7 +260,7 @@ void load_names(const uint8_t *key, u32 klen, uint8_t (*names)[64], u32 *out_n, 
     u32 i = 0, n = 0;
     while (i + 4 <= blen && n < maxn) {
         u32 nl; memcpy(&nl, blk + i, 4); i += 4;
-        if (!nl) break;                          /* 零长名 = 结束 */
+        if (!nl) break;                          /* 非标准/未定义：零长名 = 结尾标记 */
         u32 c = nl < 64 ? nl : 64;
         memcpy(names[n], blk + i, c); names[n][c] = 0; n++;
         i += nl;

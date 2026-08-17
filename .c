@@ -177,7 +177,7 @@ static int name_is(const Tok *t, const char *s) {
     return t->nlen == n && memcmp(t->name, s, n) == 0;
 }
 static int has_plugin(const uint8_t *name, u32 n) {
-    if (n == 0) return 1;                       /* 零 data = editor 自身（dll 存在） */
+    if (n == 0) return 1;                       /* 非标准/未定义：零 data = editor 自身（dll 存在） */
     uint8_t h[32]; sha256(name, n, h);
     char fn[70];
     for (int i = 0; i < 32; i++) sprintf(fn + 2*i, "%02x", h[i]);
@@ -187,9 +187,10 @@ static int has_plugin(const uint8_t *name, u32 n) {
 
 /* 显示文本：read/set/cond/condrerun 有 payload 只显 payload；handrun 显目标；否则名字 */
 static void item_label(const Tok *t, char *out) {
-    if (t->nlen == 0) { strcpy(out, "(editor)"); return; }
+    if (t->nlen == 0) { strcpy(out, "(editor)"); return; }  /* 非标准/未定义：零长名显示为 editor */
     if (name_is(t, "handrun")) {
         u32 pl = t->plen > 8 ? t->plen - 8 : 0;
+        if (pl == 0) { strcpy(out, "handrun"); return; }   /* 没目标 → 退回显示 handrun */
         u32 c = pl < 100 ? pl : 100;
         memcpy(out, t->payload + 8, c); out[c] = 0;
         return;
@@ -297,7 +298,6 @@ static Tok copy_buf[256]; static int copy_n = 0;
 static int drag_sv = -1; static int ldrag = -1; static Vector2 ldrag_off;
 static int prev_rb = 0;
 static int prev_space = 0;
-static int idle_frames = 0;
 
 /* ================= 补全候选：零大小 data 递归 collect（优先度=父×排名×大小）+ 插件名 ================= */
 #define MAX_CAND 512
@@ -464,13 +464,6 @@ static void update_edit(BlockAPI *B) {
     free_fetched(&f);
 }
 
-/* 插入位置（当前视图，鼠标最近间隙 → token 索引） */
-static int insert_pos(BlockAPI *B) {
-    size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
-    free_fetched(&f);
-    return (int)n;   /* 插入到当前视图末尾（可靠；指针仍指示间隙） */
-}
-
 /* 指针定位（对齐 transition：行内按 token.x 吸附，行间隙仍整行）。
    行内：鼠标 x 落在 item 左半 → 该 token 前；右半 → 该 token 后。
    行间隙：最近间隙 → 行首。ox/oy = 绿线起点（行内=该边界，行间隙=视图左缘）。 */
@@ -525,7 +518,7 @@ static Tok *dup_toks(Tok *src, size_t n) {
 static void space_insert(BlockAPI *B) {
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
     Tok *nt = dup_toks(ts, n);
-    int pos = insert_pos(B);
+    int pos = pointer_pos(B);
     char name[128] = "";
     int len = input_len;
     if (input_len > 0) {
@@ -548,16 +541,17 @@ static void space_insert(BlockAPI *B) {
 static void combo_insert(BlockAPI *B, int combo) {
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
     Tok *nt = dup_toks(ts, n);
-    int pos = insert_pos(B);
+    int pos = pointer_pos(B);
     char name[16] = ""; uint8_t *payload = NULL; u32 plen = 0;
-    if (combo & 1) strcpy(name, "read");
+    /* 先判组合：Ctrl+Alt=handrun，Ctrl+Shift=condrerun，Ctrl=cond；再单键 Alt */
+    if ((combo & 4) && (combo & 3)) {                    /* Ctrl + 左/右 Alt */
+        strcpy(name, "handrun");
+        uint8_t id[8]; for (int i=0;i<8;i++) id[i]=(uint8_t)(rand()&0xff);
+        payload=(uint8_t*)malloc(8); memcpy(payload,id,8); plen=8; B->hand_set(id,0,0);
+    } else if ((combo & 4) && (combo & 8)) strcpy(name, "condrerun");
+    else if (combo & 4) strcpy(name, "cond");
+    else if (combo & 1) strcpy(name, "read");
     else if (combo & 2) strcpy(name, "set");
-    else if (combo & 4) {
-        if (combo & 8) strcpy(name, "condrerun");
-        else if (combo & 1) { strcpy(name, "handrun"); uint8_t id[8]; for (int i=0;i<8;i++) id[i]=(uint8_t)(rand()&0xff); payload=(uint8_t*)malloc(8); memcpy(payload,id,8); plen=8; B->hand_set(id,0,0); }
-        else if (combo & 2) { strcpy(name, "handrun"); uint8_t id[8]; for (int i=0;i<8;i++) id[i]=(uint8_t)(rand()&0xff); payload=(uint8_t*)malloc(8); memcpy(payload,id,8); plen=8; B->hand_set(id,0,0); }
-        else strcpy(name, "cond");
-    }
     if (!name[0]) { free(nt); free_fetched(&f); return; }
     for (int i = n; i > pos; i--) nt[i] = nt[i-1];
     nt[pos].name = (uint8_t*)malloc(strlen(name)); memcpy(nt[pos].name, name, strlen(name)); nt[pos].nlen = (u32)strlen(name);
@@ -593,7 +587,7 @@ static void sel_del(BlockAPI *B) {
 static void paste(BlockAPI *B) {
     if (copy_n == 0) return;
     size_t n; Toks f; Tok *ts = view_toks(B, cur_v, &n, &f);
-    int pos = insert_pos(B);
+    int pos = pointer_pos(B);
     Tok *nt = dup_toks(ts, n);
     /* 后面后移 */
     for (int i = n + copy_n - 1; i >= pos + copy_n; i--) nt[i] = nt[i - copy_n];
@@ -622,15 +616,23 @@ static int find_item_rect(BlockAPI *B, int vi, int idx, float *ox, float *oy, fl
     return found;
 }
 
-/* 右键拖出：块引用 token → 新子视图（目标不存在上传 4B 零占位，待 block_api 扩展后启用上传） */
+/* 右键拖出：块引用 / handrun 目标 → 新子视图
+   非标准/未定义行为：目标不存在 → 上传 4B 结尾标记（空块占位，与 load_toks 缺 key 兼容一致） */
 static void drag_out(BlockAPI *B, int vi, int i) {
     size_t n; Toks f; Tok *ts = view_toks(B, vi, &n, &f);
-    if (i < 0 || i >= (int)n || has_plugin(ts[i].name, ts[i].nlen)) { free_fetched(&f); return; }
+    if (i < 0 || i >= (int)n) { free_fetched(&f); return; }
+    const uint8_t *key; u32 klen;
+    if (name_is(&ts[i], "handrun")) {                     /* 拖 handrun 的目标，不是 "handrun" 本身 */
+        if (ts[i].plen <= 8) { free_fetched(&f); return; }
+        key = ts[i].payload + 8; klen = ts[i].plen - 8;
+        if (klen == 0) { free_fetched(&f); return; }
+    } else if (has_plugin(ts[i].name, ts[i].nlen)) { free_fetched(&f); return; }
+    else { key = ts[i].name; klen = ts[i].nlen; }
     if (view_n >= MAX_VIEW) { free_fetched(&f); return; }
     View *nv = &views[view_n];
-    u32 kl = ts[i].nlen < 256 ? ts[i].nlen : 256;
-    memcpy(nv->key, ts[i].name, kl); nv->klen = kl;
-    /* 目标不存在 → 上传 4 字节全零占位 */
+    u32 kl = klen < 256 ? klen : 256;
+    memcpy(nv->key, key, kl); nv->klen = kl;
+    /* 非标准/未定义：目标不存在 → 上传 4 字节全零（结尾标记）占位 */
     {
         Toks ef = B->load_toks(nv->key, nv->klen);
         if (ef.n == 0) {
@@ -708,10 +710,8 @@ __declspec(dllexport) void run(void) {
             Toks ts = B->load_toks(v->key, v->klen);
             B->cur_set(v->key, v->klen, ts.tok, ts.n);
         }
-    } else {
-        u32 kl = ckl < 256 ? ckl : 256;
-        memcpy(views[0].key, ck ? ck : (const uint8_t*)"", kl); views[0].klen = kl;
     }
+    /* 根节点 key 首帧绑定（(editor) 所在块），之后不随 cur_key_of / 执行焦点改写 */
 
     /* 输入收集：edit 模式（悬浮编辑 payload）分流，否则进 input_str */
     int ch = GetCharPressed();
@@ -787,14 +787,6 @@ __declspec(dllexport) void run(void) {
     /* 空格插入（down 边沿） */
     if (IsKeyDown(KEY_SPACE) && !prev_space) space_insert(B);
     prev_space = IsKeyDown(KEY_SPACE);
-    /* 超时自动插入：输入后 0.5s 无新字符自动插入（自动化/无按键环境可靠；真实用户按空格立即插入） */
-    if (edit_i < 0) {
-        if (input_len > 0) {
-            if (ch == 0) idle_frames++;
-            else idle_frames = 0;
-            if (idle_frames > 120) { space_insert(B); idle_frames = 0; }
-        } else idle_frames = 0;
-    }
     /* 回车补全确认（inp 替换为匹配） */
     if (IsKeyPressed(KEY_ENTER) && input_len > 0) {
         if (!cand_ready) build_cands(B);

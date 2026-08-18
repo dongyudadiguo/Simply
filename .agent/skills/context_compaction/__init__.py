@@ -1,1 +1,1 @@
-from .compact import compact_active_file, compact_active_file_keep_tools, compact_file
+from .compact import compact_and_stop, compact_file, resolve_input_path

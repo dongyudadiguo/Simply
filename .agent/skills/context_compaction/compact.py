@@ -1,387 +1,274 @@
+# compact.py — 备份对话，压成一条 user，然后立刻杀掉 ae.py
+"""把 json.input 整段换成一条 user 摘要，并终止对应的 ae.py。
+
+在工具里调用（会杀掉当前 runner，这一轮不会再写 function_call_output）：
+
+    from skills.context_compaction import compact_and_stop
+    compact_and_stop("摘要文本")
+
+指定文件：
+
+    compact_and_stop("摘要文本", r"C:\\...\\input_新对话.json")
+
+命令行：
+
+    python -m skills.context_compaction.compact --summary "摘要文本"
+    python -m skills.context_compaction.compact input_新对话.json --summary "摘要文本"
+"""
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
+# skills/context_compaction/compact.py → responses/
+ROOT = Path(__file__).resolve().parents[2]
 SUMMARY_PREFIX = "[Compacted context summary; archived messages were replaced locally]"
 
 
-def resolve_input_path(input_path=None):
-    """Resolve the conversation transcript path.
-
-    Order:
-    1. explicit input_path argument
-    2. AE_INPUT_FILE (optional; multi-chat runners / future viewer)
-    3. conversations/<AE_CONVERSATION_ID>.json
-    4. ./input.json (current single-file viewer: ae.py argv[1] = input.json)
-    5. parent of skills package → input.json (tool child cwd may be agent/)
-    """
-    if input_path:
-        return str(Path(input_path).resolve())
-    env_path = (os.environ.get("AE_INPUT_FILE") or "").strip()
-    if env_path:
-        return str(Path(env_path).resolve())
-    cid = (os.environ.get("AE_CONVERSATION_ID") or "").strip()
-    if cid:
-        cand = Path("conversations") / f"{cid}.json"
-        if cand.is_file():
-            return str(cand.resolve())
-    # Current JUST agent layout: single root transcript
-    for cand in (Path("input.json"), Path(__file__).resolve().parents[2] / "input.json"):
-        if cand.is_file():
-            return str(cand.resolve())
-    raise FileNotFoundError(
-        "no transcript path: pass a file, set AE_INPUT_FILE / AE_CONVERSATION_ID, "
-        "or run from agent/ with input.json present"
-    )
-
-
-def _get_transcript(data):
-    """Return (container_dict, key, items_list) for either Responses or Chat formats.
-
-    Current ae.py / viewer use Responses API shape:
-      data["json"]["input"] = [items...]
-      data["json"]["instructions"] = system text (optional)
-
-    Legacy chat shape:
-      data["json"]["messages"] = [{role, content, ...}, ...]
-    """
-    body = data.get("json")
-    if not isinstance(body, dict):
-        raise ValueError("input JSON has no json object")
-
-    if isinstance(body.get("input"), list):
-        return body, "input", body["input"]
-    if isinstance(body.get("messages"), list):
-        return body, "messages", body["messages"]
-    raise ValueError("input JSON has neither json.input nor json.messages list")
-
-
-def _is_system_item(item, transcript_key):
-    if not isinstance(item, dict):
-        return False
-    if item.get("role") == "system":
-        return True
-    # Responses API sometimes uses type=message with role=system
-    if transcript_key == "input" and item.get("type") == "message" and item.get("role") == "system":
-        return True
-    return False
-
-
-def _leading_system_count(items, transcript_key):
-    count = 0
-    for item in items:
-        if not _is_system_item(item, transcript_key):
-            break
-        count += 1
-    return count
-
-
-def _is_user_item(item):
-    if not isinstance(item, dict):
-        return False
-    if item.get("role") == "user":
-        return True
-    return item.get("type") == "message" and item.get("role") == "user"
-
-
-def _boundary_from_user_turns(items, keep_user_turns):
-    if keep_user_turns < 0:
-        raise ValueError("keep_user_turns must be non-negative")
-    if keep_user_turns == 0:
-        return len(items)
-    users = [i for i, item in enumerate(items) if _is_user_item(item)]
-    if not users:
-        return len(items)
-    return users[max(0, len(users) - keep_user_turns)]
-
-
-def _call_id(item):
-    if not isinstance(item, dict):
-        return None
-    return item.get("call_id") or item.get("id")
-
-
-def _iter_tool_call_ids(item):
-    """Yield tool/function call ids declared by an assistant/function_call item."""
-    if not isinstance(item, dict):
-        return
-    # Responses API function_call item
-    if item.get("type") == "function_call":
-        cid = item.get("call_id") or item.get("id")
-        if cid:
-            yield cid
-        return
-    # Chat-completions style assistant.tool_calls
-    for call in item.get("tool_calls") or []:
-        cid = call.get("id") or call.get("call_id")
-        if cid:
-            yield cid
-
-
-def _is_tool_result(item):
-    if not isinstance(item, dict):
-        return False
-    if item.get("type") == "function_call_output":
-        return True
-    return item.get("role") == "tool"
-
-
-def _tool_result_call_id(item):
-    if not isinstance(item, dict):
-        return None
-    return item.get("call_id") or item.get("tool_call_id")
-
-
-def _validate_retained_tools(items):
-    calls = set()
-    for item in items:
-        for cid in _iter_tool_call_ids(item):
-            calls.add(cid)
-        if _is_tool_result(item):
-            cid = _tool_result_call_id(item)
-            if cid not in calls:
-                raise ValueError(
-                    f"retained tool result {cid!r} has no retained assistant/function call"
-                )
-
-
-def _active_tool_boundary(items):
-    """Return index of the active function_call / tool_calls group.
-
-    Compatible with:
-    - Responses API: function_call items (+ optional reasoning) followed only by
-      function_call_output items for those call_ids.
-    - Chat style: assistant message with tool_calls, followed only by tool results.
-    """
-    for index in range(len(items) - 1, -1, -1):
-        item = items[index]
-        call_ids = set(_iter_tool_call_ids(item))
-        if not call_ids:
-            continue
-
-        # Include immediately preceding Responses function_calls in the same group
-        # (parallel calls are separate items). Also allow reasoning between them.
-        start = index
-        while start > 0:
-            prev = items[start - 1]
-            prev_ids = set(_iter_tool_call_ids(prev))
-            if prev_ids:
-                call_ids |= prev_ids
-                start -= 1
-                continue
-            if prev.get("type") == "reasoning":
-                start -= 1
-                continue
-            break
-
-        trailing = items[index + 1 :]
-        if not trailing:
-            return start
-        if all(
-            _is_tool_result(x) and _tool_result_call_id(x) in call_ids
-            for x in trailing
-        ):
-            return start
-
-        # A later non-result message means this group is completed history.
-        break
-    raise ValueError("no active assistant tool-call group found")
-
-
-def _summary_item(summary, transcript_key, summary_role="user"):
-    text = SUMMARY_PREFIX + "\n\n" + summary.strip()
-    if transcript_key == "input":
-        # Prefer the same bare user shape ae.py / existing history already uses.
-        return {
-            "role": summary_role,
-            "content": [
-                {"type": "input_text" if summary_role == "user" else "output_text", "text": text}
-            ],
-        }
-    return {"role": summary_role, "content": text}
-
-
-def compact_file(
-    input_path,
-    summary,
-    keep_from_index=None,
-    keep_user_turns=0,
-    summary_role="user",
-):
-    path = Path(input_path).resolve()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    body, transcript_key, items = _get_transcript(data)
-    if not summary.strip():
-        raise ValueError("summary is empty")
-
-    system_count = _leading_system_count(items, transcript_key)
-    if keep_from_index is None:
-        boundary = _boundary_from_user_turns(items, keep_user_turns)
-    else:
-        boundary = keep_from_index
-    if boundary < system_count or boundary > len(items):
-        raise ValueError(
-            f"boundary {boundary} must be between {system_count} and {len(items)}"
-        )
-
-    retained = items[boundary:]
-    _validate_retained_tools(retained)
-    summary_message = _summary_item(summary, transcript_key, summary_role=summary_role)
-    compacted = items[:system_count] + [summary_message] + retained
-
-    before_messages = len(items)
-    before_bytes = path.stat().st_size
-    body[transcript_key] = compacted
-    # instructions (Responses system) already live outside input; leave untouched.
-    encoded = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(path.name + f".precompact-{stamp}.bak")
-    shutil.copy2(path, backup)
-    temp = path.with_name(path.name + ".compact.tmp")
+def _atomic_write(path: Path, data: dict) -> None:
+    temp = path.with_name(f"{path.name}.{os.getpid()}.compact.tmp")
     try:
-        with temp.open("wb") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, path)
     finally:
         if temp.exists():
             temp.unlink()
 
+
+def _is_system_item(item) -> bool:
+    return isinstance(item, dict) and item.get("role") == "system"
+
+
+def _leading_system_items(items):
+    kept = []
+    for item in items:
+        if not _is_system_item(item):
+            break
+        kept.append(item)
+    return kept
+
+
+def _summary_item(summary: str) -> dict:
+    text = SUMMARY_PREFIX + "\n\n" + summary.strip()
+    return {"role": "user", "content": [{"type": "input_text", "text": text}]}
+
+
+def _pid_file_for(input_path: Path) -> Path:
+    return input_path.parent / ".ae_runners" / f"{input_path.name}.pid"
+
+
+def _read_runner_pid(input_path: Path):
+    path = _pid_file_for(input_path)
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError:
+        info = None
+    if isinstance(info, dict):
+        try:
+            return int(info.get("pid"))
+        except (TypeError, ValueError):
+            return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _cmdline(pid: int):
+    try:
+        import psutil
+
+        return psutil.Process(pid).cmdline()
+    except Exception:
+        return []
+
+
+def _looks_like_ae(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    cmd = _cmdline(pid)
+    if cmd:
+        return any(Path(part).name.lower() == "ae.py" for part in cmd)
+    return os.environ.get("AE_RUNNER") == "1"
+
+
+def _collect_runner_pids(input_path: Path) -> list[int]:
+    pids = []
+    seen = set()
+
+    def add(pid):
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return
+        if pid <= 0 or pid == os.getpid() or pid in seen:
+            return
+        seen.add(pid)
+        pids.append(pid)
+
+    file_pid = _read_runner_pid(input_path)
+    if file_pid:
+        add(file_pid)
+
+    if os.environ.get("AE_RUNNER") == "1":
+        parent = os.getppid()
+        if _looks_like_ae(parent) or file_pid is None:
+            add(parent)
+
+    return pids
+
+
+def _kill_pid_tree(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+        return result.returncode == 0
+    try:
+        import psutil
+
+        parent = psutil.Process(pid)
+        kids = parent.children(recursive=True)
+        for child in kids:
+            try:
+                child.terminate()
+            except psutil.Error:
+                pass
+        try:
+            parent.terminate()
+        except psutil.Error:
+            pass
+        gone, alive = psutil.wait_procs(kids + [parent], timeout=1.5)
+        for leftover in alive:
+            try:
+                leftover.kill()
+            except psutil.Error:
+                pass
+        return True
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return True
+        except OSError:
+            return False
+
+
+def _stop_runner(input_path: Path) -> dict:
+    pids = _collect_runner_pids(input_path)
+    killed = []
+    for pid in pids:
+        if _kill_pid_tree(pid):
+            killed.append(pid)
+    pid_file = _pid_file_for(input_path)
+    try:
+        pid_file.unlink()
+    except OSError:
+        pass
+    return {"pids": pids, "killed": killed}
+
+
+def resolve_input_path(input_path=None) -> Path:
+    if input_path:
+        path = Path(input_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+    env_path = (os.environ.get("AE_INPUT_FILE") or "").strip()
+    if env_path:
+        path = Path(env_path).expanduser().resolve()
+        if path.is_file():
+            return path
+    for cand in (Path.cwd() / "input.json", ROOT / "input.json"):
+        if cand.is_file():
+            return cand.resolve()
+    raise FileNotFoundError("找不到 input.json：请传入路径或设置 AE_INPUT_FILE")
+
+
+def compact_file(input_path, summary: str) -> dict:
+    path = resolve_input_path(input_path)
+    text = summary.strip() if isinstance(summary, str) else ""
+    if not text:
+        raise ValueError("summary 为空")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    body = data.get("json")
+    if not isinstance(body, dict) or not isinstance(body.get("input"), list):
+        raise ValueError("不是 Responses 格式（缺少 json.input）")
+
+    items = body["input"]
+    kept_system = _leading_system_items(items)
+    compacted = kept_system + [_summary_item(text)]
+    before_messages = len(items)
+    before_bytes = path.stat().st_size
+    body["input"] = compacted
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.precompact-{stamp}.bak")
+    shutil.copy2(path, backup)
+    _atomic_write(path, data)
+    after_bytes = path.stat().st_size
+
     return {
+        "path": str(path),
         "backup": str(backup),
-        "format": transcript_key,
-        "boundary": boundary,
         "messages_before": before_messages,
         "messages_after": len(compacted),
         "bytes_before": before_bytes,
-        "bytes_after": len(encoded),
-        "instructions_preserved": bool(
-            isinstance(body.get("instructions"), str) and body.get("instructions")
-        ),
+        "bytes_after": after_bytes,
+        "kept_system": len(kept_system),
     }
 
 
-def _stop_runner():
-    """Stop the ae.py runner so it cannot start another API turn after compaction.
-
-    ae.py executes tool code in-process (``exec(code, _ns)``), so this function
-    runs *inside* the runner: ``os.getppid()`` would point at viewer.py, not at
-    ae.py. Killing that parent would take down the viewer while leaving ae.py
-    free to POST the freshly compacted transcript. Ending the current process is
-    therefore the correct way to honor "compact then stop" without editing ae.py.
-
-    Exiting here also means ae.py never appends a tool_result for this call,
-    which is what we want: the compacted transcript has no matching tool_use.
-    """
-    if os.environ.get("AE_RUNNER") != "1":
-        return {"attempted": False, "reason": "AE_RUNNER not set"}
-
-    pid = os.getpid()
+def compact_and_stop(summary: str, input_path=None) -> dict:
+    """备份、压成一条 user，然后杀掉 ae.py，避免它再追加 function_call_output。"""
+    path = resolve_input_path(input_path)
+    result = compact_file(path, summary)
+    result["stopped"] = _stop_runner(path)
     try:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         sys.stdout.flush()
         sys.stderr.flush()
     except (OSError, ValueError):
         pass
-    # os._exit skips atexit/buffer flushing on purpose: the transcript is already
-    # committed to disk and any further ae.py work would corrupt it.
+    # 工具跑在 driver 子进程里：只 exit 自己的话，ae.py 仍会读盘并写回 output。
+    # 上面已经 taskkill 了 ae.py 进程树；这里再兜底，防止杀进程失败时把结果返回给 ae.py。
     os._exit(0)
-    return {"attempted": True, "pid": pid, "ok": True}  # unreachable
-
-
-def compact_active_file(input_path=None, summary=""):
-    """Replace non-system history with summary and stop the active ae.py runner.
-
-    Retaining the in-flight tool group would leave the old runner free to make
-    another model call after this child exits. For compaction-as-stop we write a
-    clean summary-only transcript, then terminate the parent runner when this
-    process was launched under AE_RUNNER=1.
-
-    If input_path is omitted, uses AE_INPUT_FILE when the viewer launched this
-    runner for a specific conversation.
-    """
-    path = resolve_input_path(input_path)
-    result = compact_file(path, summary, keep_user_turns=0)
-    result["stopped_runner"] = _stop_runner()
-    return result
-
-
-def compact_active_file_keep_tools(input_path=None, summary=""):
-    """Legacy active compact: keep the current tool group and do not stop ae.py."""
-    path = resolve_input_path(input_path)
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    _, _, items = _get_transcript(data)
-    boundary = _active_tool_boundary(items)
-    return compact_file(path, summary, keep_from_index=boundary)
-
-
-def _load_summary(args, parser):
-    has_text = args.summary is not None
-    has_file = args.summary_file is not None
-    if has_text == has_file:
-        parser.error("provide exactly one of --summary or --summary-file")
-    if has_text:
-        return args.summary
-    return Path(args.summary_file).read_text(encoding="utf-8")
+    return result  # noqa: unreachable
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Compact ae.py context (Responses json.input or legacy json.messages)"
-    )
+    parser = argparse.ArgumentParser(description="备份并压缩 ae.py 对话，然后终止 runner")
+    parser.add_argument("input_json", nargs="?", default=None, help="默认 AE_INPUT_FILE / ./input.json")
+    parser.add_argument("--summary", required=True, help="压成一条 user 的摘要正文")
     parser.add_argument(
-        "input_json",
-        nargs="?",
-        default=None,
-        help="transcript path; default AE_INPUT_FILE / AE_CONVERSATION_ID",
-    )
-    parser.add_argument(
-        "--summary",
-        help="inline summary text (preferred; do not write a current_summary.md file)",
-    )
-    parser.add_argument(
-        "--summary-file",
-        help="optional path to an existing summary file; prefer --summary instead",
-    )
-    parser.add_argument(
-        "--active",
+        "--keep-running",
         action="store_true",
-        help="active compact-and-stop (summary only; stops parent when AE_RUNNER=1)",
+        help="只压缩不杀进程（ae.py 仍可能追加当前这条 function_call_output）",
     )
-    parser.add_argument(
-        "--active-keep-tools",
-        action="store_true",
-        help="legacy active compact that retains the current tool-call group",
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--keep-from-index", type=int)
-    group.add_argument("--keep-from-user", type=int, default=0)
     args = parser.parse_args(argv)
-    summary = _load_summary(args, parser)
-    target = resolve_input_path(args.input_json)
-    if args.active and args.active_keep_tools:
-        parser.error("--active cannot be combined with --active-keep-tools")
-    if args.active:
-        if args.keep_from_index is not None or args.keep_from_user:
-            parser.error("--active cannot be combined with a retention boundary")
-        result = compact_active_file(target, summary)
-    elif args.active_keep_tools:
-        if args.keep_from_index is not None or args.keep_from_user:
-            parser.error("--active-keep-tools cannot be combined with a retention boundary")
-        result = compact_active_file_keep_tools(target, summary)
-    else:
-        result = compact_file(
-            target,
-            summary,
-            keep_from_index=args.keep_from_index,
-            keep_user_turns=args.keep_from_user,
-        )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.keep_running:
+        print(json.dumps(compact_file(args.input_json, args.summary), ensure_ascii=False, indent=2))
+        return
+    compact_and_stop(args.summary, args.input_json)
 
 
 if __name__ == "__main__":

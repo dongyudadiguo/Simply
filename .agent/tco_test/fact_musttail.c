@@ -1,6 +1,0 @@
-
-__attribute__((musttail))
-int factorial(int n, int acc) {
-    if (n <= 1) return acc;
-    return factorial(n - 1, acc * n);
-}

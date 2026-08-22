@@ -41,7 +41,8 @@ int net_upload(const uint8_t *key, uint32_t klen, const uint8_t *data, uint32_t 
 /* ---- block 执行器（全局） ---- */
 extern const uint8_t *ptr;                            /* 当前 token 位置（插件从它推自己 payload） */
 void cur_payload(const uint8_t **out_p, uint32_t *out_n); /* 当前插件 payload = 从 ptr 推出 */
-void drill(data k);                                       /* 唯一入口：vm 引导 / 插件下钻 / 接棒 */
+void run(void);                                          /* vm 专用入口：引导 id 后 drill(id) */
+void drill(data k);                                       /* 下钻循环：插件下钻 / run_next/reset 接棒 */
 void cur_key_of(const uint8_t **out_d, uint32_t *out_n);  /* 当前块 key（从返回栈顶读） */
 void run_next(void);                                    /* 插件自主接棒 */
 void reset(void);                                       /* 重跑当前块 */

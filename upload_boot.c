@@ -19,7 +19,7 @@ int main(void) {
         memcpy(block + off, NAMES[i], nl); off += nl;
         uint32_t z = 0; memcpy(block + off, &z, 4); off += 4;   /* payload 空 */
     }
-    uint32_t z = 0; memcpy(block + off, &z, 4); off += 4;       /* 块结束 */
+    uint32_t z = ENDMK; memcpy(block + off, &z, 4); off += 4;   /* 块结束：4B 全 1 */
     int rc = net_upload((const uint8_t*)"", 0, block, off);
     printf("上传空 key 引导块: %d 字节, %zu token, rc=%d\n", off, NAMES_N, rc);
     return 0;

@@ -1,6 +1,7 @@
 #ifndef API_H
 #define API_H
 #define VM_PORT 8000
+#define ENDMK 0xFFFFFFFFu   /* 块结尾标记：4 字节全 1（与 nlen=0 的 editor 零长名区分） */
 #include <stdint.h>
 #include <stddef.h>
 

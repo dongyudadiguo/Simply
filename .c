@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 typedef uint32_t u32;
+#define ENDMK 0xFFFFFFFFu   /* 块结尾标记：4 字节全 1（与 nlen=0 的 editor 零长名区分） */
 typedef struct { uint8_t *name; uint32_t nlen; uint8_t *payload; uint32_t plen; } Tok;
 typedef struct { Tok *tok; size_t n, cap, owned; } Toks;
 typedef struct { u32 n; const uint8_t *d; } data;
@@ -617,7 +618,7 @@ static int find_item_rect(BlockAPI *B, int vi, int idx, float *ox, float *oy, fl
 }
 
 /* 右键拖出：块引用 / handrun 目标 → 新子视图
-   非标准/未定义行为：目标不存在 → 上传 4B 结尾标记（空块占位，与 load_toks 缺 key 兼容一致） */
+   非标准/未定义行为：目标不存在 → 上传 4B 全 1 结尾标记（空块占位，与 load_toks 缺 key 兼容一致） */
 static void drag_out(BlockAPI *B, int vi, int i) {
     size_t n; Toks f; Tok *ts = view_toks(B, vi, &n, &f);
     if (i < 0 || i >= (int)n) { free_fetched(&f); return; }
@@ -632,12 +633,12 @@ static void drag_out(BlockAPI *B, int vi, int i) {
     View *nv = &views[view_n];
     u32 kl = klen < 256 ? klen : 256;
     memcpy(nv->key, key, kl); nv->klen = kl;
-    /* 非标准/未定义：目标不存在 → 上传 4 字节全零（结尾标记）占位 */
+    /* 非标准/未定义：目标不存在 → 上传 4 字节全 1（结尾标记 ENDMK）占位 */
     {
         Toks ef = B->load_toks(nv->key, nv->klen);
         if (ef.n == 0) {
-            uint8_t zero[4] = {0,0,0,0};
-            B->net_upload_fn(nv->key, nv->klen, zero, 4);
+            u32 endmk = ENDMK;
+            B->net_upload_fn(nv->key, nv->klen, (const uint8_t*)&endmk, 4);
         }
         free_fetched(&ef);
     }
@@ -663,7 +664,7 @@ static void sync_views(BlockAPI *B) {
             memcpy(buf + off, &ts[i].plen, 4); off += 4;
             memcpy(buf + off, ts[i].payload, ts[i].plen); off += ts[i].plen;
         }
-        u32 z = 0; memcpy(buf + off, &z, 4);
+        u32 z = ENDMK; memcpy(buf + off, &z, 4);          /* 末尾 4B 全 1 = 结尾标记 */
         u32 c = crc32(buf, sz);
         if (c != view_crc[vi]) {
             B->net_upload_fn(views[vi].key, views[vi].klen, buf, sz);

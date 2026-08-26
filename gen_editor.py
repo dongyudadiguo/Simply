@@ -101,7 +101,7 @@ def main_block():
     b.tok("GetScreenWidth"); pushi(b, 2); b.tok("/"); b.tok("i2f")
     ld(b, CAM + 20, 4)                               # zoom
     b.tok("fdiv"); b.tok("fadd")                     # rx = target.x + (w/2)/zoom
-    ld(b, OY + 4, 4)                                 # py
+    ld(b, OY, 4)                                     # py（tmp_oy 本身就是 float，勿 +4 读到 tmp_ow）
     pushp(b, bytes([0, 228, 48, 255])); b.tok("DrawLineV")
     b.tok("EndMode2D")
     E(b); b.tok("draw_input")

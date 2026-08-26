@@ -9,7 +9,10 @@ uint8_t var[8192]; uint32_t var_off;
 
 void push(const uint8_t *d, uint32_t n) { memcpy(stk + stk_off, d, n); stk_off += n; }
 const uint8_t *pop(uint32_t n) { stk_off -= n; return stk + stk_off; }
-void write_num(uint32_t sz) { memcpy(num + num_off, &sz, 4); num_off += 4; }
+void write_num(uint32_t sz) {
+    if (num_off + 4 > sizeof(num)) { num_off = sizeof(num) - 4; return; } /* 防溢出：num 只被 set 消费；循环推值不消费时钳在末位 */
+    memcpy(num + num_off, &sz, 4); num_off += 4;
+}
 
 /* 内存块表（key -> toks，editor 维护，block 动态读） */
 typedef struct CurEntry { uint8_t *key; uint32_t klen; Toks toks; struct CurEntry *next; } CurEntry;
@@ -59,6 +62,23 @@ void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2) {
     HandFlag *h = hand_list;
     while (h) { if (memcmp(h->id, id, 8) == 0) { *b1 = h->b1; *b2 = h->b2; return; } h = h->next; }
     *b1 = *b2 = 0;
+}
+
+/* 全局变量（GET/SET token）：名字 → u32 值。进程级持久，缺失默认 0；与 var 区（set/read 栈上登记）独立 */
+typedef struct GVar { uint8_t *name; u32 nlen; u32 val; struct GVar *next; } GVar;
+static GVar *g_list;
+u32 GET(const uint8_t *name, u32 nlen) {
+    GVar *g = g_list;
+    while (g) { if (g->nlen == nlen && memcmp(g->name, name, nlen) == 0) return g->val; g = g->next; }
+    return 0;                                            /* 缺失默认 0 */
+}
+void SET(const uint8_t *name, u32 nlen, u32 v) {
+    GVar *g = g_list;
+    while (g) { if (g->nlen == nlen && memcmp(g->name, name, nlen) == 0) { g->val = v; return; } g = g->next; }
+    g = (GVar*)calloc(1, sizeof(GVar));
+    g->name = (uint8_t*)malloc(nlen ? nlen : 1); memcpy(g->name, name, nlen); g->nlen = nlen;
+    g->val = v;
+    g->next = g_list; g_list = g;
 }
 
 /* 热力计数（cond/handrun/condrerun 执行次数，editor 显示热力高亮） */

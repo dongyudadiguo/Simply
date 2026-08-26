@@ -89,7 +89,7 @@ static void sha256(const uint8_t *data, uint32_t len, uint8_t out[32]) {
 }
 
 static int hp_impl(const uint8_t *name, u32 n) {
-    if (n == 0) return 1;
+    if (n == 0) return 0;   /* 零长名不是插件（该 dll 已删除），是块引用（下钻空 key 编辑器块） */
     uint8_t h[32]; sha256(name, n, h);
     char fn[70];
     for (int i = 0; i < 32; i++) sprintf(fn + 2*i, "%02x", h[i]);

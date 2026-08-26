@@ -30,6 +30,9 @@ void hand_set(const uint8_t *id, uint8_t b1, uint8_t b2);               /* handr
 void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2);
 void heat_add(const uint8_t *name, u32 nlen);                            /* 热力计数（插件执行上报） */
 u32 heat_get(const uint8_t *name, u32 nlen);
+u32 GET(const uint8_t *name, u32 nlen);                        /* 全局变量读取（缺失默认 0） */
+void SET(const uint8_t *name, u32 nlen, u32 v);                /* 全局变量写入 */
+
 
 /* ---- sha256（token → 插件 DLL 文件名） ---- */
 void sha256(const uint8_t *data, uint32_t len, uint8_t out[32]);
@@ -70,6 +73,8 @@ typedef struct {
     int (*net_upload_fn)(const uint8_t*, u32, const uint8_t*, u32);        /* 上传（拖出占位用） */
     void (*heat_add)(const uint8_t*, u32);                                /* 热力计数上报 */
     u32 (*heat_get)(const uint8_t*, u32);                                 /* 热力读取 */
+    u32 (*GET)(const uint8_t*, u32);                                      /* 全局变量读取（缺失默认 0） */
+    void (*SET)(const uint8_t*, u32, u32);                                /* 全局变量写入 */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */

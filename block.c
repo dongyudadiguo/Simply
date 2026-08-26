@@ -24,7 +24,9 @@ typedef uint32_t u32;                                     /* 本文件内短名�
 
 /* hit(token)：token → sha256 → <sha256>.dll 文件名 → LoadLibrary → GetProcAddress("run")
    加载失败 → NULL（= 块引用，下钻）——标准接棒
-   非标准/未定义行为：零大小 data（nlen=0）→ sha256("") = e3b0c442….dll（editor）；结尾标记 ENDMK 不是 token */
+   零长名（nlen=0）：sha256("") = e3b0c442….dll 已删除 → LoadLibrary 失败 → NULL（块引用，
+   下钻空 key 编辑器块）；结尾标记 ENDMK 不是 token */
+/* 注意：hit 不特判 nlen==0 —— 零长名不命中 DLL 完全由「该 dll 不存在」自然达成 */
 static void (*hit(data k))(void) {                        /* 返回插件 run，失败 NULL */
     uint8_t h[32];                                        /* sha256 摘要缓冲 */
     sha256(k.d, k.n, h);                                  /* token 字节 → 32B 哈希 */
@@ -62,8 +64,8 @@ static size_t iter_tokens(const uint8_t *blk, u32 blen, Tok *out, size_t cap) { 
     return n;                                             /* 完整 token 条数（结尾标记不计） */
 }
 
-/* 取块 token 流：内存 cur（editor 实时编辑）优先，否则 fetch server 解析；
-   空 key（klen==0）= 引导，只取第一条 name */
+/* 取块 token 流：内存 cur（editor 实时编辑）优先，否则 fetch server 解析。
+   空 key（klen==0）也是普通块（空 key 编辑器块），完整解析全部 token。 */
 Toks load_toks(const uint8_t *key, u32 klen) {                   /* key → toks（cur 优先 / server 兜底） */
     Toks ts = {0};                                        /* 返回值清零 */
     size_t n = 0;                                         /* cur_get 写出的 token 数 */
@@ -79,21 +81,6 @@ Toks load_toks(const uint8_t *key, u32 klen) {                   /* key → toks
         blk = (uint8_t*)malloc(4);                        /* 本地也造一份空块 */
         memcpy(blk, &endmk, 4);                           /* 填结尾标记 */
         blen = 4;                                         /* 长度 4 */
-    }
-
-    if (klen == 0) {                                         /* 引导：空 key 只取第一条 name */
-        Tok tmp[1] = {0};                                 /* 只解析第一条 */
-        size_t cnt = iter_tokens(blk, blen, tmp, 1);      /* 解析（可能 0 条：纯结尾标记） */
-        ts.tok = (Tok*)calloc(1, sizeof(Tok));            /* 固定返回 1 条 */
-        ts.n = ts.cap = 1; ts.owned = 1;                  /* 本函数拥有，调用方需 free_fetched */
-        /* 非标准/未定义：空块（仅 ENDMK 结尾标记）→ 零长名 = editor */
-        u32 nl = cnt ? tmp[0].nlen : 0;                   /* 有第一条则用其名长，否则 0 */
-        ts.tok[0].name = (uint8_t*)malloc(nl ? nl : 1);   /* 0 长也 malloc(1) 避免空指针 */
-        if (nl) memcpy(ts.tok[0].name, tmp[0].name, nl);  /* 拷 name；nl=0 则空名 */
-        ts.tok[0].nlen = nl;                              /* 记下名长 */
-        ts.tok[0].payload = NULL; ts.tok[0].plen = 0;     /* 引导只要 name，不要 payload */
-        free(blk);                                        /* 释放 server 原始字节 */
-        return ts;                                        /* 一条（可能零长名） */
     }
 
     Tok tmp[256];                                         /* 栈上暂存解析结果（上限 256） */
@@ -123,7 +110,9 @@ static void free_fetched(Toks *ts) {                            /* owned=1 才�
     ts->tok = NULL; ts->n = ts->cap = 0;                  /* 置空，防再用 */
 }
 
-/* getfirstdata(key)：取块的第一个 data（内存 cur 优先 / server），统一序列化为原始字节 */
+/* getfirstdata(key)：取块的第一个 data（内存 cur 优先 / server），统一序列化为原始字节。
+   不关心 editor；非标准/未定义：server 缺 key → load_toks 补空块（仅 ENDMK）→ 返回仅 ENDMK 缓冲，
+   调用方据此下钻行为未定义 */
 static const uint8_t *getfirstdata(data k) {                    /* 序列化整块，返回缓冲（第一条 token 在开头） */
     Toks ts = load_toks(k.d, k.n);                        /* 取该 key 的全部 token */
     u32 sz = 4;                                        /* 结束符 4B 全 1 */
@@ -206,8 +195,8 @@ void drill(data k) {                                            /* 下钻直到 
         if (imp = hit(k)) break;                         /* hit(k) → imp = 插件，回 vm */
         push_key(k);                                      /* 非插件 = 块引用：压父位置 + k 作 key（不读 ptr） */
         ptr = getfirstdata(k);                           /* ptr = getfirstdata(k)：块的第一个 data */
-        if (*(u32*)ptr == ENDMK) k = (data){0, ptr};     /* 空块（仅结尾标记）→ 零长名 = editor */
-        else k = (data){*(u32*)ptr, ptr + 4};            /* k = 第一条 token */
+        /* 非标准/未定义：空块（仅 ENDMK）→ k.n = ENDMK、k.d 越界，后续下钻未定义（getfirstdata 不关心 editor） */
+        k = (data){*(u32*)ptr, ptr + 4};            /* k = 第一条 token */
     }
     *get_vm_imp() = imp;                                 /* 命中后写 vm 的 imp；payload 插件自己从 ptr 推 */
 }
@@ -225,7 +214,7 @@ void run(void) {                                          /* vm 专用：建栈 
     } else {                                              /* 无 id.bin → 新建随机 id，上传零 data + 结尾标记（12B） */
         for (int i = 0; i < 32; i++) id[i] = (uint8_t)(rand() & 0xff);   /* 新 id */
         f = fopen("id.bin", "wb"); fwrite(id, 1, 32, f); fclose(f); /* 写回本地 */
-        uint8_t block[12] = {0,0,0,0, 0,0,0,0, 0xFF,0xFF,0xFF,0xFF}; /* 零 data（editor）+ 结尾标记 0xFF×4 */
+        uint8_t block[12] = {0,0,0,0, 0,0,0,0, 0xFF,0xFF,0xFF,0xFF}; /* 零长名 token（下钻空 key 编辑器块）+ 结尾标记 0xFF×4 */
         net_upload(id, 32, block, 12);                    /* 上传空根块：[0][ ][0][ ] + 4B 全 1 尾 */
     }
     drill((data){32, id});                                /* 直接下钻 id：hit 失败 → push_key(id) → getfirstdata(id) */
@@ -233,11 +222,12 @@ void run(void) {                                          /* vm 专用：建栈 
 void run_next(void) {                                           /* 跳过当前 token，drill 下一条（遇尾则弹回） */
     ptr += 4 + *(u32*)ptr;                                /* 跳过当前 token 的 [nlen][name] */
     ptr += 4 + *(u32*)ptr;                                /* 再跳 [plen][payload]，落到下一条 nlen */
-    /* 非标准/未定义行为：下一条为结尾标记 ENDMK → 块返回（弹父块继续下一条）；根块则 drill 零长名 → editor */
+    /* 非标准/未定义行为：下一条为结尾标记 ENDMK → 块返回（弹父块继续下一条）；根块则 drill 零长名 → 空 key 编辑器块 */
     while (*(u32*)ptr == ENDMK) {                         /* 连续结尾标记都弹 */
-        if (retpoint == retbase) {                          /* 非标准/未定义：根块结束 → editor */
-            drill((data){0, ptr});                        /* 零长名 → sha256("") = editor */
-            return;                                       /* editor 接棒，不再往下 */
+        if (retpoint == retbase) {
+            /* 非标准/未定义/约定：根块结束 → 零长名 → 下钻空 key 编辑器块（编辑循环边界），不是标准块逻辑 */
+            drill((data){0, ptr});                        /* 零长名 → hit 失败 → 空 key 块 */
+            return;                                       /* 编辑器块接棒，不再往下 */
         }
         pop_ret();                                         /* 非标准/未定义：恢复父块 ptr（块引用 token 位置） */
         ptr += 4 + *(u32*)ptr;                             /* 跳过父块的块引用 token */
@@ -252,7 +242,8 @@ void reset(void) {                                              /* 按栈顶 key
     cur_key_of(&d, &n);                                   /* 从栈顶读 */
     data bk = (data){n, d};                               /* 合成 data */
     ptr = getfirstdata(bk);                               /* 重新取块（cur 优先，编辑立刻可见） */
-    if (*(u32*)ptr == ENDMK) drill((data){0, ptr});       /* 空块 → 零长名 = editor */
+    /* 非标准/未定义：空块（仅 ENDMK）→ 零长名下钻（与 drill 空块情形相同，getfirstdata 不关心 editor） */
+    if (*(u32*)ptr == ENDMK) drill((data){0, ptr});
     else drill((data){*(u32*)ptr, ptr + 4});              /* 从第一条重新钻 */
 }
 
@@ -287,6 +278,7 @@ BlockAPI block_api_st = {                                 /* 全局表：插件�
     push, write_num, cur_set, cur_get, hand_set, hand_get, /* 栈/内存块/handrun */
     run_next, reset, drill, cur_payload, cur_key_of, load_toks, /* 执行接棒 + 当前 token/块 */
     load_names, net_upload_fn,                            /* 补全名表 + 上传（拖出占位） */
-    heat_add, heat_get                                    /* 热力计数 */
+    heat_add, heat_get,                                   /* 热力计数 */
+    GET, SET                                              /* 全局变量（GET/SET token） */
 };
 BlockAPI *block_api(void) { return &block_api_st; }       /* block.dll 导出：插件 GetProcAddress 入口 */

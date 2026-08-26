@@ -39,6 +39,8 @@ __declspec(dllexport) void run(void) {
     BlockAPI *B = block_import();
     B->heat_add((const uint8_t*)"cond", 4);
     const uint8_t *pay; u32 plen; B->cur_payload(&pay, &plen);
-    if (*B->stk_off > 0 && B->stk[0] != 0 && plen) B->drill((data){plen, pay});
+    u32 v = 0;                                           /* pop 栈顶判断（自动清栈）；栈空按 0 */
+    if (*B->stk_off >= 4) { memcpy(&v, B->stk + *B->stk_off - 4, 4); *B->stk_off -= 4; }
+    if (v != 0 && plen) B->drill((data){plen, pay});
     else B->run_next();
 }

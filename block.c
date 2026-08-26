@@ -113,11 +113,19 @@ static void free_fetched(Toks *ts) {                            /* owned=1 才�
 /* getfirstdata(key)：取块的第一个 data（内存 cur 优先 / server），统一序列化为原始字节。
    不关心 editor；非标准/未定义：server 缺 key → load_toks 补空块（仅 ENDMK）→ 返回仅 ENDMK 缓冲，
    调用方据此下钻行为未定义 */
+/* 每 key 缓存一份序列化缓冲：块式循环每迭代下钻同一批块，避免每次重新 malloc/序列化/泄漏 */
+typedef struct BufCache { uint8_t *key; u32 klen; uint8_t *buf; struct BufCache *next; } BufCache;
+static BufCache *buf_cache;
 static const uint8_t *getfirstdata(data k) {                    /* 序列化整块，返回缓冲（第一条 token 在开头） */
+    BufCache *c;
+    if (!cur_dirty(k.d, k.n)) {                            /* 无变动 → 命中缓存直接返回 */
+        for (c = buf_cache; c; c = c->next)
+            if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) return c->buf;
+    }
     Toks ts = load_toks(k.d, k.n);                        /* 取该 key 的全部 token */
     u32 sz = 4;                                        /* 结束符 4B 全 1 */
     for (size_t i = 0; i < ts.n; i++) sz += 4 + ts.tok[i].nlen + 4 + ts.tok[i].plen; /* 累加每条 [nlen][name][plen][payload] */
-    uint8_t *buf = (uint8_t*)malloc(sz);                  /* 序列化缓冲（调用方不释放，按文件头约定） */
+    uint8_t *buf = (uint8_t*)malloc(sz);                  /* 序列化缓冲 */
     u32 off = 0;                                          /* 写游标 */
     for (size_t i = 0; i < ts.n; i++) {                   /* 逐条写出 */
         memcpy(buf + off, &ts.tok[i].nlen, 4); off += 4;  /* nlen */
@@ -131,6 +139,11 @@ static const uint8_t *getfirstdata(data k) {                    /* 序列化整�
         cur_clean();                                      /* 清脏标记 */
     }
     free_fetched(&ts);                                    /* 释放 toks（cur 的不动） */
+    for (c = buf_cache; c; c = c->next)                   /* 同 key 已有缓存 → 替换（释放旧缓冲） */
+        if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) { free(c->buf); c->buf = buf; return buf; }
+    c = (BufCache*)malloc(sizeof(BufCache));              /* 新 key → 挂缓存 */
+    c->key = (uint8_t*)malloc(k.n ? k.n : 1); memcpy(c->key, k.d, k.n); c->klen = k.n;
+    c->buf = buf; c->next = buf_cache; buf_cache = c;
     return buf;                                           /* ptr 将指向这块缓冲的第一条 token */
 }
 
@@ -179,6 +192,13 @@ void cur_key_of(const uint8_t **out_d, u32 *out_n) {            /* 读栈顶当�
     *out_d = (const uint8_t*)retpoint - 4 - n;            /* 再倒 n 字节 = key 数据起点 */
 }
 
+/* 根块 key = 返回栈底第一帧（run() 引导 push_key(id) 压的 [8B][id 32B][4B len]）；栈空则空 */
+void cur_root_of(const uint8_t **out_d, u32 *out_n) {          /* 编辑器根视图 key（id） */
+    if (!retbase || retpoint == retbase) { *out_d = NULL; *out_n = 0; return; }
+    *out_d = (const uint8_t*)retbase + 8;                 /* 第一帧 key 数据 */
+    *out_n = 32;                                          /* id 固定 32B */
+}
+
 /* 弹回：块结束 → 恢复父块 ptr（父块的块引用 token 位置），并弹掉该项 */
 static void pop_ret(void) {                                     /* 弹栈顶，ptr 回到父块引用 token */
     u32 n = *(u32*)((const uint8_t*)retpoint - 4);                 /* 最后一项 key 长度 */
@@ -204,7 +224,7 @@ void drill(data k) {                                            /* 下钻直到 
 /* ================= run：vm 专用入口 ================= */
 /* vm 调一次：初始化返回栈 + 读/建 id.bin，drill(id)。插件不调。 */
 void run(void) {                                          /* vm 专用：建栈 + 引导 id + drill(id) */
-    retbase = malloc(256 * sizeof(void*));                /* 返回栈缓冲（按指针槽估大小） */
+    retbase = malloc(1 << 20);                            /* 返回栈缓冲 1MB（块式循环=尾递归下钻，需深返回栈） */
     retpoint = retbase;                                   /* 空栈：游标=基址 */
     uint8_t id[32];                                       /* 32B 块 key */
     FILE *f = fopen("id.bin", "rb");                      /* 本地持久化的根块 id */
@@ -279,6 +299,8 @@ BlockAPI block_api_st = {                                 /* 全局表：插件�
     run_next, reset, drill, cur_payload, cur_key_of, load_toks, /* 执行接棒 + 当前 token/块 */
     load_names, net_upload_fn,                            /* 补全名表 + 上传（拖出占位） */
     heat_add, heat_get,                                   /* 热力计数 */
-    GET, SET                                              /* 全局变量（GET/SET token） */
+    GET, SET,                                             /* 全局变量（GET/SET token） */
+    gv_get, gv_set,                                       /* 全局变量任意字节（GV/GVSET token） */
+    cur_root_of                                           /* 根块 key（编辑器根视图） */
 };
 BlockAPI *block_api(void) { return &block_api_st; }       /* block.dll 导出：插件 GetProcAddress 入口 */

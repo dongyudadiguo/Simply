@@ -15,8 +15,8 @@ typedef struct { uint8_t *name; uint32_t nlen; uint8_t *payload; uint32_t plen; 
 typedef struct { Tok *tok; size_t n, cap, owned; } Toks;
 
 /* ---- vmstate 全局 ---- */
-extern uint8_t stk[4096]; extern uint32_t stk_off;    /* 值栈 */
-extern uint8_t num[512];  extern uint32_t num_off;    /* 大小区 */
+extern uint8_t stk[65536]; extern uint32_t stk_off;   /* 值栈（编辑器 token 流：块式循环/结构传值需大栈） */
+extern uint8_t num[16384]; extern uint32_t num_off;    /* 大小区（write_num 钳制保留） */
 extern uint8_t var[8192]; extern uint32_t var_off;    /* 变量区 */
 void push(const uint8_t *d, uint32_t n);
 const uint8_t *pop(uint32_t n);
@@ -32,6 +32,8 @@ void heat_add(const uint8_t *name, u32 nlen);                            /* 热�
 u32 heat_get(const uint8_t *name, u32 nlen);
 u32 GET(const uint8_t *name, u32 nlen);                        /* 全局变量读取（缺失默认 0） */
 void SET(const uint8_t *name, u32 nlen, u32 v);                /* 全局变量写入 */
+const uint8_t *gv_get(const uint8_t *name, u32 nlen, u32 *out_len);  /* 全局变量读任意字节（表内指针，缺 NULL/0） */
+void gv_set(const uint8_t *name, u32 nlen, const uint8_t *data, u32 dlen); /* 全局变量写任意字节（拷贝） */
 
 
 /* ---- sha256（token → 插件 DLL 文件名） ---- */
@@ -75,6 +77,9 @@ typedef struct {
     u32 (*heat_get)(const uint8_t*, u32);                                 /* 热力读取 */
     u32 (*GET)(const uint8_t*, u32);                                      /* 全局变量读取（缺失默认 0） */
     void (*SET)(const uint8_t*, u32, u32);                                /* 全局变量写入 */
+    const uint8_t *(*gv_get)(const uint8_t*, u32, u32*);                  /* 全局变量读任意字节 */
+    void (*gv_set)(const uint8_t*, u32, const uint8_t*, u32);             /* 全局变量写任意字节 */
+    void (*cur_root_of)(const uint8_t**, u32*);                           /* 根块 key（返回栈底 [id] 帧） */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */

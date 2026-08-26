@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-uint8_t stk[4096]; uint32_t stk_off;
-uint8_t num[512];  uint32_t num_off;
+uint8_t stk[65536]; uint32_t stk_off;   /* 编辑器 token 流：块式循环/临时结构传值需要大栈 */
+uint8_t num[16384]; uint32_t num_off;   /* 大小区同步放大（write_num 钳制保留） */
 uint8_t var[8192]; uint32_t var_off;
 
 void push(const uint8_t *d, uint32_t n) { memcpy(stk + stk_off, d, n); stk_off += n; }
@@ -64,21 +64,39 @@ void hand_get(const uint8_t *id, uint8_t *b1, uint8_t *b2) {
     *b1 = *b2 = 0;
 }
 
-/* 全局变量（GET/SET token）：名字 → u32 值。进程级持久，缺失默认 0；与 var 区（set/read 栈上登记）独立 */
-typedef struct GVar { uint8_t *name; u32 nlen; u32 val; struct GVar *next; } GVar;
+/* 全局变量（GET/SET/GV/GVSET token）：名字 → 任意字节。进程级持久，缺失默认 0；与 var 区（set/read 栈上登记）独立 */
+typedef struct GVar { uint8_t *name; u32 nlen; uint8_t *data; u32 dlen; struct GVar *next; } GVar;
 static GVar *g_list;
-u32 GET(const uint8_t *name, u32 nlen) {
+static GVar *gvar_find(const uint8_t *name, u32 nlen) {
     GVar *g = g_list;
-    while (g) { if (g->nlen == nlen && memcmp(g->name, name, nlen) == 0) return g->val; g = g->next; }
-    return 0;                                            /* 缺失默认 0 */
+    while (g) { if (g->nlen == nlen && memcmp(g->name, name, nlen) == 0) return g; g = g->next; }
+    return NULL;
+}
+u32 GET(const uint8_t *name, u32 nlen) {
+    GVar *g = gvar_find(name, nlen);
+    u32 v = 0;
+    if (g && g->dlen >= 4) memcpy(&v, g->data, 4);
+    return v;                                            /* 缺失默认 0 */
 }
 void SET(const uint8_t *name, u32 nlen, u32 v) {
-    GVar *g = g_list;
-    while (g) { if (g->nlen == nlen && memcmp(g->name, name, nlen) == 0) { g->val = v; return; } g = g->next; }
-    g = (GVar*)calloc(1, sizeof(GVar));
-    g->name = (uint8_t*)malloc(nlen ? nlen : 1); memcpy(g->name, name, nlen); g->nlen = nlen;
-    g->val = v;
-    g->next = g_list; g_list = g;
+    gv_set(name, nlen, (const uint8_t*)&v, 4);
+}
+const uint8_t *gv_get(const uint8_t *name, u32 nlen, u32 *out_len) {
+    GVar *g = gvar_find(name, nlen);
+    if (g) { if (out_len) *out_len = g->dlen; return g->data; }
+    if (out_len) *out_len = 0;
+    return NULL;
+}
+void gv_set(const uint8_t *name, u32 nlen, const uint8_t *data, u32 dlen) {
+    GVar *g = gvar_find(name, nlen);
+    if (!g) {
+        g = (GVar*)calloc(1, sizeof(GVar));
+        g->name = (uint8_t*)malloc(nlen ? nlen : 1); memcpy(g->name, name, nlen); g->nlen = nlen;
+        g->next = g_list; g_list = g;
+    } else free(g->data);
+    g->data = (uint8_t*)malloc(dlen ? dlen : 1);
+    if (dlen) memcpy(g->data, data, dlen);
+    g->dlen = dlen;
 }
 
 /* 热力计数（cond/handrun/condrerun 执行次数，editor 显示热力高亮） */

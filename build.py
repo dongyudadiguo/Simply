@@ -57,28 +57,27 @@ def sh(args, **kw):
 
 
 def main():
-    print("[1/7] gen_editor.py → editor_blocks.h（编辑器 token 流）")
-    sh([sys.executable, "gen_editor.py"])
+    print("[1/6] 编辑器块数据：editor_blocks.h（固定 token 组合，不再生成）")
 
-    print("[2/7] server.exe + upload_boot.exe")
+    print("[2/6] server.exe + upload_boot.exe")
     sh([GCC, "server.c", "-o", "server.exe", "-lws2_32"])
     sh([GCC, "upload_boot.c", "net.c", "-o", "upload_boot.exe", "-lws2_32"])
 
-    print("[3/7] block.dll（执行器 + sha256 + 网络 + vmstate）")
+    print("[3/6] block.dll（执行器 + sha256 + 网络 + vmstate）")
     sh([GCC, "-shared", "-O2", "-I.", "block.c", "vmstate.c", "net.c", "sha256.c",
         "-o", "block.dll", "-Wl,--export-all-symbols,--out-implib,libblock.dll.a", "-lws2_32"])
 
-    print("[4/7] 原版插件 plugins/*.c")
+    print("[4/6] 原版插件 plugins/*.c")
     for src, token in ORIGINAL.items():
         sh([GCC, "-shared", "-O2", "-I.", f"plugins/{src}.c", "-o", dll_of(token)])
 
-    print("[5/7] 新增插件（匹配到的函数/运算符）")
+    print("[5/6] 新增插件（现有 token 全集，不新增）")
     count = 0
     for f in sorted(os.listdir(os.path.join(ROOT, "plugins"))):
         if not f.endswith(".c"):
             continue
         stem = f[:-2]
-        if stem in ORIGINAL:          # rand 等已在 [4/7] 构建
+        if stem in ORIGINAL:          # rand 等已在 [4/6] 构建
             continue
         token = OPS.get(stem, stem)   # 普通函数 token = 函数名
         args = [GCC, "-shared", "-O2", "-I.", f"plugins/{f}", "-o", dll_of(token)]
@@ -88,12 +87,12 @@ def main():
             args += ["-luser32"]
         sh(args)
         count += 1
-    print(f"    new plugins built: {count}")
+    print(f"    existing plugin files built: {count}")
 
-    print("[6/7] vm.exe")
+    print("[6/6] vm.exe")
     sh([GCC, "vm.c", "-o", "vm.exe"])
 
-    print("[7/7] raylib.dll")
+    print("raylib.dll")
     try:
         shutil.copy2(os.path.join(RL, "lib", "raylib.dll"), os.path.join(ROOT, "raylib.dll"))
     except OSError as e:

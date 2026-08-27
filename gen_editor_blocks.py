@@ -9,6 +9,167 @@ OUT = os.path.join(HERE, "editor_blocks.h")
 def u32(n):
     return int(n & 0xFFFFFFFF).to_bytes(4, "little")
 
+import struct
+import sys
+
+class Stack:
+    """简化栈模型：字节深度仿真。用于验证一个 token 序列在给定起始字节栈时是否下溢/净平衡。"""
+    def __init__(self, depth=0, gvars=None):
+        self.b = bytearray(b"\x00" * depth)
+        self.gvars = dict(gvars or {})
+    def push(self, n, val=None):
+        if val is None:
+            self.b += b"\x00" * n
+        else:
+            self.b += struct.pack("<I", int(val) & 0xFFFFFFFF)
+    def pop(self, n):
+        if len(self.b) < n:
+            raise ValueError(f"stack underflow: pop {n} bytes, depth {len(self.b)}")
+        self.b = self.b[:-n]
+    def pop_u32(self):
+        if len(self.b) < 4:
+            raise ValueError("stack underflow: pop_u32")
+        v = struct.unpack("<I", self.b[-4:])[0]
+        self.b = self.b[:-4]
+        return v
+    @property
+    def depth(self):
+        return len(self.b)
+
+def default_gvars():
+    return {
+        "estate": 8, "rk": 8, "rkn": 4,
+        "bhb_n": 4, "bhb_a": 8,
+        "bha_c": 4, "bha_n": 4, "bha_a": 8,
+    }
+
+def pstr(pay):
+    return pay.decode("latin1") if isinstance(pay, bytes) else pay
+
+def apply_token(s, name, pay):
+    """把 token 栈效应作用到 Stack；不处理 call/cond/rerun（由 check_tokens 处理）。"""
+    if name == "GET":
+        s.push(4, 0)
+    elif name == "SET":
+        s.pop_u32()
+    elif name == "GV":
+        key = pstr(pay)
+        s.push(8)
+        s.push(4, s.gvars.get(key, 0))
+    elif name == "GVSET":
+        n = s.pop_u32()
+        s.pop(n)
+        s.gvars[pstr(pay)] = n
+    elif name == "ld":
+        n = s.pop_u32()
+        s.pop(8)
+        s.push(n)
+    elif name == "st":
+        n = s.pop_u32()
+        s.pop(8)
+        s.pop(n)
+    elif name == "push_int":
+        raw = pstr(pay).split("\x00", 1)[0]
+        s.push(4, int(raw or "0"))
+    elif name == "push_payload":
+        s.push(len(pay))
+    elif name == "drop":
+        s.pop(4)
+    elif name == "padd":
+        s.pop(4); s.pop(8); s.push(8)
+    elif name == "calloc":
+        s.pop(4); s.pop(4); s.push(8)
+    elif name == "memcpy":
+        s.pop(4); s.pop(8); s.pop(8); s.push(8)
+    elif name in ("strcpy", "strcat"):
+        s.pop(8); s.pop(8); s.push(8)
+    elif name == "cur_root_of":
+        s.push(8); s.push(4, 32)
+    elif name == "!":
+        s.pop(4); s.push(4)
+    elif name in ("+", "-", ">", "<", ">=", "<=", "!=", "&&", "/", "|", "&", "==", "*"):
+        s.pop(4); s.pop(4); s.push(4)
+    elif name == "exit":
+        s.pop(4)
+    elif name == "IsKeyPressed":
+        s.pop(4); s.push(4)
+    elif name == "BeginMode2D":
+        s.pop(24)
+    elif name == "ClearBackground":
+        s.pop(4)
+    elif name in ("GetScreenWidth", "GetScreenHeight", "GetMouseX", "GetMouseY",
+                  "GetCharPressed", "GetMouseWheelMove"):
+        s.push(4)
+    elif name in ("fdiv", "fadd", "fmul", "fsub"):
+        s.pop(4); s.pop(4); s.push(4)
+    elif name in ("f2i", "i2f"):
+        s.pop(4); s.push(4)
+    elif name in ("GetMousePosition", "GetMouseDelta"):
+        s.push(8)
+    elif name == "GetScreenToWorld2D":
+        s.pop(24); s.pop(8); s.push(8)
+    elif name in ("Vector2Subtract", "Vector2Add"):
+        s.pop(8); s.pop(8); s.push(8)
+    elif name == "Vector2Scale":
+        s.pop(4); s.pop(8); s.push(8)
+    elif name == "DrawLineV":
+        s.pop(4); s.pop(8); s.pop(8)
+    elif name == "DrawText":
+        s.pop(4 + 4 + 4 + 4 + 8)
+    elif name == "WindowShouldClose":
+        s.push(4)
+    elif name in ("SetTraceLogLevel", "SetTargetFPS", "srand"):
+        s.pop(4)
+    elif name == "IsMouseButtonDown":
+        s.pop(4); s.push(4)
+    elif name == "InitWindow":
+        s.pop(4); s.pop(4)
+    elif name == "GetTickCount":
+        s.push(4)
+    elif name == "GetWindowHandle":
+        s.push(8)
+    elif name == "SetFocus":
+        s.pop(8); s.push(8)
+    # 当前仍存在的编辑器封壳：记录其旧 DLL 的栈效应，便于未来并对替换序列。
+    elif name == "hit_view":
+        s.pop(8); s.pop(8); s.push(4)
+    elif name in ("draw_view", "edit_append"):
+        s.pop(8); s.pop(4)
+    elif name == "pointer_locate":
+        s.pop(8); s.push(4)
+    elif name in ("update_edit", "update_completion", "frame_combo", "frame_space",
+                  "frame_left", "frame_right", "sync_views", "compact_views"):
+        s.pop(8)
+    else:
+        raise ValueError(f"no stack model for token {name!r}")
+
+def check_tokens(tokens, depth=0, gvars=None):
+    """验证一个独立块：cond 按 false 分支（只清条件，不跳目标），call/rerun 不改变栈。"""
+    s = Stack(depth=depth, gvars=gvars)
+    for name, pay in tokens:
+        name = pstr(name)
+        if name in ("call", "rerun", "BeginDrawing", "EndDrawing", "EndMode2D"):
+            continue
+        if name == "cond":
+            if s.depth >= 4:
+                s.pop(4)
+            continue
+        apply_token(s, name, pay)
+    return s
+
+def check_all_blocks():
+    print("[stack-check] cond=false-branch, call no-op (argument blocks will be noise)")
+    by_key = dict(BLOCKS)
+    for key, _klen, _ident, _ln in KEYS:
+        key = pstr(key)
+        try:
+            s = check_tokens(by_key[key], gvars=default_gvars())
+            status = f"ok depth={s.depth}" if s.depth == 0 else f"NONZERO depth={s.depth}"
+            print(f"  {key!r:16} {status}")
+        except Exception as e:
+            print(f"  {key!r:16} ERROR {e}")
+
+
 KEYS = [
     ('', 0, "BLK_MAIN", 1832),
     ('ei', 2, "BLK_ei", 1236),
@@ -729,10 +890,13 @@ def generate():
     return "\n".join(o) + "\n"
 
 if __name__ == "__main__":
-    text = generate()
-    with open(OUT, "w", encoding="utf-8") as f:
-        f.write(text)
-    print(f"wrote {OUT}")
+    if len(sys.argv) > 1 and sys.argv[1] == "check":
+        check_all_blocks()
+    else:
+        text = generate()
+        with open(OUT, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"wrote {OUT}")
 
 
 

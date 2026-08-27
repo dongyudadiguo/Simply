@@ -57,9 +57,10 @@ def sh(args, **kw):
 
 
 def main():
-    print("[1/6] 编辑器块数据：editor_blocks.h（固定 token 组合，不再生成）")
+    print("[1/7] gen_editor_blocks.py -> editor_blocks.h（纯 token 序列）")
+    sh([sys.executable, "gen_editor_blocks.py"])
 
-    print("[2/6] server.exe + upload_boot.exe")
+    print("[2/7] server.exe + upload_boot.exe")
     sh([GCC, "server.c", "-o", "server.exe", "-lws2_32"])
     sh([GCC, "upload_boot.c", "net.c", "-o", "upload_boot.exe", "-lws2_32"])
 

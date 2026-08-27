@@ -1,18 +1,10 @@
-/* editor_blocks.h —— 编辑器 token 组合块（固定数据，零辅助构造器） */
+/* editor_blocks.h —— 由 gen_editor_blocks.py 生成：纯现有 token 序列 */
 #ifndef EDITOR_BLOCKS_H
 #define EDITOR_BLOCKS_H
 #include <stdint.h>
 
 /* BLK_MAIN: key='' klen=0, 1512 bytes, 96 tokens
    flow: GET<6> !<0> cond<2> call<3> call<4> estate<0> push_int<3> padd<0> push_int<2> ld<0> estate<0> hit_view<0> estate<0> push_int<3> padd<0> push_int<2> st<0> estate<0> push_int<3> padd<0> push_int<2> ld<0> estate<0> push_int<6> padd<0> push_int<2> ld<0> ><0> cond<4> estate<0> update_edit<0> estate<0> frame_combo<0> estate<0> frame_space<0> push_int<4> IsKeyPressed<0> cond<4> estate<0> frame_focus<0> estate<0> frame_left<0> estate<0> frame_right<0> BeginDrawing<0> push_payload<4> ClearBackground<0> estate<0> push_int<2> padd<0> push_int<3> ld<0> BeginMode2D<0> call<3> estate<0> pointer_locate<0> drop<0> estate<0> push_int<7> padd<0> push_int<2> ld<0> estate<0> push_int<2> padd<0> push_int<2> ld<0> GetScreenWidth<0> push_int<2> /<0> i2f<0> estate<0> push_int<3> padd<0> push_int<2> ld<0> fdiv<0> fadd<0> estate<0> push_int<7> padd<0> push_int<2> ld<0> push_payload<4> DrawLineV<0> EndMode2D<0> estate<0> draw_input<0> EndDrawing<0> estate<0> sync_views<0> estate<0> compact_views<0> WindowShouldClose<0> cond<4> rerun<0>
-       -> cond: ei
-       -> call: bin
-       -> call: bcam
-       -> cond: bcv0
-       -> push_int: 3552562
-       -> cond: quit
-       -> call: bvw
-       -> cond: quit
 */
 static const uint8_t BLK_MAIN[1512] = {
     0x03,0x00,0x00,0x00,0x47,0x45,0x54,0x06,0x00,0x00,0x00,0x69,
@@ -145,7 +137,6 @@ static const uint8_t BLK_MAIN[1512] = {
 
 /* BLK_ei: key='ei' klen=2, 327 bytes, 18 tokens
    flow: estate_new<0> push_payload<4> estate<0> push_int<3> padd<0> push_int<2> st<0> push_int<2> SetTraceLogLevel<0> push_int<5> push_int<4> InitWindow<0> push_int<3> SetTargetFPS<0> GetTickCount<0> srand<0> push_int<2> SET<6>
-       -> push_int: 3158071
 */
 static const uint8_t BLK_ei[327] = {
     0x0a,0x00,0x00,0x00,0x65,0x73,0x74,0x61,0x74,0x65,0x5f,0x6e,
@@ -189,9 +180,6 @@ static const uint8_t BLK_quit[34] = {
 
 /* BLK_bin: key='bin' klen=3, 188 bytes, 11 tokens
    flow: GetCharPressed<0> SET<2> GET<2> push_int<2> ><0> cond<3> push_int<4> IsKeyPressed<0> cond<3> estate<0> update_completion<0>
-       -> cond: bch
-       -> push_int: 3749170
-       -> cond: bbk
 */
 static const uint8_t BLK_bin[188] = {
     0x0e,0x00,0x00,0x00,0x47,0x65,0x74,0x43,0x68,0x61,0x72,0x50,
@@ -224,8 +212,6 @@ static const uint8_t BLK_bbk[39] = {
 
 /* BLK_bch: key='bch' klen=3, 190 bytes, 12 tokens
    flow: estate<0> push_int<3> padd<0> push_int<2> ld<0> push_int<11> !=<0> cond<4> GET<2> estate<0> inp_append<0> call<3>
-       -> cond: bche
-       -> call: bin
 */
 static const uint8_t BLK_bch[190] = {
     0x06,0x00,0x00,0x00,0x65,0x73,0x74,0x61,0x74,0x65,0x00,0x00,
@@ -248,7 +234,6 @@ static const uint8_t BLK_bch[190] = {
 
 /* BLK_bche: key='bche' klen=4, 65 bytes, 4 tokens
    flow: GET<2> estate<0> edit_append<0> call<3>
-       -> call: bin
 */
 static const uint8_t BLK_bche[65] = {
     0x03,0x00,0x00,0x00,0x47,0x45,0x54,0x02,0x00,0x00,0x00,0x63,
@@ -261,8 +246,6 @@ static const uint8_t BLK_bche[65] = {
 
 /* BLK_bcam: key='bcam' klen=4, 686 bytes, 43 tokens
    flow: GetMouseWheelMove<0> estate<0> push_int<7> padd<0> push_int<2> st<0> estate<0> push_int<7> padd<0> push_int<2> ld<0> f2i<0> push_int<2> !=<0> cond<4> GetScreenWidth<0> push_int<2> /<0> i2f<0> GetScreenHeight<0> push_int<2> /<0> i2f<0> estate<0> push_int<2> padd<0> push_int<2> st<0> GetMousePosition<0> estate<0> push_int<2> padd<0> push_int<3> ld<0> GetScreenToWorld2D<0> estate<0> push_int<3> padd<0> push_int<2> st<0> push_int<2> IsMouseButtonDown<0> cond<4>
-       -> cond: bwhl
-       -> cond: bpan
 */
 static const uint8_t BLK_bcam[686] = {
     0x11,0x00,0x00,0x00,0x47,0x65,0x74,0x4d,0x6f,0x75,0x73,0x65,
@@ -492,7 +475,6 @@ static const uint8_t BLK_bpan[475] = {
 
 /* BLK_bvw: key='bvw' klen=3, 51 bytes, 3 tokens
    flow: push_int<2> SET<2> call<4>
-       -> call: bvwc
 */
 static const uint8_t BLK_bvw[51] = {
     0x08,0x00,0x00,0x00,0x70,0x75,0x73,0x68,0x5f,0x69,0x6e,0x74,
@@ -504,7 +486,6 @@ static const uint8_t BLK_bvw[51] = {
 
 /* BLK_bvwc: key='bvwc' klen=4, 118 bytes, 8 tokens
    flow: GET<2> estate<0> push_int<6> padd<0> push_int<2> ld<0> <<0> cond<4>
-       -> cond: bvwb
 */
 static const uint8_t BLK_bvwc[118] = {
     0x03,0x00,0x00,0x00,0x47,0x45,0x54,0x02,0x00,0x00,0x00,0x76,
@@ -521,7 +502,6 @@ static const uint8_t BLK_bvwc[118] = {
 
 /* BLK_bvwb: key='bvwb' klen=4, 117 bytes, 8 tokens
    flow: GET<2> estate<0> draw_view<0> GET<2> push_int<2> +<0> SET<2> call<4>
-       -> call: bvwc
 */
 static const uint8_t BLK_bvwb[117] = {
     0x03,0x00,0x00,0x00,0x47,0x45,0x54,0x02,0x00,0x00,0x00,0x76,

@@ -10,7 +10,7 @@ def u32(n):
     return int(n & 0xFFFFFFFF).to_bytes(4, "little")
 
 KEYS = [
-    ('', 0, "BLK_MAIN", 1833),
+    ('', 0, "BLK_MAIN", 1832),
     ('ei', 2, "BLK_ei", 1236),
     ('quit', 4, "BLK_quit", 34),
     ('bin', 3, "BLK_bin", 200),
@@ -29,6 +29,8 @@ KEYS = [
     ('bhb1', 4, "BLK_bhb1", 460),
     ('bha', 3, "BLK_bha", 167),
     ('bha1', 4, "BLK_bha1", 719),
+    ('bfocus', 6, "BLK_bfocus", 384),
+    ('bfocus_do', 9, "BLK_bfocus_do", 67),
 ]
 
 BLOCKS = [
@@ -81,7 +83,7 @@ BLOCKS = [
         (b'cond', b'quit'),
         (b'GV', b'estate'),
         (b'ld', b''),
-        (b'frame_focus', b''),
+        (b'call', b'bfocus'),
         (b'GV', b'estate'),
         (b'ld', b''),
         (b'frame_left', b''),
@@ -643,6 +645,40 @@ BLOCKS = [
         (b'push_int', b'1'),
         (b'st', b''),
     ]),
+    ('bfocus', [
+        (b'drop', b''),
+        (b'drop', b''),
+        (b'GetMouseX', b''),
+        (b'push_int', b'0'),
+        (b'>=', b''),
+        (b'SET', b'bfc1'),
+        (b'GetMouseY', b''),
+        (b'push_int', b'0'),
+        (b'>=', b''),
+        (b'SET', b'bfc2'),
+        (b'GetMouseX', b''),
+        (b'GetScreenWidth', b''),
+        (b'<', b''),
+        (b'SET', b'bfc3'),
+        (b'GetMouseY', b''),
+        (b'GetScreenHeight', b''),
+        (b'<', b''),
+        (b'SET', b'bfc4'),
+        (b'GET', b'bfc1'),
+        (b'GET', b'bfc2'),
+        (b'&&', b''),
+        (b'GET', b'bfc3'),
+        (b'&&', b''),
+        (b'GET', b'bfc4'),
+        (b'&&', b''),
+        (b'cond', b'bfocus_do'),
+    ]),
+    ('bfocus_do', [
+        (b'GetWindowHandle', b''),
+        (b'SetFocus', b''),
+        (b'drop', b''),
+        (b'drop', b''),
+    ]),
 ]
 
 def encode_block(tokens):
@@ -697,6 +733,7 @@ if __name__ == "__main__":
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"wrote {OUT}")
+
 
 
 

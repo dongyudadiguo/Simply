@@ -87,7 +87,8 @@ def apply_token(s, name, pay):
         s.push(8); s.push(4, 32)
     elif name == "!":
         s.pop(4); s.push(4)
-    elif name in ("+", "-", ">", "<", ">=", "<=", "!=", "&&", "/", "|", "&", "==", "*"):
+    elif name in ("+", "-", ">", "<", ">=", "<=", "!=", "&&", "/", "|", "&", "==", "*",
+                  "mul", "gt", "lt", "eq"):
         s.pop(4); s.pop(4); s.push(4)
     elif name == "exit":
         s.pop(4)

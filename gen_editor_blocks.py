@@ -145,6 +145,12 @@ def apply_token(s, name, pay):
     elif name in ("update_edit", "update_completion", "frame_combo", "frame_space",
                   "frame_left", "frame_right", "sync_views", "compact_views"):
         s.pop(8)
+    elif name == "raw_get":
+        s.pop(4); s.pop(8); s.push(8); s.push(4)
+    elif name == "raw_set":
+        s.pop(4); s.pop(8); s.pop(4); s.pop(8)
+    elif name in ("raw_mark", "raw_upload"):
+        s.pop(4); s.pop(8)
     else:
         raise ValueError(f"no stack model for token {name!r}")
 

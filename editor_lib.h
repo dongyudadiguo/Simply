@@ -448,23 +448,76 @@ static inline void paste(BlockAPI *B, EState *e) {
     commit_toks(B, &e->views[e->cur_v], nt, n + e->copy_n);
     free_fetched(&f);
 }
+static inline int raw_tok_count(const uint8_t *raw, u32 raw_len) {
+    u32 off = 0; int n = 0;
+    while (off + 4 <= raw_len) {
+        u32 nl; memcpy(&nl, raw + off, 4);
+        if (nl == 0xFFFFFFFFu) break;
+        off += 4;
+        if (off + nl + 4 > raw_len) break;
+        off += nl;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4 + dl;
+        n++;
+    }
+    return n;
+}
+static inline int raw_tok_bounds(const uint8_t *raw, u32 raw_len, int idx,
+                                 u32 *tok_off, u32 *nl, u32 *payload_off, u32 *plen) {
+    u32 off = 0; int n = 0;
+    while (off + 4 <= raw_len) {
+        u32 name_len; memcpy(&name_len, raw + off, 4);
+        if (name_len == 0xFFFFFFFFu) break;
+        u32 to = off; off += 4;
+        if (off + name_len + 4 > raw_len) break;
+        off += name_len;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4;
+        if (n == idx) {
+            *tok_off = to; *nl = name_len; *payload_off = off; *plen = dl;
+            return 1;
+        }
+        off += dl; n++;
+    }
+    return 0;
+}
+static inline void raw_replace_payload(BlockAPI *B, EState *e, int vi, int idx,
+                                       const uint8_t *newp, u32 newp_len) {
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[vi].key, e->views[vi].klen, &raw_len);
+    u32 tok_off = 0, nl = 0, payload_off = 0, plen = 0;
+    if (!raw_tok_bounds(raw, raw_len, idx, &tok_off, &nl, &payload_off, &plen)) return;
+    u32 plen_field_off = payload_off - 4;          /* 原 plen 字段紧接在 name 之后 */
+    u32 old_end = payload_off + plen;
+    if (old_end > raw_len) return;
+    u32 new_len = raw_len - plen + newp_len;
+    uint8_t *buf = (uint8_t*)malloc(new_len ? new_len : 1);
+    memcpy(buf, raw, plen_field_off);              /* [nlen][name] 原样 */
+    memcpy(buf + plen_field_off, &newp_len, 4);    /* 写新 plen */
+    if (newp_len) memcpy(buf + payload_off, newp, newp_len);
+    memcpy(buf + payload_off + newp_len, raw + old_end, raw_len - old_end); /* 后半段含 ENDMK */
+    B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
+    free(buf);
+}
 static inline void edit_append(BlockAPI *B, EState *e, int ch) {
     if (e->edit_len < 100) { e->edit_buf[e->edit_len++] = (char)ch; e->edit_buf[e->edit_len] = 0; }
-    size_t n2; Toks f2; Tok *ts2 = view_toks(B, e, e->edit_v, &n2, &f2);
-    if (e->edit_i < (int)n2) {
-        Tok *nt2 = dup_toks(ts2, n2);
-        Tok *t = &nt2[e->edit_i];
-        if (name_is(t, "handrun")) {
-            uint8_t id[8]; memcpy(id, t->payload, t->plen > 8 ? 8 : t->plen);
-            free(t->payload); t->payload = (uint8_t*)malloc(8 + e->edit_len); memcpy(t->payload, id, 8); memcpy(t->payload + 8, e->edit_buf, e->edit_len); t->plen = 8 + e->edit_len;
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[e->edit_v].key, e->views[e->edit_v].klen, &raw_len);
+    int n = raw_tok_count(raw, raw_len);
+    if (e->edit_i < n) {
+        u32 tok_off = 0, nl = 0, payload_off = 0, plen = 0;
+        if (!raw_tok_bounds(raw, raw_len, e->edit_i, &tok_off, &nl, &payload_off, &plen)) return;
+        int hand = (nl == 7 && memcmp(raw + tok_off + 4, "handrun", 7) == 0);
+        if (hand) {
+            uint8_t nb[108];
+            u32 id_len = plen > 8 ? 8 : plen;
+            if (id_len) memcpy(nb, raw + payload_off, id_len);
+            if (e->edit_len) memcpy(nb + 8, e->edit_buf, e->edit_len);
+            raw_replace_payload(B, e, e->edit_v, e->edit_i, nb, 8 + e->edit_len);
         } else {
-            free(t->payload); t->payload = (uint8_t*)malloc(e->edit_len ? e->edit_len : 1); memcpy(t->payload, e->edit_buf, e->edit_len); t->plen = e->edit_len;
+            raw_replace_payload(B, e, e->edit_v, e->edit_i,
+                                (const uint8_t*)e->edit_buf, e->edit_len);
         }
-        commit_toks(B, &e->views[e->edit_v], nt2, n2);
     }
-    free_fetched(&f2);
-}
-static inline void inp_append(EState *e, int ch) {
+}static inline void inp_append(EState *e, int ch) {
     if (e->input_len < 250) { e->input_str[e->input_len++] = (char)ch; e->input_str[e->input_len] = 0; }
 }
 static inline void inp_backspace(EState *e) {

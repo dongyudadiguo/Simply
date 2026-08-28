@@ -114,7 +114,7 @@ static void free_fetched(Toks *ts) {                            /* owned=1 才�
    不关心 editor；非标准/未定义：server 缺 key → load_toks 补空块（仅 ENDMK）→ 返回仅 ENDMK 缓冲，
    调用方据此下钻行为未定义 */
 /* 每 key 缓存一份序列化缓冲：块式循环每迭代下钻同一批块，避免每次重新 malloc/序列化/泄漏 */
-typedef struct BufCache { uint8_t *key; u32 klen; uint8_t *buf; struct BufCache *next; } BufCache;
+typedef struct BufCache { uint8_t *key; u32 klen; uint8_t *buf; u32 len; struct BufCache *next; } BufCache;
 static BufCache *buf_cache;
 static const uint8_t *getfirstdata(data k) {                    /* 序列化整块，返回缓冲（第一条 token 在开头） */
     BufCache *c;
@@ -140,10 +140,10 @@ static const uint8_t *getfirstdata(data k) {                    /* 序列化整�
     }
     free_fetched(&ts);                                    /* 释放 toks（cur 的不动） */
     for (c = buf_cache; c; c = c->next)                   /* 同 key 已有缓存 → 替换（释放旧缓冲） */
-        if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) { free(c->buf); c->buf = buf; return buf; }
+        if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) { free(c->buf); c->buf = buf; c->len = sz; return buf; }
     c = (BufCache*)malloc(sizeof(BufCache));              /* 新 key → 挂缓存 */
     c->key = (uint8_t*)malloc(k.n ? k.n : 1); memcpy(c->key, k.d, k.n); c->klen = k.n;
-    c->buf = buf; c->next = buf_cache; buf_cache = c;
+    c->buf = buf; c->len = sz; c->next = buf_cache; buf_cache = c;
     return buf;                                           /* ptr 将指向这块缓冲的第一条 token */
 }
 
@@ -291,6 +291,56 @@ static int net_upload_fn(const uint8_t *key, u32 klen, const uint8_t *data, u32 
     return net_upload(key, klen, data, dlen);             /* 函数指针包装，塞进 BlockAPI */
 }
 
+/* ================= 原始块字节接口（raw-ptr-editor） ================= */
+static BufCache *raw_find_entry(const uint8_t *key, u32 klen) {
+    BufCache *c;
+    for (c = buf_cache; c; c = c->next)
+        if (c->klen == klen && memcmp(c->key, key, klen) == 0) return c;
+    return NULL;
+}
+static BufCache *raw_ensure_entry(const uint8_t *key, u32 klen) {
+    BufCache *c = raw_find_entry(key, klen);
+    if (c) return c;
+    u32 blen = 0;
+    uint8_t *blk = net_fetch(key, klen, &blen);          /* server 原始块字节 */
+    if (!blk) {                                          /* server 缺 key → 补一段空块 */
+        u32 endmk = ENDMK;
+        net_upload(key, klen, (const uint8_t*)&endmk, 4);
+        blk = (uint8_t*)malloc(4);
+        memcpy(blk, &endmk, 4);
+        blen = 4;
+    }
+    c = (BufCache*)calloc(1, sizeof(BufCache));
+    c->key = (uint8_t*)malloc(klen ? klen : 1);
+    if (klen) memcpy(c->key, key, klen);
+    c->klen = klen;
+    c->buf = blk; c->len = blen;
+    c->next = buf_cache; buf_cache = c;
+    return c;
+}
+const uint8_t *raw_get(const uint8_t *key, u32 klen, u32 *out_len) {
+    BufCache *c = raw_ensure_entry(key, klen);
+    if (out_len) *out_len = c->len;
+    return c->buf;
+}
+void raw_set(const uint8_t *key, u32 klen, const uint8_t *data, u32 dlen) {
+    BufCache *c = raw_ensure_entry(key, klen);
+    free(c->buf);
+    c->buf = (uint8_t*)malloc(dlen ? dlen : 1);
+    if (dlen) memcpy(c->buf, data, dlen);
+    c->len = dlen;
+    cur_mark(key, klen);
+}
+void raw_mark(const uint8_t *key, u32 klen) {
+    cur_mark(key, klen);
+}
+void raw_upload(const uint8_t *key, u32 klen) {
+    BufCache *c = raw_find_entry(key, klen);
+    if (!c || !cur_dirty(key, klen)) return;
+    net_upload(key, klen, c->buf, c->len);
+    cur_clean();
+}
+
 /* ================= 显式动态链接接口 ================= */
 /* 插件 DLL 运行时 GetProcAddress("block_api") 取函数/全局表（不再 -lblock 隐式链接） */
 BlockAPI block_api_st = {                                 /* 全局表：插件经 block_import() 拿到 */
@@ -301,6 +351,7 @@ BlockAPI block_api_st = {                                 /* 全局表：插件�
     heat_add, heat_get,                                   /* 热力计数 */
     GET, SET,                                             /* 全局变量（GET/SET token） */
     gv_get, gv_set,                                       /* 全局变量任意字节（GV/GVSET token） */
-    cur_root_of                                           /* 根块 key（编辑器根视图） */
+    cur_root_of,                                          /* 根块 key（编辑器根视图） */
+    raw_get, raw_set, raw_mark, raw_upload                 /* 原始块字节接口（raw-ptr-editor） */
 };
 BlockAPI *block_api(void) { return &block_api_st; }       /* block.dll 导出：插件 GetProcAddress 入口 */

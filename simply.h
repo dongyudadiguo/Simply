@@ -80,6 +80,10 @@ typedef struct {
     const uint8_t *(*gv_get)(const uint8_t*, u32, u32*);                  /* 全局变量读任意字节 */
     void (*gv_set)(const uint8_t*, u32, const uint8_t*, u32);             /* 全局变量写任意字节 */
     void (*cur_root_of)(const uint8_t**, u32*);                           /* 根块 key（返回栈底 [id] 帧） */
+    const uint8_t *(*raw_get)(const uint8_t*, u32, u32*);                 /* 原始块字节读取（ptr 指向的内存） */
+    void (*raw_set)(const uint8_t*, u32, const uint8_t*, u32);            /* 原始块字节整块替换并标脏 */
+    void (*raw_mark)(const uint8_t*, u32);                                /* 原地修改后标脏 */
+    void (*raw_upload)(const uint8_t*, u32);                              /* 脏块原始字节上传并清脏 */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */

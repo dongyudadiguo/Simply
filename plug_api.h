@@ -35,6 +35,10 @@ typedef struct {
     const uint8_t *(*gv_get)(const uint8_t*, u32, u32*);
     void (*gv_set)(const uint8_t*, u32, const uint8_t*, u32);
     void (*cur_root_of)(const uint8_t**, u32*);
+    const uint8_t *(*raw_get)(const uint8_t*, u32, u32*);
+    void (*raw_set)(const uint8_t*, u32, const uint8_t*, u32);
+    void (*raw_mark)(const uint8_t*, u32);
+    void (*raw_upload)(const uint8_t*, u32);
 } BlockAPI;
 extern void *GetModuleHandleA(const char *name);
 extern void *GetProcAddress(void *module, const char *name);

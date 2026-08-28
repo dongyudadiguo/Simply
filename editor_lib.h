@@ -376,6 +376,11 @@ static inline int raw_tok_count(const uint8_t *raw, u32 raw_len);
 static inline int raw_tok_bounds(const uint8_t *raw, u32 raw_len, int idx, u32 *tok_off, u32 *nl, u32 *payload_off, u32 *plen);
 static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx, const uint8_t *name, u32 nl, const uint8_t *payload, u32 pl);
 
+static inline int raw_tok_count(const uint8_t *raw, u32 raw_len);
+static inline int raw_tok_bounds(const uint8_t *raw, u32 raw_len, int idx, u32 *tok_off, u32 *nl, u32 *payload_off, u32 *plen);
+static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx, const uint8_t *name, u32 nl, const uint8_t *payload, u32 pl);
+static inline void raw_delete_tokens(BlockAPI *B, EState *e, int vi, int a, int b);
+
 /* ---- 编辑操作 ---- */
 static inline void space_insert(BlockAPI *B, EState *e) {
     int pos = pointer_pos(B, e);
@@ -422,25 +427,16 @@ static inline void sel_del(BlockAPI *B, EState *e) {
     int pos = pointer_pos(B, e);
     int a = e->del_start < pos ? e->del_start : pos, b = e->del_start < pos ? pos : e->del_start;
     if (a >= b) return;
-    size_t n; Toks f; Tok *ts = view_toks(B, e, e->cur_v, &n, &f);
-    Tok *nt = dup_toks(ts, n);
-    for (int i = a; i < b; i++) { free(nt[i].name); free(nt[i].payload); }
-    for (int i = b; i < (int)n; i++) nt[i - (b-a)] = nt[i];
-    commit_toks(B, &e->views[e->cur_v], nt, n - (b-a));
-    free_fetched(&f);
+    raw_delete_tokens(B, e, e->cur_v, a, b);
 }
 static inline void paste(BlockAPI *B, EState *e) {
     if (e->copy_n == 0) return;
-    size_t n; Toks f; Tok *ts = view_toks(B, e, e->cur_v, &n, &f);
     int pos = pointer_pos(B, e);
-    Tok *nt = dup_toks(ts, n);
-    for (int i = n + e->copy_n - 1; i >= pos + e->copy_n; i--) nt[i] = nt[i - e->copy_n];
     for (int i = 0; i < e->copy_n; i++) {
-        nt[pos+i].name = (uint8_t*)malloc(e->copy_buf[i].nlen); memcpy(nt[pos+i].name, e->copy_buf[i].name, e->copy_buf[i].nlen); nt[pos+i].nlen = e->copy_buf[i].nlen;
-        nt[pos+i].payload = (uint8_t*)malloc(e->copy_buf[i].plen ? e->copy_buf[i].plen : 1); memcpy(nt[pos+i].payload, e->copy_buf[i].payload, e->copy_buf[i].plen); nt[pos+i].plen = e->copy_buf[i].plen;
+        raw_insert_token(B, e, e->cur_v, pos + i,
+                         e->copy_buf[i].name, e->copy_buf[i].nlen,
+                         e->copy_buf[i].payload, e->copy_buf[i].plen);
     }
-    commit_toks(B, &e->views[e->cur_v], nt, n + e->copy_n);
-    free_fetched(&f);
 }
 static inline int raw_tok_count(const uint8_t *raw, u32 raw_len) {
     u32 off = 0; int n = 0;
@@ -518,6 +514,31 @@ static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx,
     B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
     free(buf);
 }
+static inline void raw_delete_tokens(BlockAPI *B, EState *e, int vi, int a, int b) {
+    if (a >= b) return;
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[vi].key, e->views[vi].klen, &raw_len);
+    u32 starts[256]; int n = 0; u32 off = 0; u32 endmk = (raw_len >= 4) ? raw_len - 4 : 0;
+    while (off + 4 <= raw_len && n < 256) {
+        u32 nl; memcpy(&nl, raw + off, 4);
+        if (nl == 0xFFFFFFFFu) { endmk = off; break; }
+        starts[n++] = off;
+        off += 4 + nl;
+        if (off + 4 > raw_len) break;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4 + dl;
+    }
+    if (a >= n) return;
+    u32 del_start = starts[a];
+    u32 del_end = (b < n) ? starts[b] : endmk;
+    if (del_start >= del_end || del_end > raw_len) return;
+    u32 new_len = raw_len - (del_end - del_start);
+    uint8_t *buf = (uint8_t*)malloc(new_len ? new_len : 1);
+    memcpy(buf, raw, del_start);
+    memcpy(buf + del_start, raw + del_end, raw_len - del_end);
+    B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
+    free(buf);
+}
+
 static inline void edit_append(BlockAPI *B, EState *e, int ch) {
     if (e->edit_len < 100) { e->edit_buf[e->edit_len++] = (char)ch; e->edit_buf[e->edit_len] = 0; }
     const uint8_t *raw = NULL; u32 raw_len = 0;

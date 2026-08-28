@@ -202,16 +202,27 @@ static inline int line_first(EState *e, int j) {
 
 /* ---- 视图 toks / 复制 / 提交 ---- */
 static inline Tok *view_toks(BlockAPI *B, EState *e, int vi, size_t *out_n, Toks *fetched) {
+    /* raw-ptr-editor：直接解析 ptr 指向的原始块字节；Tok 只是显示期临时视图，不拷贝。 */
     memset(fetched, 0, sizeof(*fetched));
-    size_t n = 0;
-    Tok *t = B->cur_get(e->views[vi].key, e->views[vi].klen, &n);
-    if (t) { *out_n = n; return t; }
-    *fetched = B->load_toks(e->views[vi].key, e->views[vi].klen);
-    if (fetched->n > 0) {
-        B->cur_set(e->views[vi].key, e->views[vi].klen, fetched->tok, fetched->n);
-        fetched->owned = 0;
+    static Tok parsed[256];
+    static Toks holder = {0};
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[vi].key, e->views[vi].klen, &raw_len);
+    size_t n = 0; u32 off = 0;
+    while (off + 4 <= raw_len && n < 256) {
+        u32 nl; memcpy(&nl, raw + off, 4);
+        if (nl == 0xFFFFFFFFu) break;                 /* ENDMK */
+        off += 4;
+        if (off + nl + 4 > raw_len) break;
+        parsed[n].name = (uint8_t*)raw + off; parsed[n].nlen = nl; off += nl;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4;
+        parsed[n].payload = (uint8_t*)raw + off; parsed[n].plen = dl; off += dl;
+        n++;
     }
-    *out_n = fetched->n; return fetched->tok;
+    holder.tok = parsed; holder.n = n; holder.cap = 256; holder.owned = 0;
+    *fetched = holder;
+    *out_n = n;
+    return parsed;
 }
 static inline void free_fetched(Toks *ts) {
     if (!ts->owned) return;

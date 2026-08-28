@@ -380,6 +380,7 @@ static inline int raw_tok_count(const uint8_t *raw, u32 raw_len);
 static inline int raw_tok_bounds(const uint8_t *raw, u32 raw_len, int idx, u32 *tok_off, u32 *nl, u32 *payload_off, u32 *plen);
 static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx, const uint8_t *name, u32 nl, const uint8_t *payload, u32 pl);
 static inline void raw_delete_tokens(BlockAPI *B, EState *e, int vi, int a, int b);
+static inline void raw_insert_bytes_at(BlockAPI *B, EState *e, int vi, int idx, const uint8_t *data, u32 len);
 
 /* ---- 编辑操作 ---- */
 static inline void space_insert(BlockAPI *B, EState *e) {
@@ -415,13 +416,25 @@ static inline void sel_copy(BlockAPI *B, EState *e) {
     int pos = pointer_pos(B, e);
     int a = e->sel_start < pos ? e->sel_start : pos, b = e->sel_start < pos ? pos : e->sel_start;
     if (a >= b) return;
-    size_t n; Toks f; Tok *ts = view_toks(B, e, e->cur_v, &n, &f);
-    e->copy_n = b - a < 256 ? b - a : 256;
-    for (int i = 0; i < e->copy_n; i++) {
-        e->copy_buf[i].name = (uint8_t*)malloc(ts[a+i].nlen); memcpy(e->copy_buf[i].name, ts[a+i].name, ts[a+i].nlen); e->copy_buf[i].nlen = ts[a+i].nlen;
-        e->copy_buf[i].payload = (uint8_t*)malloc(ts[a+i].plen ? ts[a+i].plen : 1); memcpy(e->copy_buf[i].payload, ts[a+i].payload, ts[a+i].plen); e->copy_buf[i].plen = ts[a+i].plen;
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[e->cur_v].key, e->views[e->cur_v].klen, &raw_len);
+    u32 starts[256]; int n = 0; u32 off = 0; u32 endmk = (raw_len >= 4) ? raw_len - 4 : 0;
+    while (off + 4 <= raw_len && n < 256) {
+        u32 nl; memcpy(&nl, raw + off, 4);
+        if (nl == 0xFFFFFFFFu) { endmk = off; break; }
+        starts[n++] = off;
+        off += 4 + nl;
+        if (off + 4 > raw_len) break;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4 + dl;
     }
-    free_fetched(&f);
+    if (a >= n) return;
+    u32 start = starts[a];
+    u32 end = (b < n) ? starts[b] : endmk;
+    if (start >= end || end > raw_len) return;
+    u32 len = end - start;
+    if (len > 8192) len = 8192;
+    memcpy(e->copy_buf, raw + start, len);
+    e->copy_len = len;
 }
 static inline void sel_del(BlockAPI *B, EState *e) {
     int pos = pointer_pos(B, e);
@@ -430,13 +443,9 @@ static inline void sel_del(BlockAPI *B, EState *e) {
     raw_delete_tokens(B, e, e->cur_v, a, b);
 }
 static inline void paste(BlockAPI *B, EState *e) {
-    if (e->copy_n == 0) return;
+    if (e->copy_len == 0) return;
     int pos = pointer_pos(B, e);
-    for (int i = 0; i < e->copy_n; i++) {
-        raw_insert_token(B, e, e->cur_v, pos + i,
-                         e->copy_buf[i].name, e->copy_buf[i].nlen,
-                         e->copy_buf[i].payload, e->copy_buf[i].plen);
-    }
+    raw_insert_bytes_at(B, e, e->cur_v, pos, e->copy_buf, e->copy_len);
 }
 static inline int raw_tok_count(const uint8_t *raw, u32 raw_len) {
     u32 off = 0; int n = 0;
@@ -535,6 +544,30 @@ static inline void raw_delete_tokens(BlockAPI *B, EState *e, int vi, int a, int 
     uint8_t *buf = (uint8_t*)malloc(new_len ? new_len : 1);
     memcpy(buf, raw, del_start);
     memcpy(buf + del_start, raw + del_end, raw_len - del_end);
+    B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
+    free(buf);
+}
+
+static inline void raw_insert_bytes_at(BlockAPI *B, EState *e, int vi, int idx,
+                                          const uint8_t *data, u32 len) {
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[vi].key, e->views[vi].klen, &raw_len);
+    u32 ins = (raw_len >= 4) ? raw_len - 4 : 0;
+    u32 off = 0; int n = 0;
+    while (off + 4 <= raw_len) {
+        u32 nl; memcpy(&nl, raw + off, 4);
+        if (nl == 0xFFFFFFFFu) { ins = off; break; }
+        if (n == idx) { ins = off; break; }
+        off += 4 + nl;
+        if (off + 4 > raw_len) break;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4 + dl;
+        n++;
+    }
+    u32 new_len = raw_len + len;
+    uint8_t *buf = (uint8_t*)malloc(new_len ? new_len : 1);
+    memcpy(buf, raw, ins);
+    if (len) memcpy(buf + ins, data, len);
+    memcpy(buf + ins + len, raw + ins, raw_len - ins);
     B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
     free(buf);
 }

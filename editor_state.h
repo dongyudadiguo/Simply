@@ -42,7 +42,7 @@ typedef struct {
     char completion[128];                        /* 补全后缀 */
     int pressed_combo, prev_altl, prev_altr, prev_ctrl, prev_shift;  /* 组合键状态 */
     int sel_start, del_start;                    /* 划选/划删起点 */
-    Tok copy_buf[256]; int copy_n;               /* 复制缓冲 */
+    uint8_t copy_buf[8192]; u32 copy_len;               /* 复制缓冲 */
     int drag_sv, ldrag; Vector2 ldrag_off;       /* 拖出/左拖状态 */
     u32 prev_rb, prev_space;                     /* 右键/空格边沿 */
     View views[MAX_VIEW]; int view_n;            /* 视图表 */

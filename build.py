@@ -36,6 +36,9 @@ OPS = {'op_plus': '+', 'op_minus': '-', 'op_star': '*', 'op_div': '/', 'op_lt': 
 # 新增插件中需要 raylib 头/库的文件（其余为纯 C 自包含）
 RAYLIB_FILES = ['BeginDrawing', 'BeginMode2D', 'CheckCollisionPointRec', 'ClearBackground', 'DrawLine', 'DrawLineV', 'DrawRectangle', 'DrawText', 'EndDrawing', 'EndMode2D', 'GetCharPressed', 'GetMouseDelta', 'GetMousePosition', 'GetMouseWheelMove', 'GetMouseX', 'GetMouseY', 'GetScreenHeight', 'GetScreenToWorld2D', 'GetScreenWidth', 'GetWindowHandle', 'InitWindow', 'IsKeyDown', 'IsKeyPressed', 'IsKeyReleased', 'IsMouseButtonDown', 'IsMouseButtonPressed', 'IsMouseButtonReleased', 'MeasureText', 'SetTargetFPS', 'SetTraceLogLevel', 'Vector2Add', 'Vector2Scale', 'Vector2Subtract', 'WindowShouldClose', 'gap_y', 'heat_color', 'item_color', 'item_w', 'nearest_gap', 'row_y']
 
+# 编辑器插件（EState/editor_lib，经 raylib.h 类型与 raylib.dll 函数）
+EDITOR_FILES = ['estate_new', 'build_lines', 'line_first', 'view_toks', 'update_completion', 'build_cands', 'pointer_locate', 'pointer_pos', 'hit_view', 'hit_item', 'update_edit', 'space_insert', 'combo_insert', 'sel_copy', 'sel_del', 'paste', 'find_item_rect', 'drag_out', 'sync_views', 'compact_views', 'draw_view', 'edit_append', 'inp_append', 'inp_backspace', 'frame_combo', 'frame_space', 'frame_focus', 'frame_left', 'frame_right', 'draw_input']
+RAYLIB_FILES += EDITOR_FILES
 
 # 新增插件中需要 user32 的文件
 USER32_FILES = ['GetFileAttributesA', 'GetFocus', 'GetModuleHandleA', 'GetProcAddress', 'GetTickCount', 'SetFocus']

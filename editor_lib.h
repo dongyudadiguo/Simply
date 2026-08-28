@@ -371,10 +371,13 @@ static inline void update_completion(BlockAPI *B, EState *e) {
     }
 }
 
+/* ---- raw 编辑辅助前置声明 ---- */
+static inline int raw_tok_count(const uint8_t *raw, u32 raw_len);
+static inline int raw_tok_bounds(const uint8_t *raw, u32 raw_len, int idx, u32 *tok_off, u32 *nl, u32 *payload_off, u32 *plen);
+static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx, const uint8_t *name, u32 nl, const uint8_t *payload, u32 pl);
+
 /* ---- 编辑操作 ---- */
 static inline void space_insert(BlockAPI *B, EState *e) {
-    size_t n; Toks f; Tok *ts = view_toks(B, e, e->cur_v, &n, &f);
-    Tok *nt = dup_toks(ts, n);
     int pos = pointer_pos(B, e);
     char name[128] = "";
     int len = e->input_len;
@@ -384,33 +387,24 @@ static inline void space_insert(BlockAPI *B, EState *e) {
         if (!name[0]) { memcpy(name, e->input_str, e->input_len); }
         while (len > 0 && name[len-1] == ' ') len--;
     }
-    if (len == 0) { free(nt); free_fetched(&f); return; }
-    for (int i = n; i > pos; i--) nt[i] = nt[i-1];
-    nt[pos].name = (uint8_t*)malloc(len); memcpy(nt[pos].name, name, len); nt[pos].nlen = len;
-    nt[pos].payload = (uint8_t*)malloc(1); nt[pos].plen = 0;
-    commit_toks(B, &e->views[e->cur_v], nt, n + 1);
+    if (len == 0) return;
+    raw_insert_token(B, e, e->cur_v, pos, (const uint8_t*)name, (u32)len, NULL, 0);
     e->input_len = 0; e->input_str[0] = 0; e->completion[0] = 0;
-    free_fetched(&f);
 }
 static inline void combo_insert(BlockAPI *B, EState *e, int combo) {
-    size_t n; Toks f; Tok *ts = view_toks(B, e, e->cur_v, &n, &f);
-    Tok *nt = dup_toks(ts, n);
     int pos = pointer_pos(B, e);
-    char name[16] = ""; uint8_t *payload = NULL; u32 plen = 0;
+    char name[16] = ""; uint8_t local_payload[8]; uint8_t *payload = NULL; u32 plen = 0;
     if ((combo & 4) && (combo & 3)) {
         strcpy(name, "handrun");
-        uint8_t id[8]; for (int i=0;i<8;i++) id[i]=(uint8_t)(rand()&0xff);
-        payload=(uint8_t*)malloc(8); memcpy(payload,id,8); plen=8; B->hand_set(id,0,0);
+        for (int i=0;i<8;i++) local_payload[i]=(uint8_t)(rand()&0xff);
+        B->hand_set(local_payload,0,0);
+        payload = local_payload; plen = 8;
     } else if ((combo & 4) && (combo & 8)) strcpy(name, "condrerun");
     else if (combo & 4) strcpy(name, "cond");
     else if (combo & 1) strcpy(name, "read");
     else if (combo & 2) strcpy(name, "set");
-    if (!name[0]) { free(nt); free_fetched(&f); return; }
-    for (int i = n; i > pos; i--) nt[i] = nt[i-1];
-    nt[pos].name = (uint8_t*)malloc(strlen(name)); memcpy(nt[pos].name, name, strlen(name)); nt[pos].nlen = (u32)strlen(name);
-    nt[pos].payload = payload ? payload : (uint8_t*)malloc(1); nt[pos].plen = plen;
-    commit_toks(B, &e->views[e->cur_v], nt, n + 1);
-    free_fetched(&f);
+    if (!name[0]) return;
+    raw_insert_token(B, e, e->cur_v, pos, (const uint8_t*)name, (u32)strlen(name), payload, plen);
 }
 static inline void sel_copy(BlockAPI *B, EState *e) {
     int pos = pointer_pos(B, e);
@@ -494,6 +488,33 @@ static inline void raw_replace_payload(BlockAPI *B, EState *e, int vi, int idx,
     memcpy(buf + plen_field_off, &newp_len, 4);    /* 写新 plen */
     if (newp_len) memcpy(buf + payload_off, newp, newp_len);
     memcpy(buf + payload_off + newp_len, raw + old_end, raw_len - old_end); /* 后半段含 ENDMK */
+    B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
+    free(buf);
+}
+static inline void raw_insert_token(BlockAPI *B, EState *e, int vi, int idx,
+                                     const uint8_t *name, u32 nl, const uint8_t *payload, u32 pl) {
+    const uint8_t *raw = NULL; u32 raw_len = 0;
+    raw = B->raw_get(e->views[vi].key, e->views[vi].klen, &raw_len);
+    u32 ins = (raw_len >= 4) ? raw_len - 4 : 0;   /* 默认插到 ENDMK 前=末尾 */
+    u32 off = 0; int n = 0;
+    while (off + 4 <= raw_len) {
+        u32 name_len; memcpy(&name_len, raw + off, 4);
+        if (name_len == 0xFFFFFFFFu) { ins = off; break; }
+        if (n == idx) { ins = off; break; }
+        off += 4 + name_len;
+        if (off + 4 > raw_len) break;
+        u32 dl; memcpy(&dl, raw + off, 4); off += 4 + dl;
+        n++;
+    }
+    u32 new_len = raw_len + 4 + nl + 4 + pl;
+    uint8_t *buf = (uint8_t*)malloc(new_len ? new_len : 1);
+    memcpy(buf, raw, ins);
+    u32 p = ins;
+    memcpy(buf + p, &nl, 4); p += 4;
+    if (nl) memcpy(buf + p, name, nl); p += nl;
+    memcpy(buf + p, &pl, 4); p += 4;
+    if (pl) memcpy(buf + p, payload, pl); p += pl;
+    memcpy(buf + p, raw + ins, raw_len - ins);
     B->raw_set(e->views[vi].key, e->views[vi].klen, buf, new_len);
     free(buf);
 }

@@ -116,35 +116,14 @@ static void free_fetched(Toks *ts) {                            /* owned=1 才�
 /* 每 key 缓存一份序列化缓冲：块式循环每迭代下钻同一批块，避免每次重新 malloc/序列化/泄漏 */
 typedef struct BufCache { uint8_t *key; u32 klen; uint8_t *buf; u32 len; struct BufCache *next; } BufCache;
 static BufCache *buf_cache;
-static const uint8_t *getfirstdata(data k) {                    /* 序列化整块，返回缓冲（第一条 token 在开头） */
-    BufCache *c;
-    if (!cur_dirty(k.d, k.n)) {                            /* 无变动 → 命中缓存直接返回 */
-        for (c = buf_cache; c; c = c->next)
-            if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) return c->buf;
-    }
-    Toks ts = load_toks(k.d, k.n);                        /* 取该 key 的全部 token */
-    u32 sz = 4;                                        /* 结束符 4B 全 1 */
-    for (size_t i = 0; i < ts.n; i++) sz += 4 + ts.tok[i].nlen + 4 + ts.tok[i].plen; /* 累加每条 [nlen][name][plen][payload] */
-    uint8_t *buf = (uint8_t*)malloc(sz);                  /* 序列化缓冲 */
-    u32 off = 0;                                          /* 写游标 */
-    for (size_t i = 0; i < ts.n; i++) {                   /* 逐条写出 */
-        memcpy(buf + off, &ts.tok[i].nlen, 4); off += 4;  /* nlen */
-        memcpy(buf + off, ts.tok[i].name, ts.tok[i].nlen); off += ts.tok[i].nlen; /* name */
-        memcpy(buf + off, &ts.tok[i].plen, 4); off += 4;  /* plen */
-        memcpy(buf + off, ts.tok[i].payload, ts.tok[i].plen); off += ts.tok[i].plen; /* payload */
-    }
-    u32 z = ENDMK; memcpy(buf + off, &z, 4);              /* 末尾 4B 全 1 = 结尾标记 */
-    if (cur_dirty(k.d, k.n)) {                        /* 该块内存有变动 → 上传 server */
-        net_upload(k.d, k.n, buf, sz);                    /* 把刚序列化的字节同步上去 */
-        cur_clean();                                      /* 清脏标记 */
-    }
-    free_fetched(&ts);                                    /* 释放 toks（cur 的不动） */
-    for (c = buf_cache; c; c = c->next)                   /* 同 key 已有缓存 → 替换（释放旧缓冲） */
-        if (c->klen == k.n && memcmp(c->key, k.d, k.n) == 0) { free(c->buf); c->buf = buf; c->len = sz; return buf; }
-    c = (BufCache*)malloc(sizeof(BufCache));              /* 新 key → 挂缓存 */
-    c->key = (uint8_t*)malloc(k.n ? k.n : 1); memcpy(c->key, k.d, k.n); c->klen = k.n;
-    c->buf = buf; c->len = sz; c->next = buf_cache; buf_cache = c;
-    return buf;                                           /* ptr 将指向这块缓冲的第一条 token */
+static const uint8_t *getfirstdata(data k) {                    /* raw-ptr-editor：直接取原始块字节缓冲 */
+    /* 脏块先上传（编辑器可能原地改过 raw），随后清脏 */
+    if (cur_dirty(k.d, k.n)) raw_upload(k.d, k.n);
+
+    u32 raw_len = 0;
+    const uint8_t *buf = raw_get(k.d, k.n, &raw_len);
+    (void)raw_len;
+    return buf;
 }
 
 /* ================= vm imp（GetProcAddress 写 vm 导出的 imp） ================= */

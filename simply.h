@@ -86,6 +86,13 @@ typedef struct {
     void (*raw_upload)(const uint8_t*, u32);                              /* 脏块原始字节上传并清脏 */
 } BlockAPI;
 BlockAPI *block_api(void);                            /* block.dll 导出（插件显式动态链接取） */
+
+/* ---- raw-ptr-editor：原始块字节接口（block.c 实现） ---- */
+const uint8_t *raw_get(const uint8_t *key, u32 klen, u32 *out_len);
+void raw_set(const uint8_t *key, u32 klen, const uint8_t *data, u32 dlen);
+void raw_mark(const uint8_t *key, u32 klen);
+void raw_upload(const uint8_t *key, u32 klen);
+
 #ifndef WINAPI                                              /* windows.h 已含则用它声明；否则手动声明 kernel32 */
 extern void *GetModuleHandleA(const char *name);
 extern void *GetProcAddress(void *module, const char *name);

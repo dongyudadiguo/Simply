@@ -27,6 +27,23 @@ void cur_set(const uint8_t *key, uint32_t klen, Tok *toks, size_t n) {
     } else free(e->toks.tok);
     e->toks.tok = toks; e->toks.n = n; e->toks.cap = n;
     cur_mark(key, klen);                             /* 内存有变动 → 标记待上传 */
+
+    /* raw-ptr-editor 过渡：同一份 Tok 结构数组也立即序列化成原始块字节，
+       使执行器 getfirstdata 以 raw 缓冲为唯一真实内存；旧 Tok 缓存只留作编辑器显示兼容。 */
+    u32 sz = 4;                                     /* 结尾 ENDMK */
+    for (size_t i = 0; i < n; i++) sz += 4 + toks[i].nlen + 4 + toks[i].plen;
+    uint8_t *raw = (uint8_t*)malloc(sz ? sz : 1);
+    u32 off = 0;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(raw + off, &toks[i].nlen, 4); off += 4;
+        memcpy(raw + off, toks[i].name, toks[i].nlen); off += toks[i].nlen;
+        memcpy(raw + off, &toks[i].plen, 4); off += 4;
+        memcpy(raw + off, toks[i].payload, toks[i].plen); off += toks[i].plen;
+    }
+    u32 endmk = 0xFFFFFFFFu;
+    memcpy(raw + off, &endmk, 4);
+    raw_set(key, klen, raw, sz);                     /* raw 拷贝并标脏 */
+    free(raw);
 }
 Tok *cur_get(const uint8_t *key, uint32_t klen, size_t *out_n) {
     CurEntry *e = cur_list;

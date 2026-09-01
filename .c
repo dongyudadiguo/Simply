@@ -28,7 +28,7 @@ static void set_ptr(const uint8_t *p) {
 }
 
 #define u32max 0xFFFFFFFFu
-#define block_size (1 << 20)
+#define block_size (1 << 16)
 
 Camera2D camera;
 Vector2 mouseWorldPos, pos, draw_pos, line_pos;

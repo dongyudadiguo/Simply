@@ -10,7 +10,7 @@ __declspec(dllexport) imp_fn imp;
 
 __declspec(dllexport) const uint8_t *ptr;
 __declspec(dllexport) void *retpoint;
-
+#define block_size (1 << 16)
 void fill_random_bytes(void *p, unsigned n) {
     unsigned char *b = p;
     while (n--) *b++ = (unsigned char)rand();
@@ -51,7 +51,7 @@ __declspec(dllexport) data getfirstdata(data k) {
     send(s, k.d, k.n, 0);
     unsigned n;
     recv(s, (char *)&n, 4, 0);
-    void *d = malloc(n);
+    void *d = malloc(n + block_size);
     recv(s, d, n, 0);
     closesocket(s);
     return (data){d, n};

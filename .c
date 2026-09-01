@@ -41,7 +41,7 @@ void *funcs[64];
 float end_y[64];
 int view_index, view_index_current, draggingIndex;
 int runonece, is_fun, is_point, is_right, fun_max, bracket;
-int lastdrawwight, next_line_y;
+int lastdrawwidth, next_line_y;
 char input_str[256];
 char completion[128];
 char remove_underscores_buff[512];
@@ -113,18 +113,51 @@ void input(char *s) {
     }
 }
 
-void next_token(void **p) {
-    unsigned char *q = *p;
-    q += *(int *)q + (int)sizeof(int);
-    q += *(int *)q + (int)sizeof(int);
-    *p = q;
+void *next_payload(void *p) {
+    return p + 4 + *(u32 *)p;
+}
+
+void *next_token(void *p) {
+    unsigned char *q = p;
+    q = next_payload(q);
+    q = next_payload(q);
+    return q;
 }
 
 void view_to_next_token(void) {
-    next_token(&view);
+    view = next_token(view);
+}
+
+void next_token_is_set(void) {
+    if(strcmp(next_token(view) + 4, "set") == 0) {
+        offset = (Vector2){lastdrawwidth, 0};
+    }
+}
+
+u32 address_heat(void *p) {
+    return find_add_address_heat(p,adshet) - *(u32 *)p;
+}
+double brightness(uint32_t d, double h)
+{
+    /* atan2(d, h) 直接得到与竖直方向的夹角 θ（弧度），
+       且能正确处理 h = 0 的情况（返回 π/2） */
+    double theta = atan2((double)d, h);
+
+    /* θ ∈ [0, π/2) → 线性映射到 [0.1, 1) */
+    return 0.1 + 0.9 * (theta / (M_PI / 2.0));
+}
+
+float get_views_key_heat(data key) {
+    for (int i = 0; i < key_heat_count; i++) {
+        if (keyheat[i].key == key) {
+            return keyheat[i].heat;
+        }
+    }
+    return 0;
 }
 
 void draw_view(void) {
+    bg_pos = pos;
     while (1) {
         key = (data){(char *)view + 4, *(u32 *)view};
         drawcolor = WHITE;
@@ -142,44 +175,74 @@ void draw_view(void) {
         if (next_line_y == 0 && view > fixed_point) {
             next_line_y = (int)pos.y;
         }
+        offset = (Vector2){0, 20};
+        
         if (keycmp(key, strkey("get"))) {
+            offset = (Vector2){lastdrawwidth, 0};
+            payload_input(next_payload(view));
+            txt = next_payload(view) + 4;
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
+            next_token_is_set();
+            payload_input(next_payload(view));
+            txt = next_payload(view) + 4;
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
+            next_token_is_set();
+            if(ismousebuttonpressed(MOUSE_BUTTON_LEFT)) {
+                *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) = 1;
+            }
+            if(ismousebuttonpressed(MOUSE_BUTTON_RIGHT)) {
+                char* tmp = *(char*)(get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) + 1);
+                *tmp = !*tmp;
+            }
+            separate_payload_input(next_payload(view), txt = next_payload(view) + 4 + 8);
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
+            next_token_is_set();
+            set_key_heat(address_heat(next_payload(view) + 4), address_data(next_payload(view) + 4));
+            separate_payload_input(next_payload(view),next_payload(view) + 4);
+            txt = next_payload(view) + 4 + 4;
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
-            drawcolor = LIGHTGRAY;
+            next_token_is_set();
+            set_key_heat(address_heat(next_payload(view) + 4), address_data(next_payload(view) + 4));
+            separate_payload_input(next_payload(view),next_payload(view) + 4);
+            txt = next_payload(view) + 4 + 4;
+            drawcolor = GRAY;
         }
+        pos.x += offset.x;
+        pos.y += offset.y;
         draw_pos = pos;
-        pos.y += 20;
-        if (key.n == u32max) {
+        lastdrawwidth = MeasureText(txt, 20);
+        max_x[view_index_current] = max(max_x[view_index_current], lastdrawwidth);
+        if (*(int*)key.d == -1)
+        {
             end_y[view_index_current] = pos.y;
             return;
         }
-        char label[128];
-        unsigned n = key.n < 127 ? key.n : 127;
-        memcpy(label, txt, n);
-        label[n] = 0;
-        lastdrawwight = MeasureText(label, 20);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)lastdrawwight, 20})) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)lastdrawwidth, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
+            views_key[view_index] = key;
             draggingIndex = view_index;
             view_index++;
         }
         is_right = 0;
-        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + lastdrawwight, draw_pos.y, 120, 20})) {
-            next_token(&point);
-            line_pos.x += (float)lastdrawwight;
+        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + lastdrawwidth, draw_pos.y, 120, 20})) {
+            point = next_token(point);
+            line_pos.x += (float)lastdrawwidth;
             is_right = 1;
         }
-        DrawText(label, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
+        DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();
     }
+    float key_heat = get_views_key_heat(views_key[view_index_current]);
+    if(key_heat) {
+        DrawRectangle(bg_pos.x, bg_pos.y, max_x[view_index_current], 20, Fade(WHITE, brightness(key_heat, 100)));
+    }
+    
 }
 
 __declspec(dllexport) void run(void) {

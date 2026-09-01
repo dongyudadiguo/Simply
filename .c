@@ -4,8 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 typedef uint32_t u32;
+typedef uint64_t u64;
 typedef struct { void *d; unsigned n; } data;
 typedef void (*imp_fn)(void);
 
@@ -31,7 +33,7 @@ static void set_ptr(const uint8_t *p) {
 #define block_size (1 << 16)
 
 Camera2D camera;
-Vector2 mouseWorldPos, pos, draw_pos, line_pos;
+Vector2 mouseWorldPos, pos, draw_pos, line_pos, offset, bg_pos;
 Color drawcolor;
 void *view, *point, *fixed_point, *base, *copy, *txt;
 void *views[64];
@@ -39,6 +41,8 @@ Vector2 views_pos[64];
 Vector2 func_pos[64];
 void *funcs[64];
 float end_y[64];
+int max_x[64];
+data views_key[64];
 int view_index, view_index_current, draggingIndex;
 int runonece, is_fun, is_point, is_right, fun_max, bracket;
 int lastdrawwidth, next_line_y;
@@ -48,6 +52,20 @@ char remove_underscores_buff[512];
 int switch_buff;
 data key;
 FILE *file;
+typedef struct
+{
+    data key;
+    float heat;
+} KeyHeat;
+static KeyHeat keyheat[256];
+static int key_heat_count;
+typedef struct
+{
+    void *p;
+    u32 heat;
+} AddrHeat;
+static AddrHeat adshet[256];
+static int adshet_n;
 
 data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }
 int keycmp(data a, data b) { return a.n == b.n && memcmp(a.d, b.d, a.n) == 0; }
@@ -60,10 +78,14 @@ int find_func(void *tmp) {
 
 void change_ret(int size) { (void)size; }
 
+free_block_space(void *p, int size) {
+    memmove((char *)p + size, p, block_size / 2);
+}
+
 void insert_str_token(char *s) {
     int n = (int)strlen(s);
     int sz = 4 + n + 4;
-    memmove((char *)point + sz, point, block_size / 2);
+    free_block_space(point,sz);
     memcpy(point, &n, 4);
     memcpy((char *)point + 4, s, n);
     int z = 0;
@@ -129,37 +151,88 @@ void view_to_next_token(void) {
 }
 
 void next_token_is_set(void) {
-    if(strcmp(next_token(view) + 4, "set") == 0) {
+    if(*(u32*)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
         offset = (Vector2){lastdrawwidth, 0};
     }
 }
-
+u32 find_or_add_address_heat(void *p, AddrHeat *tab)
+{
+    (void)tab;
+    for (int i = 0; i < adshet_n; i++)
+        if (adshet[i].p == p)
+            return adshet[i].heat;
+    adshet[adshet_n].p = p;
+    adshet[adshet_n].heat = 1;
+    adshet_n++;
+    return 0;
+}
 u32 address_heat(void *p) {
-    return find_add_address_heat(p,adshet) - *(u32 *)p;
+    return *(u32 *)p - find_or_add_address_heat(p, adshet);
+}
+data address_data(void *p) { return (data){p, 4}; }
+void set_key_heat(u32 h, data k)
+{
+    for (int i = 0; i < key_heat_count; i++)
+        if (keycmp(keyheat[i].key, k))
+        {
+            keyheat[i].heat = (float)h;
+            return;
+        }
+    keyheat[key_heat_count].key = (data){memcpy(malloc(k.n), k.d, k.n), k.n};
+    keyheat[key_heat_count].heat = (float)h;
+    key_heat_count++;
 }
 double brightness(uint32_t d, double h)
 {
-    /* atan2(d, h) 直接得到与竖直方向的夹角 θ（弧度），
-       且能正确处理 h = 0 的情况（返回 π/2） */
     double theta = atan2((double)d, h);
-
-    /* θ ∈ [0, π/2) → 线性映射到 [0.1, 1) */
     return 0.1 + 0.9 * (theta / (M_PI / 2.0));
 }
-
-float get_views_key_heat(data key) {
+float get_key_heat(data key) {
     for (int i = 0; i < key_heat_count; i++) {
-        if (keyheat[i].key == key) {
+        if (keycmp(keyheat[i].key, key)) {
             return keyheat[i].heat;
         }
     }
     return 0;
 }
-
+static data u64_to_data(u64 x)
+{
+    static u64 box;
+    box = x;
+    return (data){&box, 8};
+}
+static void payload_input(void *pay)
+{
+    char *str = pay + 4;
+    if (IsKeyPressed(KEY_BACKSPACE)) {
+        int n = *(u32 *)pay;
+        if (n) str[n - 1] = '\0';
+    }
+    int k = GetCharPressed();
+    if (k) {
+        char *add_char = pay + 4 + *(u32 *)pay;
+        free_block_space(add_char, 1);
+        add_char[0] = (char)k;
+        *(u32 *)pay += 1;
+    }
+    
+}
+static Vector2 MouseDelta_zoom(void)
+{
+    return Vector2Scale(GetMouseDelta(), 1.0f / (camera.zoom ? camera.zoom : 1.0f));
+}
 void draw_view(void) {
-    bg_pos = pos;
+    float key_heat = get_key_heat(views_key[view_index_current]);
+    if(key_heat) {
+        DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20, Fade(WHITE, brightness(key_heat, 100)));
+    }
     while (1) {
         key = (data){(char *)view + 4, *(u32 *)view};
+        if (*(int*)key.d == -1)
+        {
+            end_y[view_index_current] = pos.y;
+            return;
+        }
         drawcolor = WHITE;
         txt = key.d;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] && mouseWorldPos.x >= pos.x) {
@@ -200,13 +273,13 @@ void draw_view(void) {
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
             next_token_is_set();
-            set_key_heat(address_heat(next_payload(view) + 4), address_data(next_payload(view) + 4));
+            set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = next_payload(view) + 4 + 4;
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
             next_token_is_set();
-            set_key_heat(address_heat(next_payload(view) + 4), address_data(next_payload(view) + 4));
+            set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = next_payload(view) + 4 + 4;
             drawcolor = GRAY;
@@ -216,11 +289,6 @@ void draw_view(void) {
         draw_pos = pos;
         lastdrawwidth = MeasureText(txt, 20);
         max_x[view_index_current] = max(max_x[view_index_current], lastdrawwidth);
-        if (*(int*)key.d == -1)
-        {
-            end_y[view_index_current] = pos.y;
-            return;
-        }
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)lastdrawwidth, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
@@ -237,12 +305,7 @@ void draw_view(void) {
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();
-    }
-    float key_heat = get_views_key_heat(views_key[view_index_current]);
-    if(key_heat) {
-        DrawRectangle(bg_pos.x, bg_pos.y, max_x[view_index_current], 20, Fade(WHITE, brightness(key_heat, 100)));
-    }
-    
+    } 
 }
 
 __declspec(dllexport) void run(void) {
@@ -267,11 +330,7 @@ __declspec(dllexport) void run(void) {
         strcpy(input_str, remove_underscores(completion));
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
-        if (is_right) {
-            insert_str_token("set");
-        } else {
-            insert_str_token("get");
-        }
+        insert_str_token(is_right ? "set" : "get");
         key_end();
     }
     if (IsKeyPressed(KEY_DELETE)) {
@@ -325,8 +384,7 @@ __declspec(dllexport) void run(void) {
     fixed_point = point;
     DrawLine((int)line_pos.x, (int)line_pos.y, (int)mouseWorldPos.x, (int)line_pos.y, GRAY);
     EndMode2D();
-    const char *tmp = TextFormat("%s %s", input_str, completion);
-    DrawText(tmp, GetMouseX() + 20, GetMouseY(), 20, WHITE);
+    DrawText(TextFormat("%s %s", input_str, completion), GetMouseX() + 20, GetMouseY(), 20, WHITE);
     EndDrawing();
     set_ptr(base);
     {

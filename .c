@@ -141,7 +141,7 @@ int max_x[64];
 data views_key[64];
 int view_index, view_index_current, draggingIndex;
 int runonece, is_fun, is_point, is_right, fun_max, bracket;
-int lastdrawwidth, next_line_y;
+int drawwidth, next_line_y;
 char input_str[256];
 char *completion;
 static strs all_strs;
@@ -249,9 +249,9 @@ void view_to_next_token(void) {
     view = next_token(view);
 }
 
-void is_line_end(void) {
+void next_is_set_process(void) {
     if(*(u32*)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
-        off_pos(MeasureText(txt, 20), 0);
+        offset = (Vector2){drawwidth, 0};
     }
 }
 u32 find_or_add_address_heat(void *p, AddrHeat *tab)
@@ -321,13 +321,6 @@ static Vector2 MouseDelta_zoom(void)
     return Vector2Scale(GetMouseDelta(), 1.0f / (camera.zoom ? camera.zoom : 1.0f));
 }
 
-void off_pos(float x, float y)
-{
-    draw_pos = pos;
-    pos.x += x;
-    pos.y += y;
-}
-
 void draw_view(void) {
     float key_heat = get_key_heat(views_key[view_index_current]);
     if(key_heat) {
@@ -336,35 +329,28 @@ void draw_view(void) {
     while (1) {
         key = (data){(char *)view + 4, *(u32 *)view};
         offset = (Vector2){0, 20};
+        draw_pos = pos;
         drawcolor = WHITE;
         txt = key.d;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] && mouseWorldPos.x >= pos.x) {
             point = view;
         }
         is_point = fixed_point == view;
-        if (is_point) {
-            if(!is_right){
-                line_pos = pos;
-            }
-            if (IsKeyPressed(KEY_HOME)) {
-                view_index = view_index_current + 1;
-            }
-        }
         if (next_line_y == 0 && view > fixed_point) {
             next_line_y = (int)pos.y;
         }
         if (keycmp(key, strkey("get"))) {
-            off_pos(MeasureText(txt, 20), 0);
+            offset = (Vector2){MeasureText(txt, 20), 0};
             payload_input(next_payload(view));
             txt = next_payload(view) + 4;
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
-            is_line_end();
+            next_is_set_process();
             payload_input(next_payload(view));
             txt = next_payload(view) + 4;
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
-            is_line_end();
+            next_is_set_process();
             if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) = 1;
             }
@@ -375,25 +361,27 @@ void draw_view(void) {
             separate_payload_input(next_payload(view), txt = next_payload(view) + 4 + 8);
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
-            is_line_end();
+            next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = next_payload(view) + 4 + 4;
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
-            is_line_end();
+            next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = next_payload(view) + 4 + 4;
             drawcolor = GRAY;
         }
-        if (key.n == -1)
+        drawwidth = MeasureText(txt, 20);
+        max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
+        pos = Vector2Add(pos, offset);
+        if (key.n == u32max)
         {
             end_y[view_index_current] = pos.y;
             return;
         }
-        max_x[view_index_current] = max(max_x[view_index_current], lastdrawwidth);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)lastdrawwidth, 20})) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
@@ -401,10 +389,18 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + lastdrawwidth, draw_pos.y, 80, 20})) {
+        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 80, 20})) {
             point = next_token(point);
-            line_pos.x = pos.x + (float)lastdrawwidth;
             is_right = 1;
+        }
+        if (is_point) {
+            line_pos = draw_pos;
+            if(is_right){
+                line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
+            }
+            if (IsKeyPressed(KEY_HOME)) {
+                view_index = view_index_current + 1;
+            }
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();

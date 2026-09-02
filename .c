@@ -1,3 +1,7 @@
+#define WIN32_LEAN_AND_MEAN
+#define NOGDI
+#define NOUSER
+#include <winsock2.h>
 #include "raylib.h"
 #include "raymath.h"
 #include <stdio.h>
@@ -9,10 +13,102 @@
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef struct { void *d; unsigned n; } data;
-typedef void (*imp_fn)(void);
+typedef struct data_map {
+    data key;
+    struct data_map *datas;
+    u32 data_count;
+} data_map;
+typedef struct strs {
+    char **str;
+    int index;
+} strs;
+static data get_payload(data k) {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(8000);
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    connect(s, (struct sockaddr *)&a, sizeof a);
+    char op = 2;
+    send(s, &op, 1, 0);
+    send(s, (char *)&k.n, 4, 0);
+    send(s, k.d, k.n, 0);
+    unsigned n;
+    if (recv(s, (char *)&n, 4, 0) <= 0) {
+        closesocket(s);
+        return (data){0, 0};
+    }
+    void *d = malloc(n);
+    recv(s, d, n, 0);
+    closesocket(s);
+    return (data){d, n};
+}
 
-extern void *GetModuleHandleA(const char *name);
-extern void *GetProcAddress(void *module, const char *name);
+static data_map fetch_data_map(data k) {
+    data_map m = {k, 0, 0};
+    m.key.d = memcpy(malloc(k.n), k.d, k.n);
+    data payload = get_payload(k);
+    unsigned char *p = payload.d;
+    u32 off = 0;
+    while (payload.d && off + 4 <= payload.n) {
+        u32 n;
+        memcpy(&n, p + off, 4);
+        off += 4;
+        data child = {p + off, n};
+        off += n;
+        m.datas = realloc(m.datas, (m.data_count + 1) * sizeof(data_map));
+        m.datas[m.data_count++] = fetch_data_map(child);
+    }
+    free(payload.d);
+    return m;
+}
+
+data_map get_data_map(void) {
+    return fetch_data_map((data){0, 0});
+}
+
+static void data_map_collect(data_map m, strs *out) {
+    if (m.key.n) {
+        char *s = malloc(m.key.n + 1);
+        memcpy(s, m.key.d, m.key.n);
+        s[m.key.n] = 0;
+        out->str = realloc(out->str, (out->index + 1) * sizeof(char *));
+        out->str[out->index++] = s;
+    }
+    for (u32 i = 0; i < m.data_count; i++)
+        data_map_collect(m.datas[i], out);
+}
+
+strs data_map_to_strs(data_map m) {
+    strs out = {0, 0};
+    data_map_collect(m, &out);
+    return out;
+}
+
+static int by_len(const void *a, const void *b) {
+    return (int)strlen(*(char **)a) - (int)strlen(*(char **)b);
+}
+
+strs sort_strs(strs s) {
+    qsort(s.str, s.index, sizeof(char *), by_len);
+    return s;
+}
+
+char *find_str(strs index_strs, char *input_str) {
+    char *final_str = "";
+    for (int i = 0; i < index_strs.index; i++) {
+        char *str = index_strs.str[i];
+        if (strstr(str, input_str) == str)
+            final_str = str;
+        if (strcmp(str, input_str) == 0)
+            return str;
+    }
+    return final_str;
+}
+
+typedef void (*imp_fn)(void);
 
 static data data_to_data(data k) {
     typedef data (*fn)(data);
@@ -47,7 +143,8 @@ int view_index, view_index_current, draggingIndex;
 int runonece, is_fun, is_point, is_right, fun_max, bracket;
 int lastdrawwidth, next_line_y;
 char input_str[256];
-char completion[128];
+char *completion;
+static strs all_strs;
 char remove_underscores_buff[512];
 int switch_buff;
 data key;
@@ -67,6 +164,9 @@ typedef struct
 static AddrHeat adshet[256];
 static int adshet_n;
 
+void *get_global_variables(data k) { (void)k; return 0; }
+void separate_payload_input(void *pay, void *txt) { (void)pay; (void)txt; }
+
 data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }
 int keycmp(data a, data b) { return a.n == b.n && memcmp(a.d, b.d, a.n) == 0; }
 
@@ -78,7 +178,7 @@ int find_func(void *tmp) {
 
 void change_ret(int size) { (void)size; }
 
-free_block_space(void *p, int size) {
+void free_block_space(void *p, int size) {
     memmove((char *)p + size, p, block_size / 2);
 }
 
@@ -262,11 +362,11 @@ void draw_view(void) {
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
             next_token_is_set();
-            if(ismousebuttonpressed(MOUSE_BUTTON_LEFT)) {
+            if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) = 1;
             }
-            if(ismousebuttonpressed(MOUSE_BUTTON_RIGHT)) {
-                char* tmp = *(char*)(get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) + 1);
+            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                char* tmp = (char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) + 1;
                 *tmp = !*tmp;
             }
             separate_payload_input(next_payload(view), txt = next_payload(view) + 4 + 8);
@@ -316,6 +416,7 @@ __declspec(dllexport) void run(void) {
         camera.zoom = 1.0f;
         views[view_index] = base = (void *)get_ptr();
         views_pos[view_index++] = (Vector2){0.0f, 0.0f};
+        all_strs = sort_strs(data_map_to_strs(get_data_map()));
         runonece = 1;
     }
     BeginDrawing();
@@ -384,6 +485,7 @@ __declspec(dllexport) void run(void) {
     fixed_point = point;
     DrawLine((int)line_pos.x, (int)line_pos.y, (int)mouseWorldPos.x, (int)line_pos.y, GRAY);
     EndMode2D();
+    completion = find_str(all_strs, input_str);
     DrawText(TextFormat("%s %s", input_str, completion), GetMouseX() + 20, GetMouseY(), 20, WHITE);
     EndDrawing();
     set_ptr(base);

@@ -11,7 +11,7 @@ def main():
     sh([GCC, "server.c", "-o", "server.exe", "-lws2_32"])
     editor = hashlib.sha256(b"").hexdigest() + ".dll"
     sh([GCC, "-shared", "-O2", "-x", "c", "-I.", "-I"+os.path.join(RL,"include"), ".c",
-        "-o", editor, "-L"+os.path.join(RL,"lib"), "-lraylibdll", "-lgdi32", "-lwinmm"])
+        "-o", editor, "-L"+os.path.join(RL,"lib"), "-lraylibdll", "-lgdi32", "-lwinmm", "-lws2_32"])
     sh([GCC, "vm.c", "-o", "vm.exe", "-lws2_32"])
     shutil.copy2(os.path.join(RL,"lib","raylib.dll"), os.path.join(ROOT,"raylib.dll"))
     print("BUILD OK", editor)

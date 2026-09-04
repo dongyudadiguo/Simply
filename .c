@@ -164,7 +164,12 @@ typedef struct
 static AddrHeat adshet[256];
 static int adshet_n;
 
-void *get_global_variables(data k) { (void)k; return 0; }
+static void *get_global_variables(data k) {
+    typedef void *(*fn)(data);
+    fn f = (fn)GetProcAddress(GetModuleHandleA(0), "get_global_variables");
+    if (f) return f(k);
+    return 0;
+}
 void separate_payload_input(void *pay, void *txt) { (void)pay; (void)txt; }
 
 data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }

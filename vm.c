@@ -4,12 +4,38 @@
 #include <string.h>
 #include <stdint.h>
 
-typedef struct { void *d; unsigned n; } data;
+typedef uint32_t u32;
+
+typedef struct {
+    union { void *d; void *ptr; };
+    union { unsigned n; unsigned size; };
+} data;
+
+typedef struct var_unit {
+    data id;
+    data data;
+} var_unit;
+
 typedef void (*imp_fn)(void);
 __declspec(dllexport) imp_fn imp;
 
 __declspec(dllexport) const uint8_t *ptr;
 __declspec(dllexport) void *retpoint;
+__declspec(dllexport) void *var_retpoint;
+
+__declspec(dllexport) void *stk;
+__declspec(dllexport) void *stk_off;
+__declspec(dllexport) int num[256];
+__declspec(dllexport) int num_off;
+__declspec(dllexport) int num_count;
+
+__declspec(dllexport) var_unit *local_var;
+__declspec(dllexport) int local_var_count;
+__declspec(dllexport) var_unit *global_var;
+__declspec(dllexport) int global_var_count;
+
+__declspec(dllexport) data cur_block_key;
+
 #define block_size (1 << 16)
 void fill_random_bytes(void *p, unsigned n) {
     unsigned char *b = p;
@@ -180,22 +206,99 @@ __declspec(dllexport) data data_to_data(data k) {
     return v;
 }
 
+__declspec(dllexport) void *next_payload(void *p) {
+    return (char *)p + 4 + *(uint32_t *)p;
+}
+
+__declspec(dllexport) void *next_token(void *p) {
+    p = next_payload(p);
+    p = next_payload(p);
+    return p;
+}
+
+__declspec(dllexport) data ptr_to_data(const uint8_t *p) {
+    return (data){(void *)(p + 4), *(uint32_t *)p};
+}
+
 __declspec(dllexport) void pushret(void) {
     *(void **)retpoint = (void *)ptr;
     retpoint = (uint8_t *)retpoint + 8;
+    *(void **)var_retpoint = (void *)local_var;
+    var_retpoint = (uint8_t *)var_retpoint + sizeof(void *);
 }
 
 __declspec(dllexport) void drill(data k) {
     for (;;) {
         if ((imp = hit(k))) break;
         pushret();
+        cur_block_key = k;
         ptr = data_to_data(k).d;
         k = (data){(void *)(ptr + 4), *(uint32_t *)ptr};
     }
 }
 
+__declspec(dllexport) void run_next(void) {
+    ptr = (const uint8_t *)next_token((void *)ptr);
+    drill(ptr_to_data(ptr));
+}
+
+__declspec(dllexport) void rerun(void) {
+    ptr = (const uint8_t *)data_to_data(cur_block_key).d;
+    drill(ptr_to_data(ptr));
+}
+
+__declspec(dllexport) data read_payload(void) {
+    void *p = next_payload((void *)ptr);
+    return (data){(char *)p + 4, *(uint32_t *)p};
+}
+
+__declspec(dllexport) data read_stk(void) {
+    void *stk_read = stk;
+    for (int i = 0; i < num_off; i++) {
+        stk_read = (char *)stk_read + num[i];
+    }
+    data res = (data){stk_read, (unsigned)num[num_off]};
+    num_off++;
+    return res;
+}
+
+__declspec(dllexport) void write_num(int sz) {
+    num[num_count++] = sz;
+}
+
+__declspec(dllexport) var_unit *find_or_add_var(var_unit **p_vars, int *p_count, data payload) {
+    var_unit *arr = *p_vars;
+    for (int i = 0; i < *p_count; i++) {
+        if (arr[i].id.size == payload.size && memcmp(arr[i].id.ptr, payload.ptr, payload.size) == 0) {
+            return &arr[i];
+        }
+    }
+    var_unit *v = &arr[(*p_count)++];
+    v->id.ptr = malloc(payload.size ? payload.size : 1);
+    v->id.size = payload.size;
+    if (payload.size) memcpy(v->id.ptr, payload.ptr, payload.size);
+    v->data = (data){0, 0};
+    return v;
+}
+
+__declspec(dllexport) void *get_global_variables(data k) {
+    var_unit *var = find_or_add_var(&global_var, &global_var_count, k);
+    if (!var->data.ptr) {
+        var->data.ptr = calloc(1, 8);
+        var->data.size = 8;
+    }
+    return var->data.ptr;
+}
+
 int main(void) {
     retpoint = malloc(1 << 20);
+    var_retpoint = malloc(1 << 20);
+    stk = malloc(4096);
+    stk_off = stk;
+    local_var = malloc(4096);
+    local_var_count = 0;
+    global_var = malloc(4096);
+    global_var_count = 0;
     data id = (data){malloc(32), 32};
     FILE *f = fopen("#", "rb");
     if (f) {
@@ -207,6 +310,7 @@ int main(void) {
         char block[12] = {0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1};
         net_upload((data){block, 12}, id);
     }
+    cur_block_key = id;
     drill(id);
     for (;;) {
         imp();

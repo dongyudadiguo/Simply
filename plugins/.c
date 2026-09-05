@@ -131,7 +131,8 @@ static void set_ptr(const uint8_t *p) {
 Camera2D camera;
 Vector2 mouseWorldPos, pos, draw_pos, line_pos, offset, bg_pos;
 Color drawcolor;
-void *view, *point, *fixed_point, *base, *copy, *txt;
+void *view, *point, *fixed_point, *base, *copy;
+const char *txt;
 void *views[64];
 Vector2 views_pos[64];
 Vector2 func_pos[64];
@@ -330,6 +331,15 @@ data ptr_to_data(const uint8_t *p) {
 }
 
 
+// Valid until the next call.
+static const char *length_str(u32 length, const void *data) {
+    static char *buffer;
+    buffer = realloc(buffer, (size_t)length + 1);
+    memcpy(buffer, data, length);
+    buffer[length] = '\0';
+    return buffer;
+}
+
 void draw_view(void) {
     float key_heat = get_key_heat(views_key[view_index_current]);
     if(key_heat) {
@@ -340,7 +350,7 @@ void draw_view(void) {
         offset = (Vector2){0, 20};
         draw_pos = pos;
         drawcolor = WHITE;
-        txt = key.d;
+        txt = key.n == u32max ? "" : length_str(key.n, key.d);
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] && mouseWorldPos.x >= pos.x) {
             point = view;
         }
@@ -351,12 +361,12 @@ void draw_view(void) {
         if (keycmp(key, strkey("get"))) {
             offset = (Vector2){MeasureText(txt, 20), 0};
             payload_input(next_payload(view));
-            txt = next_payload(view) + 4;
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"get";
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
             next_is_set_process();
             payload_input(next_payload(view));
-            txt = next_payload(view) + 4;
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"set";
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
             next_is_set_process();
@@ -367,19 +377,20 @@ void draw_view(void) {
                 char* tmp = (char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) + 1;
                 *tmp = !*tmp;
             }
-            separate_payload_input(next_payload(view), txt = next_payload(view) + 4 + 8);
+            separate_payload_input(next_payload(view), next_payload(view) + 4 + 8);
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view) - 8, next_payload(view) + 12):"handrun";
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
             next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
-            txt = next_payload(view) + 4 + 4;
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"cond";
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
             next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
-            txt = next_payload(view) + 4 + 4;
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"condrerun";
             drawcolor = GRAY;
         }
         drawwidth = MeasureText(txt, 20);
@@ -438,7 +449,7 @@ __declspec(dllexport) void run(void) {
         strcpy(input_str, remove_underscores(completion));
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
-        insert_str_token(is_right||keycmp(ptr_to_data(next_token(fixed_point)), strkey("set")) ? "set" : "get");
+        insert_str_token(is_right||(*(u32*)fixed_point == u32max?0:keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"))) ? "set" : "get");
         key_end();
     }
     if (IsKeyPressed(KEY_DELETE)) {
@@ -482,6 +493,7 @@ __declspec(dllexport) void run(void) {
         views_pos[draggingIndex] = Vector2Add(views_pos[draggingIndex], MouseDelta_zoom());
     }
     next_line_y = 0;
+    is_right = 0;
     for (view_index_current = 0; view_index_current < view_index; view_index_current++) {
         view = views[view_index_current];
         pos = views_pos[view_index_current];
@@ -490,7 +502,6 @@ __declspec(dllexport) void run(void) {
     }
     input(input_str);
     fixed_point = point;
-    is_right = 0;
     DrawLine((int)line_pos.x, (int)line_pos.y, (int)mouseWorldPos.x, (int)line_pos.y, GRAY);
     EndMode2D();
     completion = find_str(all_strs, input_str);

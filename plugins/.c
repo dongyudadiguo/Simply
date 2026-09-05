@@ -127,6 +127,7 @@ static void set_ptr(const uint8_t *p) {
 
 #define u32max 0xFFFFFFFFu
 #define block_size (1 << 16)
+#define gap 4
 
 Camera2D camera;
 Vector2 mouseWorldPos, pos, draw_pos, line_pos, offset, bg_pos;
@@ -257,8 +258,10 @@ void view_to_next_token(void) {
 
 void next_is_set_process(void) {
     if(*(u32*)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
-        offset = (Vector2){drawwidth, 0};
+        offset = (Vector2){drawwidth + gap, 0};
+        return;
     }
+    pos.x = 0;
 }
 u32 find_or_add_address_heat(void *p, AddrHeat *tab)
 {
@@ -346,30 +349,44 @@ void draw_view(void) {
         DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20, Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
-        key = (data){(char *)view + 4, *(u32 *)view};
-        offset = (Vector2){0, 20};
         draw_pos = pos;
-        drawcolor = WHITE;
-        txt = key.n == u32max ? "" : length_str(key.n, key.d);
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] && mouseWorldPos.x >= pos.x) {
             point = view;
         }
         is_point = fixed_point == view;
+        if (is_point) {
+            if(!is_right){
+                line_pos = draw_pos;
+            }
+            if (IsKeyPressed(KEY_HOME)) {
+                view_index = view_index_current + 1;
+            }
+        }
+        key = (data){(char *)view + 4, *(u32 *)view};
+        if (key.n == u32max)
+        {
+            end_y[view_index_current] = pos.y + 20;
+            return;
+        }
+        offset = (Vector2){0, 20};
+        drawcolor = WHITE;
+        txt = length_str(key.n, key.d);
+        drawwidth = MeasureText(txt, 20);
+        next_is_set_process();
         if (next_line_y == 0 && view > fixed_point) {
             next_line_y = (int)pos.y;
         }
         if (keycmp(key, strkey("get"))) {
-            offset = (Vector2){MeasureText(txt, 20), 0};
             payload_input(next_payload(view));
             txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"get";
+            offset = (Vector2){MeasureText(txt, 20) + gap, 0};
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
-            next_is_set_process();
             payload_input(next_payload(view));
             txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"set";
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
-            next_is_set_process();
+            
             if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) = 1;
             }
@@ -381,19 +398,16 @@ void draw_view(void) {
             txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view) - 8, next_payload(view) + 12):"handrun";
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
-            next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"cond";
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
-            next_is_set_process();
             set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
             separate_payload_input(next_payload(view),next_payload(view) + 4);
             txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"condrerun";
             drawcolor = GRAY;
         }
-        drawwidth = MeasureText(txt, 20);
         max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
         pos = Vector2Add(pos, offset);
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
@@ -404,22 +418,10 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (is_point) {
-            if(!is_right){
-                line_pos = draw_pos;
-            }
-            if (IsKeyPressed(KEY_HOME)) {
-                view_index = view_index_current + 1;
-            }
-        }
-        if (key.n == u32max)
-        {
-            end_y[view_index_current] = pos.y;
-            return;
-        }
-        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 80, 20})) {
-            point = next_token(point);
+        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 40, 20})) {
+            line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
             is_right = 1;
+            point = next_token(point);
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();
@@ -450,7 +452,6 @@ __declspec(dllexport) void run(void) {
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
         insert_str_token(is_right||(*(u32*)fixed_point == u32max?0:keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"))) ? "set" : "get");
-        key_end();
     }
     if (IsKeyPressed(KEY_DELETE)) {
         copy = point;

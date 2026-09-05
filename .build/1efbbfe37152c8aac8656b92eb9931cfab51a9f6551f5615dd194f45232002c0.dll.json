@@ -1,0 +1,19 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "-shared",
+      "-O2",
+      "-I.",
+      "plugins/handrun.c",
+      "-o",
+      "1efbbfe37152c8aac8656b92eb9931cfab51a9f6551f5615dd194f45232002c0.dll"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\handrun.c": "021a3e29d98785d294c24d35f64d6a08d2d51ad2ea346f2951aa3c538a514d27",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a"
+    }
+  },
+  "output": "771e30539d32dcb9e367c3ee53378bc821a3034ac16f364c35514810363d44d3"
+}

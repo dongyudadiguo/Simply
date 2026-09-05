@@ -1,0 +1,16 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "server.c",
+      "-o",
+      "server.exe",
+      "-lws2_32"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\server.c": "1205e9cf01d3177c21fcefb49befc831da421722d401d1faa5d97abc35fb4dac"
+    }
+  },
+  "output": "c92fd25c7e513e463ff8bad1004574383fe35992615902c8f89422a098b17f20"
+}

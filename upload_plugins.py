@@ -13,7 +13,7 @@ def get_plugin_names():
     names = []
     if os.path.exists(PLUGINS_DIR):
         for f in os.listdir(PLUGINS_DIR):
-            if f.endswith(".c"):
+            if f.endswith(".c") and f[:-2]:
                 names.append(f[:-2])
     if not names:
         names = ["get", "set", "gget", "gset", "cond", "condrerun", "handrun", "rerun", "add", "init"]

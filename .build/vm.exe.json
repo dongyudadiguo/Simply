@@ -1,0 +1,16 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "vm.c",
+      "-o",
+      "vm.exe",
+      "-lws2_32"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\vm.c": "f027aecc287b4f46aa8f63196e6ffea05d64f81c1d20e4bfd575dfa48ac0d3d9"
+    }
+  },
+  "output": "5e4119b40d6448e6444380920e0849fc27bc86256cb97f0e066591fb86872510"
+}

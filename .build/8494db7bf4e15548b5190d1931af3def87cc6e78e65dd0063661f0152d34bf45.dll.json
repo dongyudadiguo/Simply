@@ -1,0 +1,19 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "-shared",
+      "-O2",
+      "-I.",
+      "plugins/condrerun.c",
+      "-o",
+      "8494db7bf4e15548b5190d1931af3def87cc6e78e65dd0063661f0152d34bf45.dll"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\condrerun.c": "f1c0dbe68eef1ba4a09713c6b266fb67313a8d65c9f3bc066357b2bd1e077a84",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a"
+    }
+  },
+  "output": "9be740e57e7caa3504c336950b5a6cc332258586c9f23a0a2e752273709fe672"
+}

@@ -1,0 +1,33 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "-shared",
+      "-O2",
+      "-x",
+      "c",
+      "-I.",
+      "-IC:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include",
+      "plugins/.c",
+      "-o",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.dll",
+      "-LC:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\lib",
+      "-lraylibdll",
+      "-lgdi32",
+      "-lwinmm",
+      "-lws2_32"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\.c": "e9ab3ab52f60804155aa336ca51065ac77d50ac0e339b875a6a406fdda55a11c",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include\\raylib.h": "1842111e48260e622d0ff2e6f4ac6141508d6f369791265ba518e7502c760ccf",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include\\raymath.h": "9427c24aceac5c566921bc87320c7b1ba90bd760b86f013f254b65c2fb5ada82",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include\\rlgl.h": "83c0ae24a773eb9b62473729b72616e9a312fcf7fda65441ca8ce45ca394067f",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\lib\\libraylib.a": "e0e22b3d3be5ca9d302fa4af524a69cd038fd7ddbf37c41b2f9af0ec8fe0c2e6",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\lib\\libraylibdll.a": "b4fc5471ab829856b3bcb6584f4560077980007eeacc010f3986088b842c662f",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\lib\\raylib.dll": "5a3e7b6b163273d7255e53b008ca6c5e56c7dcd0405a316e95f51bb00eacc4cf"
+    }
+  },
+  "output": "68105b2ced233a5d468a227a206072cc24925f4abf04d5a98f272276e8d251f1"
+}

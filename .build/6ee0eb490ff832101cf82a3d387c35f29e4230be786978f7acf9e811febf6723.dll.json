@@ -1,0 +1,19 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "-shared",
+      "-O2",
+      "-I.",
+      "plugins/set.c",
+      "-o",
+      "6ee0eb490ff832101cf82a3d387c35f29e4230be786978f7acf9e811febf6723.dll"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\set.c": "1b3627e9d563486b4fb88d25a0d10c64a3f7d5866c102f3233fa85fc173462f9"
+    }
+  },
+  "output": "df956af4eb1c1bd0dcc1aee2d98d58dbe4dd331556934b733b28b98374b2739a"
+}

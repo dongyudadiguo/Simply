@@ -1,0 +1,19 @@
+{
+  "signature": {
+    "command": [
+      "C:\\mingw64\\bin\\gcc.EXE",
+      "-shared",
+      "-O2",
+      "-I.",
+      "plugins/gget.c",
+      "-o",
+      "61bb949c958cc5cc3cd87ccf5819e4546847c66c6cdc934dcd4609c368189f06.dll"
+    ],
+    "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
+    "inputs": {
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\gget.c": "42e8c0f80cfddb6ae61f7108b2ac57270a6343be3d3219deb1e3fb86541b3f74",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a"
+    }
+  },
+  "output": "8d5d8cd3946b0540f9065e6c3064ec707274e8904a770ba4d6d92b04534dc6ab"
+}

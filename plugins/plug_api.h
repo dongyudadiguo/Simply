@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define Add_size(...) \
+    add_size((int)(sizeof((int[]){__VA_ARGS__}) / sizeof(int)), \
+      (int[]){__VA_ARGS__})
+
 typedef uint32_t u32;
 
 typedef struct {
@@ -41,14 +45,19 @@ static inline data read_payload(void) {
     return ((fn)get_vm_proc("read_payload"))();
 }
 
-static inline data read_stk(void) {
-    typedef data (*fn)(void);
-    return ((fn)get_vm_proc("read_stk"))();
+static inline data ptr_to_data(void *ptr) {
+    typedef data (*fn)(void *);
+    return ((fn)get_vm_proc("ptr_to_data"))(ptr);
 }
 
-static inline void write_num(int sz) {
-    typedef void (*fn)(int);
-    ((fn)get_vm_proc("write_num"))(sz);
+static inline void off_reset(void) {
+    typedef void (*fn)(void);
+    ((fn)get_vm_proc("off_reset"))();
+}
+
+static inline void add_size(int count, int *arr) {
+    typedef void (*fn)(int, int *);
+    ((fn)get_vm_proc("add_size"))(count, arr);
 }
 
 static inline var_unit *find_or_add_var(var_unit **p_vars, int *p_count, data payload) {
@@ -65,13 +74,11 @@ static inline int *get_global_var_count_ptr(void) { return (int*)get_vm_proc("gl
 
 #define stk (*get_stk_ptr())
 #define stk_off (*get_stk_off_ptr())
-#define std_off stk_off
 #define local_var (*get_local_var_ptr())
 #define local_var_count (*get_local_var_count_ptr())
 #define global_var (*get_global_var_ptr())
 #define global_var_count (*get_global_var_count_ptr())
 #define num_off (*(int*)get_vm_proc("num_off"))
-#define num_count (*(int*)get_vm_proc("num_count"))
 #define num ((int*)get_vm_proc("num"))
 
 #endif

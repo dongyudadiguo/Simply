@@ -27,7 +27,6 @@ __declspec(dllexport) void *stk;
 __declspec(dllexport) void *stk_off;
 __declspec(dllexport) int num[256];
 __declspec(dllexport) int num_off;
-__declspec(dllexport) int num_count;
 
 __declspec(dllexport) var_unit *local_var;
 __declspec(dllexport) int local_var_count;
@@ -252,18 +251,23 @@ __declspec(dllexport) data read_payload(void) {
     return (data){(char *)p + 4, *(uint32_t *)p};
 }
 
-__declspec(dllexport) data read_stk(void) {
-    void *stk_read = stk;
-    for (int i = 0; i < num_off; i++) {
-        stk_read = (char *)stk_read + num[i];
+int sumIntArray(int arr[], int length) {
+    int sum = 0;
+    for (int i = 0; i < length; i++) {
+        sum += arr[i];
     }
-    data res = (data){stk_read, (unsigned)num[num_off]};
-    num_off++;
-    return res;
+    return sum;
 }
 
-__declspec(dllexport) void write_num(int sz) {
-    num[num_count++] = sz;
+__declspec(dllexport) void off_reset(void) {
+    num_off = 0;
+    stk_off = stk;
+}
+
+__declspec(dllexport) void add_size(int count, int *arr) {
+    stk_off += sumIntArray(arr, count);
+    memcpy(num, arr, count * sizeof(int));
+    num_off += count;
 }
 
 __declspec(dllexport) var_unit *find_or_add_var(var_unit **p_vars, int *p_count, data payload) {
@@ -273,12 +277,8 @@ __declspec(dllexport) var_unit *find_or_add_var(var_unit **p_vars, int *p_count,
             return &arr[i];
         }
     }
-    var_unit *v = &arr[(*p_count)++];
-    v->id.ptr = malloc(payload.size ? payload.size : 1);
-    v->id.size = payload.size;
-    if (payload.size) memcpy(v->id.ptr, payload.ptr, payload.size);
-    v->data = (data){0, 0};
-    return v;
+    arr[(*p_count)++] = (var_unit){(data){memcpy(malloc(payload.size),payload.ptr,payload.size),payload.size},(data){0,0}};
+    return &arr;
 }
 
 __declspec(dllexport) void *get_global_variables(data k) {
@@ -291,13 +291,13 @@ __declspec(dllexport) void *get_global_variables(data k) {
 }
 
 int main(void) {
-    retpoint = malloc(1 << 20);
-    var_retpoint = malloc(1 << 20);
-    stk = malloc(4096);
+    retpoint = malloc(1 << 5);
+    var_retpoint = malloc(1 << 5);
+    stk = malloc(1 << 10);
     stk_off = stk;
-    local_var = malloc(4096);
+    local_var = malloc(1 << 15);
     local_var_count = 0;
-    global_var = malloc(4096);
+    global_var = malloc(1 << 15);
     global_var_count = 0;
     data id = (data){malloc(32), 32};
     FILE *f = fopen("#", "rb");

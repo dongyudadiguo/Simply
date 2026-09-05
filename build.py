@@ -14,6 +14,7 @@ PLUGINS = {
     "handrun": "handrun",
     "rerun": "rerun",
     "add": "add",
+    "init": "init"
 }
 
 def sh(args):

@@ -16,7 +16,7 @@ def get_plugin_names():
             if f.endswith(".c"):
                 names.append(f[:-2])
     if not names:
-        names = ["get", "set", "gget", "gset", "cond", "condrerun", "handrun", "rerun", "add"]
+        names = ["get", "set", "gget", "gset", "cond", "condrerun", "handrun", "rerun", "add", "init"]
     return sorted(list(set(names)))
 
 def pack_payload(tokens):

@@ -381,11 +381,6 @@ void draw_view(void) {
         drawwidth = MeasureText(txt, 20);
         max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
         pos = Vector2Add(pos, offset);
-        if (key.n == u32max)
-        {
-            end_y[view_index_current] = pos.y;
-            return;
-        }
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
@@ -394,18 +389,22 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 80, 20})) {
-            point = next_token(point);
-            is_right = 1;
-        }
         if (is_point) {
             line_pos = draw_pos;
             if(is_right){
-                line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
+                line_pos.x += drawwidth;
             }
             if (IsKeyPressed(KEY_HOME)) {
                 view_index = view_index_current + 1;
             }
+        }
+        if (key.n == u32max)
+        {
+            end_y[view_index_current] = pos.y;
+            return;
+        }
+        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 80, 20})) {
+            is_right = 1;
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();
@@ -487,6 +486,9 @@ __declspec(dllexport) void run(void) {
     }
     input(input_str);
     fixed_point = point;
+    if(is_right){
+        point = next_token(point);
+    }
     is_right = 0;
     DrawLine((int)line_pos.x, (int)line_pos.y, (int)mouseWorldPos.x, (int)line_pos.y, GRAY);
     EndMode2D();

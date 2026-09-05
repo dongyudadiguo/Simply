@@ -273,7 +273,6 @@ u32 find_or_add_address_heat(void *p, AddrHeat *tab)
 u32 address_heat(void *p) {
     return *(u32 *)p - find_or_add_address_heat(p, adshet);
 }
-data address_data(void *p) { return (data){p, 4}; }
 void set_key_heat(u32 h, data k)
 {
     for (int i = 0; i < key_heat_count; i++)
@@ -325,6 +324,11 @@ static Vector2 MouseDelta_zoom(void)
 {
     return Vector2Scale(GetMouseDelta(), 1.0f / (camera.zoom ? camera.zoom : 1.0f));
 }
+
+data ptr_to_data(const uint8_t *p) {
+    return (data){(void *)(p + 4), *(uint32_t *)p};
+}
+
 
 void draw_view(void) {
     float key_heat = get_key_heat(views_key[view_index_current]);
@@ -390,9 +394,8 @@ void draw_view(void) {
             view_index++;
         }
         if (is_point) {
-            line_pos = draw_pos;
-            if(is_right){
-                line_pos.x += drawwidth;
+            if(!is_right){
+                line_pos = draw_pos;
             }
             if (IsKeyPressed(KEY_HOME)) {
                 view_index = view_index_current + 1;
@@ -404,6 +407,7 @@ void draw_view(void) {
             return;
         }
         if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 80, 20})) {
+            point = next_token(point);
             is_right = 1;
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
@@ -434,7 +438,7 @@ __declspec(dllexport) void run(void) {
         strcpy(input_str, remove_underscores(completion));
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
-        insert_str_token(is_right ? "set" : "get");
+        insert_str_token(is_right||keycmp(ptr_to_data(next_token(fixed_point)), strkey("set")) ? "set" : "get");
         key_end();
     }
     if (IsKeyPressed(KEY_DELETE)) {
@@ -486,9 +490,6 @@ __declspec(dllexport) void run(void) {
     }
     input(input_str);
     fixed_point = point;
-    if(is_right){
-        point = next_token(point);
-    }
     is_right = 0;
     DrawLine((int)line_pos.x, (int)line_pos.y, (int)mouseWorldPos.x, (int)line_pos.y, GRAY);
     EndMode2D();

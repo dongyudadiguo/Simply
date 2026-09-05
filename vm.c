@@ -278,7 +278,7 @@ __declspec(dllexport) var_unit *find_or_add_var(var_unit **p_vars, int *p_count,
         }
     }
     arr[(*p_count)++] = (var_unit){(data){memcpy(malloc(payload.size),payload.ptr,payload.size),payload.size},(data){0,0}};
-    return &arr;
+    return arr;
 }
 
 __declspec(dllexport) void *get_global_variables(data k) {

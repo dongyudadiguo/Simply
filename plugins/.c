@@ -147,7 +147,6 @@ int drawwidth, next_line_y;
 char input_str[256];
 char *completion;
 static strs all_strs;
-char remove_underscores_buff[512];
 int switch_buff;
 data key;
 FILE *file;
@@ -204,12 +203,21 @@ void free_block_space(void *p, int size) {
     memmove((char *)p + size, p, block_size / 2);
 }
 
-insert_data_to_block(data d){
+void delete_block_space(void *p, int size) {
+    memmove((char *)p, p + size, block_size / 2);
+}
+
+void insert_data_to_block(data d){
     free_block_space(point, d.n);
     memcpy(point, d.d, d.n);
 }
 
-insert_only_payload_token(data d){
+void insert_data_to_block(data d){ 
+    free_block_space(point, d.n);
+    memcpy(point, d.d, d.n);
+}
+
+void insert_only_payload_token(data d){
     insert_data_to_block((data){&(d.n), d.n});
     insert_data_to_block(d);
 }
@@ -233,20 +241,6 @@ void key_end(void) {
     set_mouse_pos_next(0, (int)line_pos.y + 20);
 }
 
-void *remove_underscores(char *str) {
-    char *dst_buff = remove_underscores_buff + switch_buff * 256;
-    char *dst = dst_buff;
-    switch_buff = !switch_buff;
-    while (*str) {
-        if (*str != '_') {
-            *dst = *str;
-            dst++;
-        }
-        str++;
-    }
-    *dst = '\0';
-    return dst_buff;
-}
 
 void input(char *s) {
     if (IsKeyPressed(KEY_BACKSPACE)) {
@@ -335,12 +329,14 @@ static void payload_input(void *pay)
     if(is_point){
         char *str = pay + 4;
         if (IsKeyPressed(KEY_BACKSPACE)) {
-            int n = *(u32 *)pay;
-            if (n) str[n - 1] = '\0';
+            if (*(u32 *)pay) {
+                delete_block_space(str + *(u32 *)pay, 1);
+                *(u32 *)pay--;
+            }
         }
         int k = GetCharPressed();
         if (k) {
-            char *add_char = pay + 4 + *(u32 *)pay;
+            char *add_char = str + *(u32 *)pay;
             free_block_space(add_char, 1);
             add_char[0] = (char)k;
             *(u32 *)pay += 1;
@@ -366,7 +362,7 @@ static const char *length_str(u32 length, const void *data) {
     return buffer;
 }
 
-GenerateRandomBytes(uint32_t n)
+static uint8_t *GenerateRandomBytes(uint32_t n)
 {
     static uint8_t bytes[16];
     for (uint32_t i = 0; i < n; i++)
@@ -476,7 +472,7 @@ __declspec(dllexport) void run(void) {
         key_end();
     }
     if (IsKeyPressed(KEY_TAB)) {
-        strcpy(input_str, remove_underscores(completion));
+        strcpy(input_str,completion);
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
         insert_str_token(is_right||(*(u32*)fixed_point == u32max?0:keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"))) ? "set" : "get");

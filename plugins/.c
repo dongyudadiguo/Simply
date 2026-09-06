@@ -12,16 +12,23 @@
 
 typedef uint32_t u32;
 typedef uint64_t u64;
-typedef struct { void *d; unsigned n; } data;
+
+typedef struct {
+    void *d;
+    unsigned n;
+} data;
+
 typedef struct data_map {
     data key;
     struct data_map *datas;
     u32 data_count;
 } data_map;
+
 typedef struct strs {
     char **str;
     int index;
 } strs;
+
 static data get_payload(data k) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -114,13 +121,16 @@ static data data_to_data(data k) {
     typedef data (*fn)(data);
     return ((fn)GetProcAddress(GetModuleHandleA(0), "data_to_data"))(k);
 }
+
 static void drill(data k) {
     typedef void (*fn)(data);
     ((fn)GetProcAddress(GetModuleHandleA(0), "drill"))(k);
 }
+
 static const uint8_t *get_ptr(void) {
     return *(const uint8_t **)GetProcAddress(GetModuleHandleA(0), "ptr");
 }
+
 static void set_ptr(const uint8_t *p) {
     *(const uint8_t **)GetProcAddress(GetModuleHandleA(0), "ptr") = p;
 }
@@ -150,33 +160,40 @@ static strs all_strs;
 int switch_buff;
 data key;
 FILE *file;
-typedef struct
-{
+
+typedef struct {
     data key;
     float heat;
 } KeyHeat;
+
 static KeyHeat keyheat[256];
 static int key_heat_count;
-typedef struct
-{
+
+typedef struct {
     void *p;
     u32 heat;
 } AddrHeat;
+
 static AddrHeat adshet[256];
 static int adshet_n;
 
 static void *get_global_variables(data k) {
     typedef void *(*fn)(data);
     fn f = (fn)GetProcAddress(GetModuleHandleA(0), "get_global_variables");
-    if (f) return f(k);
+    if (f)
+        return f(k);
     return 0;
 }
+
+void free_block_space(void *p, int size);
+
 void separate_payload_input(void *pay_size, void *pay_data) {
-    if(is_point){
+    if (is_point) {
         char *str = pay_data;
         if (IsKeyPressed(KEY_BACKSPACE)) {
             int n = *(u32 *)pay_size;
-            if (n) str[n - 1] = '\0';
+            if (n)
+                str[n - 1] = '\0';
         }
         int k = GetCharPressed();
         if (k) {
@@ -188,16 +205,24 @@ void separate_payload_input(void *pay_size, void *pay_data) {
     }
 }
 
-data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }
-int keycmp(data a, data b) { return a.n == b.n && memcmp(a.d, b.d, a.n) == 0; }
+data strkey(const char *s) {
+    return (data){(void *)s, (unsigned)strlen(s)};
+}
+
+int keycmp(data a, data b) {
+    return a.n == b.n && memcmp(a.d, b.d, a.n) == 0;
+}
 
 int find_func(void *tmp) {
     for (int i = 0; i < fun_max; i++)
-        if (funcs[i] == tmp) return i;
+        if (funcs[i] == tmp)
+            return i;
     return 0;
 }
 
-void change_ret(int size) { (void)size; }
+void change_ret(int size) {
+    (void)size;
+}
 
 void free_block_space(void *p, int size) {
     memmove((char *)p + size, p, block_size / 2);
@@ -207,17 +232,12 @@ void delete_block_space(void *p, int size) {
     memmove((char *)p, p + size, block_size / 2);
 }
 
-void insert_data_to_block(data d){
+void insert_data_to_block(data d) {
     free_block_space(point, d.n);
     memcpy(point, d.d, d.n);
 }
 
-void insert_data_to_block(data d){ 
-    free_block_space(point, d.n);
-    memcpy(point, d.d, d.n);
-}
-
-void insert_only_payload_token(data d){
+void insert_only_payload_token(data d) {
     insert_data_to_block((data){&(d.n), d.n});
     insert_data_to_block(d);
 }
@@ -228,7 +248,8 @@ void insert_str_token(char *s) {
 }
 
 void set_mouse_pos_next(int offset_x, int offset_y) {
-    SetMousePosition(GetMouseX() + offset_x, GetWorldToScreen2D((Vector2){line_pos.x, (float)offset_y}, camera).y + 2);
+    SetMousePosition(GetMouseX() + offset_x,
+                     GetWorldToScreen2D((Vector2){line_pos.x, (float)offset_y}, camera).y + 2);
 }
 
 void clean_input_str(void) {
@@ -241,11 +262,11 @@ void key_end(void) {
     set_mouse_pos_next(0, (int)line_pos.y + 20);
 }
 
-
 void input(char *s) {
     if (IsKeyPressed(KEY_BACKSPACE)) {
         int n = (int)strlen(s);
-        if (n) s[n - 1] = '\0';
+        if (n)
+            s[n - 1] = '\0';
     }
     int k = GetCharPressed();
     if (k) {
@@ -273,14 +294,14 @@ void view_to_next_token(void) {
 }
 
 void next_is_set_process(void) {
-    if(*(u32*)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
+    if (*(u32 *)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
         offset = (Vector2){drawwidth + gap, 0};
         return;
     }
     pos.x = 0;
 }
-u32 find_or_add_address_heat(void *p, AddrHeat *tab)
-{
+
+u32 find_or_add_address_heat(void *p, AddrHeat *tab) {
     (void)tab;
     for (int i = 0; i < adshet_n; i++)
         if (adshet[i].p == p)
@@ -290,14 +311,14 @@ u32 find_or_add_address_heat(void *p, AddrHeat *tab)
     adshet_n++;
     return 0;
 }
+
 u32 address_heat(void *p) {
     return *(u32 *)p - find_or_add_address_heat(p, adshet);
 }
-void set_key_heat(u32 h, data k)
-{
+
+void set_key_heat(u32 h, data k) {
     for (int i = 0; i < key_heat_count; i++)
-        if (keycmp(keyheat[i].key, k))
-        {
+        if (keycmp(keyheat[i].key, k)) {
             keyheat[i].heat = (float)h;
             return;
         }
@@ -305,11 +326,12 @@ void set_key_heat(u32 h, data k)
     keyheat[key_heat_count].heat = (float)h;
     key_heat_count++;
 }
-double brightness(uint32_t d, double h)
-{
+
+double brightness(uint32_t d, double h) {
     double theta = atan2((double)d, h);
     return 0.1 + 0.9 * (theta / (M_PI / 2.0));
 }
+
 float get_key_heat(data key) {
     for (int i = 0; i < key_heat_count; i++) {
         if (keycmp(keyheat[i].key, key)) {
@@ -318,15 +340,15 @@ float get_key_heat(data key) {
     }
     return 0;
 }
-static data u64_to_data(u64 x)
-{
+
+static data u64_to_data(u64 x) {
     static u64 box;
     box = x;
     return (data){&box, 8};
 }
-static void payload_input(void *pay)
-{
-    if(is_point){
+
+static void payload_input(void *pay) {
+    if (is_point) {
         char *str = pay + 4;
         if (IsKeyPressed(KEY_BACKSPACE)) {
             if (*(u32 *)pay) {
@@ -343,8 +365,8 @@ static void payload_input(void *pay)
         }
     }
 }
-static Vector2 MouseDelta_zoom(void)
-{
+
+static Vector2 MouseDelta_zoom(void) {
     return Vector2Scale(GetMouseDelta(), 1.0f / (camera.zoom ? camera.zoom : 1.0f));
 }
 
@@ -352,8 +374,6 @@ data ptr_to_data(const uint8_t *p) {
     return (data){(void *)(p + 4), *(uint32_t *)p};
 }
 
-
-// Valid until the next call.
 static const char *length_str(u32 length, const void *data) {
     static char *buffer;
     buffer = realloc(buffer, (size_t)length + 1);
@@ -362,8 +382,7 @@ static const char *length_str(u32 length, const void *data) {
     return buffer;
 }
 
-static uint8_t *GenerateRandomBytes(uint32_t n)
-{
+static uint8_t *GenerateRandomBytes(uint32_t n) {
     static uint8_t bytes[16];
     for (uint32_t i = 0; i < n; i++)
         bytes[i] = (uint8_t)rand();
@@ -372,17 +391,19 @@ static uint8_t *GenerateRandomBytes(uint32_t n)
 
 void draw_view(void) {
     float key_heat = get_key_heat(views_key[view_index_current]);
-    if(key_heat) {
-        DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20, Fade(WHITE, brightness(key_heat, 100)));
+    if (key_heat) {
+        DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20,
+                      Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
         draw_pos = pos;
-        if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] && mouseWorldPos.x >= pos.x) {
+        if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
+            mouseWorldPos.x >= pos.x) {
             point = view;
         }
         is_point = fixed_point == view;
         if (is_point) {
-            if(!is_right){
+            if (!is_right) {
                 line_pos = draw_pos;
             }
             if (IsKeyPressed(KEY_HOME)) {
@@ -390,8 +411,7 @@ void draw_view(void) {
             }
         }
         key = (data){(char *)view + 4, *(u32 *)view};
-        if (key.n == u32max)
-        {
+        if (key.n == u32max) {
             end_y[view_index_current] = pos.y + 20;
             return;
         }
@@ -405,28 +425,39 @@ void draw_view(void) {
         }
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload_data(view)):"get";
+            txt = *(u32 *)next_payload(view)
+                      ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
+                      : "get";
             offset = (Vector2){MeasureText(txt, 20) + gap, 0};
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload_data(view)):"set";
+            txt = *(u32 *)next_payload(view)
+                      ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
+                      : "set";
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
-            if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload_data(view)))) = 1;
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
             }
-            if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-                char* tmp = (char*)get_global_variables(u64_to_data(*(u64*)(next_payload_data(view)))) + 1;
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                char *tmp =
+                    (char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) +
+                    1;
                 *tmp = !*tmp;
             }
             separate_payload_input(next_payload(view), next_payload_data(view) + 8);
-            txt = (*(u32*)next_payload(view) - 8)?length_str(*(u32*)next_payload(view) - 8, next_payload(view) + 8):"handrun";
+            txt = (*(u32 *)next_payload(view) - 8)
+                      ? length_str(*(u32 *)next_payload(view) - 8, next_payload(view) + 8)
+                      : "handrun";
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
-            set_key_heat(address_heat(next_payload_data(view)), (data){next_payload_data(view) + 4, *(u32*)(next_payload(view)) - 4});
-            separate_payload_input(next_payload(view),next_payload(view) + 8);
-            txt = (*(u32*)next_payload(view) - 4)?length_str(*(u32*)next_payload(view) - 4, next_payload_data(view) + 4):"cond";
+            set_key_heat(address_heat(next_payload_data(view)),
+                         (data){next_payload_data(view) + 4, *(u32 *)(next_payload(view)) - 4});
+            separate_payload_input(next_payload(view), next_payload(view) + 8);
+            txt = (*(u32 *)next_payload(view) - 4)
+                      ? length_str(*(u32 *)next_payload(view) - 4, next_payload_data(view) + 4)
+                      : "cond";
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
             set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
@@ -434,7 +465,9 @@ void draw_view(void) {
         }
         max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
         pos = Vector2Add(pos, offset);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
+            CheckCollisionPointRec(mouseWorldPos,
+                                   (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
@@ -442,19 +475,21 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (CheckCollisionPointRec(mouseWorldPos, (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 40, 20})) {
+        if (CheckCollisionPointRec(mouseWorldPos,
+                                   (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 40, 20})) {
             line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
             is_right = 1;
             point = next_token(point);
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
         view_to_next_token();
-    } 
+    }
 }
 
 __declspec(dllexport) void run(void) {
     if (!runonece) {
-        if (file) fclose(file);
+        if (file)
+            fclose(file);
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);
         InitWindow(640, 480, "SelfEdit");
         camera.zoom = 1.0f;
@@ -472,30 +507,28 @@ __declspec(dllexport) void run(void) {
         key_end();
     }
     if (IsKeyPressed(KEY_TAB)) {
-        strcpy(input_str,completion);
+        strcpy(input_str, completion);
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
-        insert_str_token(is_right||(*(u32*)fixed_point == u32max?0:keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"))) ? "set" : "get");
+        insert_str_token(is_right ||
+                                 (*(u32 *)fixed_point == u32max
+                                      ? 0
+                                      : keycmp(ptr_to_data(next_token(fixed_point)), strkey("set")))
+                             ? "set"
+                             : "get");
     }
-    if (IsKeyPressed(KEY_LEFT_CONTROL))
-    {
-        if (IsKeyDown(KEY_LEFT_ALT))
-        {
+    if (IsKeyPressed(KEY_LEFT_CONTROL)) {
+        if (IsKeyDown(KEY_LEFT_ALT)) {
             insert_only_payload_token((data){"cond", strlen("cond")});
             insert_data_to_block((data){(int[]){8}, 4});
             insert_data_to_block((data){GenerateRandomBytes(8), 8});
-        }
-        else
-        {
-            if (IsKeyDown(KEY_LEFT_SHIFT))
-            {
+        } else {
+            if (IsKeyDown(KEY_LEFT_SHIFT)) {
                 insert_only_payload_token((data){"condrerun", strlen("condrerun")});
-                insert_data_to_block((data){(int[]){4,0}, 8});
-            }
-            else
-            {
+                insert_data_to_block((data){(int[]){4, 0}, 8});
+            } else {
                 insert_only_payload_token((data){"cond", strlen("cond")});
-                insert_data_to_block((data){(int[]){4,0}, 8});
+                insert_data_to_block((data){(int[]){4, 0}, 8});
             }
         }
     }

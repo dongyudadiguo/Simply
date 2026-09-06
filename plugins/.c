@@ -185,7 +185,13 @@ static void *get_global_variables(data k) {
     return 0;
 }
 
-void free_block_space(void *p, int size);
+void free_block_space(void *p, int size) {
+    memmove((char *)p + size, p, block_size / 2);
+}
+
+void delete_block_space(void *p, int size) {
+    memmove((char *)p, p + size, block_size / 2);
+}
 
 void separate_payload_input(void *pay_size, void *pay_data) {
     if (is_point) {
@@ -219,14 +225,6 @@ int find_func(void *tmp) {
         if (funcs[i] == tmp)
             return i;
     return 0;
-}
-
-void free_block_space(void *p, int size) {
-    memmove((char *)p + size, p, block_size / 2);
-}
-
-void delete_block_space(void *p, int size) {
-    memmove((char *)p, p + size, block_size / 2);
 }
 
 void insert_data_to_block(data d) {

@@ -172,7 +172,9 @@ static void *get_global_variables(data k) {
     if (f) return f(k);
     return 0;
 }
-void separate_payload_input(void *pay, void *txt) { (void)pay; (void)txt; }
+void separate_payload_input(void *pay_size, void *pay_data) {
+
+}
 
 data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }
 int keycmp(data a, data b) { return a.n == b.n && memcmp(a.d, b.d, a.n) == 0; }
@@ -189,16 +191,19 @@ void free_block_space(void *p, int size) {
     memmove((char *)p + size, p, block_size / 2);
 }
 
+insert_data_to_block(data d){
+    free_block_space(point, d.n);
+    memcpy(point, d.d, d.n);
+}
+
+insert_only_payload_token(data d){
+    insert_data_to_block((data){&(d.n), d.n});
+    insert_data_to_block(d);
+}
+
 void insert_str_token(char *s) {
-    int n = (int)strlen(s);
-    int sz = 4 + n + 4;
-    free_block_space(point,sz);
-    memcpy(point, &n, 4);
-    memcpy((char *)point + 4, s, n);
-    int z = 0;
-    memcpy((char *)point + 4 + n, &z, 4);
-    point = (char *)point + sz;
-    change_ret(sz);
+    insert_only_payload_token((data){s, (unsigned)strlen(s)});
+    insert_data_to_block((data){(int[]){0}, 4});
 }
 
 void set_mouse_pos_next(int offset_x, int offset_y) {
@@ -244,6 +249,10 @@ void input(char *s) {
 
 void *next_payload(void *p) {
     return p + 4 + *(u32 *)p;
+}
+
+void *next_payload_data(void *p) {
+    return p + 4 + *(u32 *)p + 4;
 }
 
 void *next_token(void *p) {
@@ -310,19 +319,20 @@ static data u64_to_data(u64 x)
 }
 static void payload_input(void *pay)
 {
-    char *str = pay + 4;
-    if (IsKeyPressed(KEY_BACKSPACE)) {
-        int n = *(u32 *)pay;
-        if (n) str[n - 1] = '\0';
+    if(is_point){
+        char *str = pay + 4;
+        if (IsKeyPressed(KEY_BACKSPACE)) {
+            int n = *(u32 *)pay;
+            if (n) str[n - 1] = '\0';
+        }
+        int k = GetCharPressed();
+        if (k) {
+            char *add_char = pay + 4 + *(u32 *)pay;
+            free_block_space(add_char, 1);
+            add_char[0] = (char)k;
+            *(u32 *)pay += 1;
+        }
     }
-    int k = GetCharPressed();
-    if (k) {
-        char *add_char = pay + 4 + *(u32 *)pay;
-        free_block_space(add_char, 1);
-        add_char[0] = (char)k;
-        *(u32 *)pay += 1;
-    }
-    
 }
 static Vector2 MouseDelta_zoom(void)
 {
@@ -341,6 +351,14 @@ static const char *length_str(u32 length, const void *data) {
     memcpy(buffer, data, length);
     buffer[length] = '\0';
     return buffer;
+}
+
+GenerateRandomBytes(uint32_t n)
+{
+    static uint8_t bytes[16];
+    for (uint32_t i = 0; i < n; i++)
+        bytes[i] = (uint8_t)rand();
+    return bytes;
 }
 
 void draw_view(void) {
@@ -378,34 +396,31 @@ void draw_view(void) {
         }
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"get";
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload_data(view)):"get";
             offset = (Vector2){MeasureText(txt, 20) + gap, 0};
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload(view) + 4):"set";
+            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view), next_payload_data(view)):"set";
             drawcolor = SKYBLUE;
         } else if (keycmp(key, strkey("handrun"))) {
-            
             if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) = 1;
+                *(char*)get_global_variables(u64_to_data(*(u64*)(next_payload_data(view)))) = 1;
             }
             if(IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-                char* tmp = (char*)get_global_variables(u64_to_data(*(u64*)(next_payload(view) + 4))) + 1;
+                char* tmp = (char*)get_global_variables(u64_to_data(*(u64*)(next_payload_data(view)))) + 1;
                 *tmp = !*tmp;
             }
-            separate_payload_input(next_payload(view), next_payload(view) + 4 + 8);
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)next_payload(view) - 8, next_payload(view) + 12):"handrun";
+            separate_payload_input(next_payload(view), next_payload_data(view) + 8);
+            txt = (*(u32*)next_payload(view) - 8)?length_str(*(u32*)next_payload(view) - 8, next_payload(view) + 8):"handrun";
             drawcolor = BROWN;
         } else if (keycmp(key, strkey("cond"))) {
-            set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
-            separate_payload_input(next_payload(view),next_payload(view) + 4);
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"cond";
+            set_key_heat(address_heat(next_payload_data(view)), (data){next_payload_data(view) + 4, *(u32*)(next_payload(view)) - 4});
+            separate_payload_input(next_payload(view),next_payload(view) + 8);
+            txt = (*(u32*)next_payload(view) - 4)?length_str(*(u32*)next_payload(view) - 4, next_payload_data(view) + 4):"cond";
             drawcolor = LIGHTGRAY;
         } else if (keycmp(key, strkey("condrerun"))) {
-            set_key_heat(address_heat(next_payload(view) + 4), (data){next_payload(view) + 12, *(u32*)(next_payload(view) + 8)});
-            separate_payload_input(next_payload(view),next_payload(view) + 4);
-            txt = *(u32*)next_payload(view)?length_str(*(u32*)(next_payload(view) + 8), next_payload(view) + 12):"condrerun";
+            set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
             drawcolor = GRAY;
         }
         max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
@@ -452,6 +467,28 @@ __declspec(dllexport) void run(void) {
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
         insert_str_token(is_right||(*(u32*)fixed_point == u32max?0:keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"))) ? "set" : "get");
+    }
+    if (IsKeyPressed(KEY_LEFT_CONTROL))
+    {
+        if (IsKeyDown(KEY_LEFT_ALT))
+        {
+            insert_only_payload_token((data){"cond", strlen("cond")});
+            insert_data_to_block((data){(int[]){8}, 4});
+            insert_data_to_block((data){GenerateRandomBytes(8), 8});
+        }
+        else
+        {
+            if (IsKeyDown(KEY_LEFT_SHIFT))
+            {
+                insert_only_payload_token((data){"condrerun", strlen("condrerun")});
+                insert_data_to_block((data){(int[]){4,0}, 8});
+            }
+            else
+            {
+                insert_only_payload_token((data){"cond", strlen("cond")});
+                insert_data_to_block((data){(int[]){4,0}, 8});
+            }
+        }
     }
     if (IsKeyPressed(KEY_DELETE)) {
         copy = point;

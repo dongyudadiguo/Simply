@@ -172,10 +172,6 @@ DTDC *find_dtdc(data k) {
     return 0;
 }
 
-void join_dtdc(DTDC x) {
-    dtdcs[dtdc_count++] = x;
-}
-
 __declspec(dllexport) unsigned Measure_block_size(void *p) {
     unsigned char *q = p, *base = p;
     int tmp;
@@ -201,7 +197,7 @@ __declspec(dllexport) data data_to_data(data k) {
         return d->value;
     }
     data v = getfirstdata(k);
-    join_dtdc((DTDC){(data){memcpy(malloc(k.n), k.d, k.n), k.n}, v, crc64(v)});
+    dtdcs[dtdc_count++] = (DTDC){(data){memcpy(malloc(k.n), k.d, k.n), k.n}, v, crc64(v)};
     return v;
 }
 

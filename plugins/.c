@@ -191,9 +191,10 @@ void separate_payload_input(void *pay_size, void *pay_data) {
     if (is_point) {
         char *str = pay_data;
         if (IsKeyPressed(KEY_BACKSPACE)) {
-            int n = *(u32 *)pay_size;
-            if (n)
-                str[n - 1] = '\0';
+            if (*(u32 *)pay_size) {
+                delete_block_space(str + *(u32 *)pay_size, 1);
+                (*(u32 *)pay_size)--;
+            }
         }
         int k = GetCharPressed();
         if (k) {
@@ -218,10 +219,6 @@ int find_func(void *tmp) {
         if (funcs[i] == tmp)
             return i;
     return 0;
-}
-
-void change_ret(int size) {
-    (void)size;
 }
 
 void free_block_space(void *p, int size) {
@@ -353,7 +350,7 @@ static void payload_input(void *pay) {
         if (IsKeyPressed(KEY_BACKSPACE)) {
             if (*(u32 *)pay) {
                 delete_block_space(str + *(u32 *)pay, 1);
-                *(u32 *)pay--;
+                (*(u32 *)pay)--;
             }
         }
         int k = GetCharPressed();
@@ -537,7 +534,6 @@ __declspec(dllexport) void run(void) {
     }
     if (IsKeyReleased(KEY_DELETE)) {
         memmove(copy, point, block_size / 2);
-        change_ret((int)((char *)point - (char *)copy));
     }
     static void *copy2[2];
     if (IsKeyPressed(KEY_LEFT_SHIFT)) {

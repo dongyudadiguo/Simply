@@ -173,7 +173,20 @@ static void *get_global_variables(data k) {
     return 0;
 }
 void separate_payload_input(void *pay_size, void *pay_data) {
-
+    if(is_point){
+        char *str = pay_data;
+        if (IsKeyPressed(KEY_BACKSPACE)) {
+            int n = *(u32 *)pay_size;
+            if (n) str[n - 1] = '\0';
+        }
+        int k = GetCharPressed();
+        if (k) {
+            char *add_char = str + *(u32 *)pay_size;
+            free_block_space(add_char, 1);
+            add_char[0] = (char)k;
+            *(u32 *)pay_size += 1;
+        }
+    }
 }
 
 data strkey(const char *s) { return (data){(void *)s, (unsigned)strlen(s)}; }

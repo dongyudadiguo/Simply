@@ -227,19 +227,20 @@ int find_func(void *tmp) {
     return 0;
 }
 
-void insert_data_to_block(data d) {
+void insert_data(data d) {
     free_block_space(point, d.n);
     memcpy(point, d.d, d.n);
+    point += d.n;
 }
 
-void insert_only_payload_token(data d) {
-    insert_data_to_block((data){&(d.n), d.n});
-    insert_data_to_block(d);
+void insert_payload(data d) {
+    insert_data((data){&(d.n), 4});
+    insert_data(d);
 }
 
 void insert_str_token(char *s) {
-    insert_only_payload_token((data){s, (unsigned)strlen(s)});
-    insert_data_to_block((data){(int[]){0}, 4});
+    insert_payload((data){s, (unsigned)strlen(s)});
+    insert_data((data){(int[]){0}, 4});
 }
 
 void set_mouse_pos_next(int offset_x, int offset_y) {
@@ -413,8 +414,6 @@ void draw_view(void) {
         offset = (Vector2){0, 20};
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        drawwidth = MeasureText(txt, 20);
-        next_is_set_process();
         if (next_line_y == 0 && view > fixed_point) {
             next_line_y = (int)pos.y;
         }
@@ -458,6 +457,8 @@ void draw_view(void) {
             set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
             drawcolor = GRAY;
         }
+        drawwidth = offset.x;
+        next_is_set_process();
         max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
         pos = Vector2Add(pos, offset);
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
@@ -470,7 +471,7 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (CheckCollisionPointRec(mouseWorldPos,
+        if (pos.x == 0 && CheckCollisionPointRec(mouseWorldPos,
                                    (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 40, 20})) {
             line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
             is_right = 1;
@@ -514,16 +515,16 @@ __declspec(dllexport) void run(void) {
     }
     if (IsKeyPressed(KEY_LEFT_CONTROL)) {
         if (IsKeyDown(KEY_LEFT_ALT)) {
-            insert_only_payload_token((data){"cond", strlen("cond")});
-            insert_data_to_block((data){(int[]){8}, 4});
-            insert_data_to_block((data){GenerateRandomBytes(8), 8});
+            insert_payload((data){"cond", strlen("cond")});
+            insert_data((data){(int[]){8}, 4});
+            insert_data((data){GenerateRandomBytes(8), 8});
         } else {
             if (IsKeyDown(KEY_LEFT_SHIFT)) {
-                insert_only_payload_token((data){"condrerun", strlen("condrerun")});
-                insert_data_to_block((data){(int[]){4, 0}, 8});
+                insert_payload((data){"condrerun", strlen("condrerun")});
+                insert_data((data){(int[]){4, 0}, 8});
             } else {
-                insert_only_payload_token((data){"cond", strlen("cond")});
-                insert_data_to_block((data){(int[]){4, 0}, 8});
+                insert_payload((data){"cond", strlen("cond")});
+                insert_data((data){(int[]){4, 0}, 8});
             }
         }
     }

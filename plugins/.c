@@ -156,6 +156,7 @@ data views_key[64];
 int view_index, view_index_current, draggingIndex;
 int runonece, is_point, fun_max;
 int next_line_y;
+int is_right = 0;
 char input_str[256];
 char *completion;
 static strs all_strs;
@@ -378,15 +379,11 @@ static uint8_t *GenerateRandomBytes(uint32_t n) {
 void draw_view(void) {
     key_heat = get_key_heat(views_key[view_index_current]);
     if (key_heat) {
-        DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20,
+        DrawRectangle(pos.x, pos.y, max_x[view_index_current], end_y[view_index_current],
                       Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
         size = *(u32 *)view;
-        if (size == u32max) {
-            end_y[view_index_current] = pos.y + draw_height;
-            return;
-        }
         key = (data){(char *)view + 4, size};
         draw_pos = pos;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
@@ -394,13 +391,20 @@ void draw_view(void) {
             point = view;
         }
         is_point = fixed_point == view;
-        if (is_point) {
+        if (is_point && !is_right) {
             line_pos = draw_pos;
+        }
+        if (size == u32max) {
+            end_y[view_index_current] = pos.y + draw_height;
+            return;
         }
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        next_pos = (Vector2){views_pos[view_index_current].x, pos.y + 20};
+        next_pos = (Vector2){0, pos.y + 20};
         draw_width = MeasureText(txt, 20);
+        if(keycmp(ptr_to_data(next_token(view)), strkey("set"))){
+            next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
+        }
         draw_height = 20;
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
@@ -408,19 +412,17 @@ void draw_view(void) {
                       ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
                       : "get";
             drawcolor = SKYBLUE;
-            draw_width = MeasureText(txt, 20) + gap;
-            next_pos = (Vector2){pos.x + draw_width, pos.y};
+            draw_width = MeasureText(txt, 20);
+            next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
                       ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
                       : "set";
             drawcolor = SKYBLUE;
-            draw_width = MeasureText(txt, 20) + gap;
-            next_pos.x = pos.x + draw_width;
-            next = next_token(view);
-            if (*(u32 *)next != u32max && keycmp(ptr_to_data(next), strkey("set"))) {
-                next_pos.y = pos.y;
+            draw_width = MeasureText(txt, 20);
+            if (keycmp(ptr_to_data(next_token(view)), strkey("set"))) {
+                next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
             }
         } else if (keycmp(key, strkey("handrun"))) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -437,18 +439,18 @@ void draw_view(void) {
                       ? length_str(*(u32 *)next_payload(view) - 8, next_payload(view) + 8)
                       : "handrun";
             drawcolor = BROWN;
-            draw_width = MeasureText(txt, 20) + gap;
-            next_pos.x = pos.x + draw_width;
+            draw_width = MeasureText(txt, 20);
         } else if (keycmp(key, strkey("cond"))) {
+            int token_payload_size = *(u32 *)(next_payload(view));
+            void * target_token = next_payload_data(view) + 4;
             set_key_heat(address_heat(next_payload_data(view)),
-                         (data){next_payload_data(view) + 4, *(u32 *)(next_payload(view)) - 4});
-            separate_payload_input(next_payload(view), next_payload(view) + 8);
-            txt = (*(u32 *)next_payload(view) - 4)
-                      ? length_str(*(u32 *)next_payload(view) - 4, next_payload_data(view) + 4)
+                         (data){target_token, token_payload_size - 4});
+            separate_payload_input(next_payload(view), target_token);
+            txt = token_payload_size - 4
+                      ? length_str(token_payload_size - 4, target_token)
                       : "cond";
             drawcolor = LIGHTGRAY;
-            draw_width = MeasureText(txt, 20) + gap;
-            next_pos.x = pos.x + draw_width;
+            draw_width = MeasureText(txt, 20);
         } else if (keycmp(key, strkey("condrerun"))) {
             set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
             drawcolor = GRAY;
@@ -468,6 +470,7 @@ void draw_view(void) {
             CheckCollisionPointRec(mouseWorldPos,
                                    (Rectangle){draw_edge, draw_pos.y, 40, draw_height})) {
             line_pos = (Vector2){draw_edge, draw_pos.y};
+            is_right = 1;
             point = next_token(point);
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
@@ -499,7 +502,7 @@ __declspec(dllexport) void run(void) {
         int next_is_set = *(u32 *)fixed_point != u32max &&
                       *(u32 *)next_token(fixed_point) != u32max &&
                       keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
-        insert_str_token(next_is_set ? "set" : "get");
+        insert_str_token(next_is_set || is_right ? "set" : "get");
     }
     if (IsKeyPressed(KEY_LEFT_CONTROL)) {
         if (IsKeyDown(KEY_LEFT_ALT)) {
@@ -556,6 +559,7 @@ __declspec(dllexport) void run(void) {
         views_pos[draggingIndex] = Vector2Add(views_pos[draggingIndex], MouseDelta_zoom());
     }
     next_line_y = 0;
+    is_right = 0;
     for (view_index_current = 0; view_index_current < view_index; view_index_current++) {
         view = views[view_index_current];
         pos = views_pos[view_index_current];

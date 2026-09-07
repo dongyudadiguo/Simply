@@ -140,7 +140,7 @@ static void set_ptr(const uint8_t *p) {
 #define gap 4
 
 Camera2D camera;
-Vector2 mouseWorldPos, pos, draw_pos, line_pos, offset, bg_pos;
+Vector2 mouseWorldPos, pos, draw_pos, line_pos, bg_pos;
 Color drawcolor;
 void *view, *point, *fixed_point, *base, *copy;
 const char *txt;
@@ -153,9 +153,10 @@ int max_x[64];
 data views_key[64];
 int view_index, view_index_current, draggingIndex;
 int runonece, is_fun, is_point, is_right, fun_max, bracket;
-int drawwidth, next_line_y;
+int next_line_y;
 char input_str[256];
 char *completion;
+int offset, line_break = 0;
 static strs all_strs;
 int switch_buff;
 data key;
@@ -291,10 +292,9 @@ void view_to_next_token(void) {
 
 void next_is_set_process(void) {
     if (*(u32 *)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
-        offset = (Vector2){drawwidth + gap, 0};
-        return;
+        line_break = 0;
+        offset += gap;
     }
-    pos.x = 0;
 }
 
 u32 find_or_add_address_heat(void *p, AddrHeat *tab) {
@@ -348,7 +348,7 @@ static void payload_input(void *pay) {
         char *str = pay + 4;
         if (IsKeyPressed(KEY_BACKSPACE)) {
             if (*(u32 *)pay) {
-                delete_block_space(str + *(u32 *)pay, 1);
+                delete_block_space(str + *(u32 *)pay - 1, 1);
                 (*(u32 *)pay)--;
             }
         }
@@ -392,6 +392,7 @@ void draw_view(void) {
                       Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
+        line_break = 1;
         draw_pos = pos;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
             mouseWorldPos.x >= pos.x) {
@@ -411,7 +412,6 @@ void draw_view(void) {
             end_y[view_index_current] = pos.y + 20;
             return;
         }
-        offset = (Vector2){0, 20};
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
         if (next_line_y == 0 && view > fixed_point) {
@@ -422,8 +422,8 @@ void draw_view(void) {
             txt = *(u32 *)next_payload(view)
                       ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
                       : "get";
-            offset = (Vector2){MeasureText(txt, 20) + gap, 0};
             drawcolor = SKYBLUE;
+            line_break = 0;
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
@@ -457,13 +457,13 @@ void draw_view(void) {
             set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
             drawcolor = GRAY;
         }
-        drawwidth = offset.x;
+        offset = MeasureText(txt, 20) + gap;
         next_is_set_process();
-        max_x[view_index_current] = max(max_x[view_index_current], drawwidth);
-        pos = Vector2Add(pos, offset);
+        pos.x += offset;
+        max_x[view_index_current] = max(max_x[view_index_current], offset);
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
             CheckCollisionPointRec(mouseWorldPos,
-                                   (Rectangle){draw_pos.x, draw_pos.y, (float)drawwidth, 20})) {
+                                   (Rectangle){draw_pos.x, draw_pos.y, offset, 20})) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
@@ -471,13 +471,17 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (pos.x == 0 && CheckCollisionPointRec(mouseWorldPos,
-                                   (Rectangle){draw_pos.x + drawwidth, draw_pos.y, 40, 20})) {
-            line_pos = (Vector2){draw_pos.x + drawwidth, draw_pos.y};
+        if (line_break && CheckCollisionPointRec(mouseWorldPos,
+                                   (Rectangle){draw_pos.x + offset, draw_pos.y, 40, 20})) {
+            line_pos = (Vector2){draw_pos.x + offset, draw_pos.y};
             is_right = 1;
             point = next_token(point);
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
+        if (line_break) {
+            pos.x = 0;
+            pos.y += 20;
+        }
         view_to_next_token();
     }
 }

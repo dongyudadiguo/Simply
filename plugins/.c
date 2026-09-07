@@ -4,7 +4,6 @@
 #include <winsock2.h>
 #include "raylib.h"
 #include "raymath.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -115,16 +114,14 @@ char *find_str(strs index_strs, char *input_str) {
     return final_str;
 }
 
-typedef void (*imp_fn)(void);
-
 static data data_to_data(data k) {
     typedef data (*fn)(data);
-    return ((fn)GetProcAddress(GetModuleHandleA(0), "data_to_data"))(k);
+    return ((fn)(void *)GetProcAddress(GetModuleHandleA(0), "data_to_data"))(k);
 }
 
-static void drill(data k) {
-    typedef void (*fn)(data);
-    ((fn)GetProcAddress(GetModuleHandleA(0), "drill"))(k);
+static void rerun(void) {
+    typedef void (*fn)(void);
+    ((fn)(void *)GetProcAddress(GetModuleHandleA(0), "rerun"))();
 }
 
 static const uint8_t *get_ptr(void) {
@@ -140,7 +137,7 @@ static void set_ptr(const uint8_t *p) {
 #define gap 4
 
 Camera2D camera;
-Vector2 mouseWorldPos, pos, draw_pos, line_pos, bg_pos;
+Vector2 mouseWorldPos, pos, draw_pos, line_pos;
 Color drawcolor;
 void *view, *point, *fixed_point, *base, *copy;
 const char *txt;
@@ -152,15 +149,11 @@ float end_y[64];
 int max_x[64];
 data views_key[64];
 int view_index, view_index_current, draggingIndex;
-int runonece, is_fun, is_point, is_right, fun_max, bracket;
+int runonece, is_point, fun_max;
 int next_line_y;
 char input_str[256];
 char *completion;
-int offset, line_break = 0;
 static strs all_strs;
-int switch_buff;
-data key;
-FILE *file;
 
 typedef struct {
     data key;
@@ -180,7 +173,7 @@ static int adshet_n;
 
 static void *get_global_variables(data k) {
     typedef void *(*fn)(data);
-    fn f = (fn)GetProcAddress(GetModuleHandleA(0), "get_global_variables");
+    fn f = (fn)(void *)GetProcAddress(GetModuleHandleA(0), "get_global_variables");
     if (f)
         return f(k);
     return 0;
@@ -290,15 +283,7 @@ void view_to_next_token(void) {
     view = next_token(view);
 }
 
-void next_is_set_process(void) {
-    if (*(u32 *)next_token(view) == 3 && memcmp(next_token(view) + 4, "set", 3) == 0) {
-        line_break = 0;
-        offset += gap;
-    }
-}
-
-u32 find_or_add_address_heat(void *p, AddrHeat *tab) {
-    (void)tab;
+u32 find_or_add_address_heat(void *p) {
     for (int i = 0; i < adshet_n; i++)
         if (adshet[i].p == p)
             return adshet[i].heat;
@@ -309,7 +294,7 @@ u32 find_or_add_address_heat(void *p, AddrHeat *tab) {
 }
 
 u32 address_heat(void *p) {
-    return *(u32 *)p - find_or_add_address_heat(p, adshet);
+    return *(u32 *)p - find_or_add_address_heat(p);
 }
 
 void set_key_heat(u32 h, data k) {
@@ -392,12 +377,12 @@ void draw_view(void) {
                       Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
-        size = *(u32 *)view;
+        u32 size = *(u32 *)view;
         if (size == u32max) {
-            end_y[view_index_current] = pos.y + offset.y;
+            end_y[view_index_current] = pos.y;
             return;
         }
-        data = view + 4;
+        data key = {(char *)view + 4, size};
         draw_pos = pos;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
             mouseWorldPos.x >= pos.x) {
@@ -409,9 +394,9 @@ void draw_view(void) {
         }
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        next_pos = (Vector2){0,pos.y + 20};
-        draw_width = MeasureText(txt, 20);
-        draw_height = 20;
+        Vector2 next_pos = {views_pos[view_index_current].x, pos.y + 20};
+        int draw_width = MeasureText(txt, 20);
+        const int draw_height = 20;
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
@@ -419,7 +404,7 @@ void draw_view(void) {
                       : "get";
             drawcolor = SKYBLUE;
             draw_width = MeasureText(txt, 20) + gap;
-            next_pos = (Vector2){pos.x + draw_width, 0};
+            next_pos = (Vector2){pos.x + draw_width, pos.y};
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
@@ -428,8 +413,9 @@ void draw_view(void) {
             drawcolor = SKYBLUE;
             draw_width = MeasureText(txt, 20) + gap;
             next_pos.x = pos.x + draw_width;
-            if(keycmp(next_token(view), strkey("set"))){
-                next_pos.y = 0;
+            void *next = next_token(view);
+            if (*(u32 *)next != u32max && keycmp(ptr_to_data(next), strkey("set"))) {
+                next_pos.y = pos.y;
             }
         } else if (keycmp(key, strkey("handrun"))) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -463,7 +449,7 @@ void draw_view(void) {
             drawcolor = GRAY;
         }
         pos = next_pos;
-        draw_edge = draw_pos.x + draw_width;
+        float draw_edge = draw_pos.x + draw_width;
         max_x[view_index_current] = max(max_x[view_index_current], draw_edge);
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
             draggingIndex = view_index_current;
@@ -473,7 +459,8 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (!pos.x && CheckCollisionPointRec(mouseWorldPos,
+        if (pos.y != draw_pos.y &&
+            CheckCollisionPointRec(mouseWorldPos,
                                    (Rectangle){draw_edge, draw_pos.y, 40, draw_height})) {
             line_pos = (Vector2){draw_edge, draw_pos.y};
             point = next_token(point);
@@ -485,8 +472,6 @@ void draw_view(void) {
 
 __declspec(dllexport) void run(void) {
     if (!runonece) {
-        if (file)
-            fclose(file);
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);
         InitWindow(640, 480, "SelfEdit");
         camera.zoom = 1.0f;
@@ -498,7 +483,6 @@ __declspec(dllexport) void run(void) {
     BeginDrawing();
     ClearBackground(BLACK);
     BeginMode2D(camera);
-    is_fun = 0;
     if (IsKeyPressed(KEY_SPACE)) {
         insert_str_token(input_str);
         key_end();
@@ -507,12 +491,10 @@ __declspec(dllexport) void run(void) {
         strcpy(input_str, completion);
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
-        insert_str_token(is_right ||
-                                 (*(u32 *)fixed_point == u32max
-                                      ? 0
-                                      : keycmp(ptr_to_data(next_token(fixed_point)), strkey("set")))
-                             ? "set"
-                             : "get");
+        int next_is_set = *(u32 *)fixed_point != u32max &&
+                          *(u32 *)next_token(fixed_point) != u32max &&
+                          keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
+        insert_str_token(next_is_set ? "set" : "get");
     }
     if (IsKeyPressed(KEY_LEFT_CONTROL)) {
         if (IsKeyDown(KEY_LEFT_ALT)) {
@@ -569,7 +551,6 @@ __declspec(dllexport) void run(void) {
         views_pos[draggingIndex] = Vector2Add(views_pos[draggingIndex], MouseDelta_zoom());
     }
     next_line_y = 0;
-    is_right = 0;
     for (view_index_current = 0; view_index_current < view_index; view_index_current++) {
         view = views[view_index_current];
         pos = views_pos[view_index_current];

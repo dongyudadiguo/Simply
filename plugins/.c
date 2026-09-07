@@ -193,18 +193,19 @@ void delete_block_space(void *p, int size) {
     memmove((char *)p, p + size, block_size / 2);
 }
 
-void separate_payload_input(void *pay_size, void *pay_data) {
+void separate_payload_input(void *pay_size, void *pay_data, int offset) {
     if (is_point) {
         char *str = pay_data;
         if (IsKeyPressed(KEY_BACKSPACE)) {
-            if (*(u32 *)pay_size) {
-                delete_block_space(str + *(u32 *)pay_size, 1);
+            int strlen = *(u32 *)pay_size - offset;
+            if (strlen) {
+                delete_block_space(str + strlen - 1, 1);
                 (*(u32 *)pay_size)--;
             }
         }
         int k = GetCharPressed();
         if (k) {
-            char *add_char = str + *(u32 *)pay_size;
+            char *add_char = str + *(u32 *)pay_size - offset;
             free_block_space(add_char, 1);
             add_char[0] = (char)k;
             *(u32 *)pay_size += 1;
@@ -434,7 +435,7 @@ void draw_view(void) {
                     1;
                 *tmp = !*tmp;
             }
-            separate_payload_input(next_payload(view), next_payload_data(view) + 8);
+            separate_payload_input(next_payload(view), next_payload_data(view) + 8, 8);
             txt = (*(u32 *)next_payload(view) - 8)
                       ? length_str(*(u32 *)next_payload(view) - 8, next_payload(view) + 8)
                       : "handrun";
@@ -445,7 +446,7 @@ void draw_view(void) {
             void * target_token = next_payload_data(view) + 4;
             set_key_heat(address_heat(next_payload_data(view)),
                          (data){target_token, token_payload_size - 4});
-            separate_payload_input(next_payload(view), target_token);
+            separate_payload_input(next_payload(view), target_token, 4);
             txt = token_payload_size - 4
                       ? length_str(token_payload_size - 4, target_token)
                       : "cond";

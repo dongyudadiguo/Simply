@@ -392,7 +392,12 @@ void draw_view(void) {
                       Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
-        line_break = 1;
+        size = *(u32 *)view;
+        if (size == u32max) {
+            end_y[view_index_current] = pos.y + offset.y;
+            return;
+        }
+        data = view + 4;
         draw_pos = pos;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
             mouseWorldPos.x >= pos.x) {
@@ -400,36 +405,32 @@ void draw_view(void) {
         }
         is_point = fixed_point == view;
         if (is_point) {
-            if (!is_right) {
-                line_pos = draw_pos;
-            }
-            if (IsKeyPressed(KEY_HOME)) {
-                view_index = view_index_current + 1;
-            }
-        }
-        key = (data){(char *)view + 4, *(u32 *)view};
-        if (key.n == u32max) {
-            end_y[view_index_current] = pos.y + 20;
-            return;
+            line_pos = draw_pos;
         }
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        if (next_line_y == 0 && view > fixed_point) {
-            next_line_y = (int)pos.y;
-        }
+        next_pos = (Vector2){0,pos.y + 20};
+        draw_width = MeasureText(txt, 20);
+        draw_height = 20;
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
                       ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
                       : "get";
             drawcolor = SKYBLUE;
-            line_break = 0;
+            draw_width = MeasureText(txt, 20) + gap;
+            next_pos = (Vector2){pos.x + draw_width, 0};
         } else if (keycmp(key, strkey("set"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
                       ? length_str(*(u32 *)next_payload(view), next_payload_data(view))
                       : "set";
             drawcolor = SKYBLUE;
+            draw_width = MeasureText(txt, 20) + gap;
+            next_pos.x = pos.x + draw_width;
+            if(keycmp(next_token(view), strkey("set"))){
+                next_pos.y = 0;
+            }
         } else if (keycmp(key, strkey("handrun"))) {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
@@ -445,6 +446,8 @@ void draw_view(void) {
                       ? length_str(*(u32 *)next_payload(view) - 8, next_payload(view) + 8)
                       : "handrun";
             drawcolor = BROWN;
+            draw_width = MeasureText(txt, 20) + gap;
+            next_pos.x = pos.x + draw_width;
         } else if (keycmp(key, strkey("cond"))) {
             set_key_heat(address_heat(next_payload_data(view)),
                          (data){next_payload_data(view) + 4, *(u32 *)(next_payload(view)) - 4});
@@ -453,17 +456,16 @@ void draw_view(void) {
                       ? length_str(*(u32 *)next_payload(view) - 4, next_payload_data(view) + 4)
                       : "cond";
             drawcolor = LIGHTGRAY;
+            draw_width = MeasureText(txt, 20) + gap;
+            next_pos.x = pos.x + draw_width;
         } else if (keycmp(key, strkey("condrerun"))) {
             set_key_heat(address_heat(next_payload_data(view)), views_key[view_index_current]);
             drawcolor = GRAY;
         }
-        offset = MeasureText(txt, 20) + gap;
-        next_is_set_process();
-        pos.x += offset;
-        max_x[view_index_current] = max(max_x[view_index_current], offset);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) &&
-            CheckCollisionPointRec(mouseWorldPos,
-                                   (Rectangle){draw_pos.x, draw_pos.y, offset, 20})) {
+        pos = next_pos;
+        draw_edge = draw_pos.x + draw_width;
+        max_x[view_index_current] = max(max_x[view_index_current], draw_edge);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
@@ -471,17 +473,12 @@ void draw_view(void) {
             draggingIndex = view_index;
             view_index++;
         }
-        if (line_break && CheckCollisionPointRec(mouseWorldPos,
-                                   (Rectangle){draw_pos.x + offset, draw_pos.y, 40, 20})) {
-            line_pos = (Vector2){draw_pos.x + offset, draw_pos.y};
-            is_right = 1;
+        if (!pos.x && CheckCollisionPointRec(mouseWorldPos,
+                                   (Rectangle){draw_edge, draw_pos.y, 40, draw_height})) {
+            line_pos = (Vector2){draw_edge, draw_pos.y};
             point = next_token(point);
         }
         DrawText(txt, (int)draw_pos.x, (int)draw_pos.y, 20, drawcolor);
-        if (line_break) {
-            pos.x = 0;
-            pos.y += 20;
-        }
         view_to_next_token();
     }
 }
@@ -587,8 +584,5 @@ __declspec(dllexport) void run(void) {
     DrawText(TextFormat("%s %s", input_str, completion), GetMouseX() + 20, GetMouseY(), 20, WHITE);
     EndDrawing();
     set_ptr(base);
-    {
-        const uint8_t *p = get_ptr();
-        drill((data){(void *)(p + 4), *(u32 *)p});
-    }
+    rerun();
 }

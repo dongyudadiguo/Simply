@@ -426,18 +426,22 @@ void draw_view(void) {
                 next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
             }
         } else if (keycmp(key, strkey("handrun"))) {
-            if (is_point && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
+            if (is_point) {
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
+                }
+                if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                    char *tmp =
+                        (char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) +
+                        1;
+                    *tmp = !(*tmp);
+                }
             }
-            if (is_point && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-                char *tmp =
-                    (char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) +
-                    1;
-                *tmp = !*tmp;
-            }
-            separate_payload_input(next_payload(view), next_payload_data(view) + 8, 8);
-            txt = (*(u32 *)next_payload(view) - 8)
-                      ? length_str(*(u32 *)next_payload(view) - 8, next_payload(view) + 8)
+            int token_payload_size = *(u32 *)(next_payload(view));
+            void * target_token = next_payload_data(view) + 8;
+            separate_payload_input(next_payload(view), target_token, 8);
+            txt = (token_payload_size - 8)
+                      ? length_str(token_payload_size - 8, target_token)
                       : "handrun";
             drawcolor = BROWN;
             draw_width = MeasureText(txt, 20);

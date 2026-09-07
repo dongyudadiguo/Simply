@@ -137,7 +137,12 @@ static void set_ptr(const uint8_t *p) {
 #define gap 4
 
 Camera2D camera;
-Vector2 mouseWorldPos, pos, draw_pos, line_pos;
+Vector2 mouseWorldPos, pos, draw_pos, line_pos, next_pos;
+u32 size;
+data key;
+int draw_width, draw_height;
+float draw_edge, key_heat;
+void *next;
 Color drawcolor;
 void *view, *point, *fixed_point, *base, *copy;
 const char *txt;
@@ -371,18 +376,18 @@ static uint8_t *GenerateRandomBytes(uint32_t n) {
 }
 
 void draw_view(void) {
-    float key_heat = get_key_heat(views_key[view_index_current]);
+    key_heat = get_key_heat(views_key[view_index_current]);
     if (key_heat) {
         DrawRectangle(pos.x, pos.y, max_x[view_index_current], 20,
                       Fade(WHITE, brightness(key_heat, 100)));
     }
     while (1) {
-        u32 size = *(u32 *)view;
+        size = *(u32 *)view;
         if (size == u32max) {
-            end_y[view_index_current] = pos.y;
+            end_y[view_index_current] = pos.y + draw_height;
             return;
         }
-        data key = {(char *)view + 4, size};
+        key = (data){(char *)view + 4, size};
         draw_pos = pos;
         if (mouseWorldPos.y >= pos.y && mouseWorldPos.y <= end_y[view_index_current] &&
             mouseWorldPos.x >= pos.x) {
@@ -394,9 +399,9 @@ void draw_view(void) {
         }
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        Vector2 next_pos = {views_pos[view_index_current].x, pos.y + 20};
-        int draw_width = MeasureText(txt, 20);
-        const int draw_height = 20;
+        next_pos = (Vector2){views_pos[view_index_current].x, pos.y + 20};
+        draw_width = MeasureText(txt, 20);
+        draw_height = 20;
         if (keycmp(key, strkey("get"))) {
             payload_input(next_payload(view));
             txt = *(u32 *)next_payload(view)
@@ -413,7 +418,7 @@ void draw_view(void) {
             drawcolor = SKYBLUE;
             draw_width = MeasureText(txt, 20) + gap;
             next_pos.x = pos.x + draw_width;
-            void *next = next_token(view);
+            next = next_token(view);
             if (*(u32 *)next != u32max && keycmp(ptr_to_data(next), strkey("set"))) {
                 next_pos.y = pos.y;
             }
@@ -449,7 +454,7 @@ void draw_view(void) {
             drawcolor = GRAY;
         }
         pos = next_pos;
-        float draw_edge = draw_pos.x + draw_width;
+        draw_edge = draw_pos.x + draw_width;
         max_x[view_index_current] = max(max_x[view_index_current], draw_edge);
         if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
             draggingIndex = view_index_current;
@@ -492,8 +497,8 @@ __declspec(dllexport) void run(void) {
     }
     if (IsKeyPressed(KEY_LEFT_ALT)) {
         int next_is_set = *(u32 *)fixed_point != u32max &&
-                          *(u32 *)next_token(fixed_point) != u32max &&
-                          keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
+                      *(u32 *)next_token(fixed_point) != u32max &&
+                      keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
         insert_str_token(next_is_set ? "set" : "get");
     }
     if (IsKeyPressed(KEY_LEFT_CONTROL)) {

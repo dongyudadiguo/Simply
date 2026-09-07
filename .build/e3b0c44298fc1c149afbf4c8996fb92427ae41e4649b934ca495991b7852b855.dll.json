@@ -19,7 +19,7 @@
     ],
     "compiler": "27346069ee4156ee7b10fa031fa8c57107983ecb2e775fad650c8735ddd32106",
     "inputs": {
-      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\.c": "8c59e9681524f6f87b9699f1f366025593728713e7f88a46c272b7ed8380226a",
+      "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\.c": "45286fbde90bcb43f8e82017d3995c879c154361d7770de6b8614bc3d1e10ed3",
       "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\plugins\\plug_api.h": "19f2500ccef9f48ad31b7e848474571f12320ce6397c068da6a4610a5996119a",
       "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include\\raylib.h": "1842111e48260e622d0ff2e6f4ac6141508d6f369791265ba518e7502c760ccf",
       "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\include\\raymath.h": "9427c24aceac5c566921bc87320c7b1ba90bd760b86f013f254b65c2fb5ada82",
@@ -29,5 +29,5 @@
       "C:\\Users\\12159\\OneDrive\\Desktop\\Simply\\raylib-6.0_win64_mingw-w64\\lib\\raylib.dll": "5a3e7b6b163273d7255e53b008ca6c5e56c7dcd0405a316e95f51bb00eacc4cf"
     }
   },
-  "output": "d7b138325fbf740026d14310bf077b52b5ff8844c5910f27de7f9f7be3b1c009"
+  "output": "0b93c43d586b9272be0057e271ff9558bb58e7941be8009fc079244da8a62719"
 }

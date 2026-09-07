@@ -154,7 +154,7 @@ float end_y[64];
 int max_x[64];
 data views_key[64];
 int view_index, view_index_current, draggingIndex;
-int runonece, is_point, fun_max;
+int runonece, is_point, fun_max, comb = 0;
 int next_line_y;
 int is_right = 0;
 char input_str[256];
@@ -426,10 +426,10 @@ void draw_view(void) {
                 next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
             }
         } else if (keycmp(key, strkey("handrun"))) {
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (is_point && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
             }
-            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            if (is_point && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
                 char *tmp =
                     (char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) +
                     1;
@@ -499,26 +499,31 @@ __declspec(dllexport) void run(void) {
     if (IsKeyPressed(KEY_TAB)) {
         strcpy(input_str, completion);
     }
-    if (IsKeyPressed(KEY_LEFT_ALT)) {
-        int next_is_set = *(u32 *)fixed_point != u32max &&
-                      *(u32 *)next_token(fixed_point) != u32max &&
-                      keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
-        insert_str_token(next_is_set || is_right ? "set" : "get");
-    }
-    if (IsKeyPressed(KEY_LEFT_CONTROL)) {
-        if (IsKeyDown(KEY_LEFT_ALT)) {
-            insert_payload((data){"cond", strlen("cond")});
+    if (IsKeyDown(KEY_LEFT_CONTROL)) {
+        if (IsKeyPressed(KEY_LEFT_ALT)) {
+            insert_payload((data){"handrun", strlen("handrun")});
             insert_data((data){(int[]){8}, 4});
             insert_data((data){GenerateRandomBytes(8), 8});
-        } else {
-            if (IsKeyDown(KEY_LEFT_SHIFT)) {
-                insert_payload((data){"condrerun", strlen("condrerun")});
-                insert_data((data){(int[]){4, 0}, 8});
-            } else {
-                insert_payload((data){"cond", strlen("cond")});
-                insert_data((data){(int[]){4, 0}, 8});
-            }
+            comb = 1;
+        } else if (IsKeyPressed(KEY_LEFT_SHIFT)) {
+            insert_payload((data){"condrerun", strlen("condrerun")});
+            insert_data((data){(int[]){4, 0}, 8});
+            comb = 1;
         }
+    }else{
+        if (IsKeyPressed(KEY_LEFT_ALT)) {
+            int next_is_set = *(u32 *)fixed_point != u32max &&
+                        *(u32 *)next_token(fixed_point) != u32max &&
+                        keycmp(ptr_to_data(next_token(fixed_point)), strkey("set"));
+            insert_str_token(next_is_set || is_right ? "set" : "get");
+        }
+    }
+    if (IsKeyReleased(KEY_LEFT_CONTROL)) {
+        if (!comb) {
+            insert_payload((data){"cond", strlen("cond")});
+            insert_data((data){(int[]){4, 0}, 8});
+        }
+        comb = 0;
     }
     if (IsKeyPressed(KEY_DELETE)) {
         copy = point;

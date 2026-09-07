@@ -157,6 +157,7 @@ int view_index, view_index_current, draggingIndex;
 int runonece, is_point, fun_max, comb = 0;
 int next_line_y;
 int is_right = 0;
+int handrun_right = 0;
 char input_str[256];
 char *completion;
 static strs all_strs;
@@ -431,6 +432,7 @@ void draw_view(void) {
                     *(char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) = 1;
                 }
                 if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                    handrun_right = 1;
                     char *tmp =
                         (char *)get_global_variables(u64_to_data(*(u64 *)(next_payload_data(view)))) +
                         1;
@@ -463,7 +465,7 @@ void draw_view(void) {
         pos = next_pos;
         draw_edge = draw_pos.x + draw_width;
         max_x[view_index_current] = max(max_x[view_index_current], draw_edge);
-        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
+        if (!handrun_right && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
             draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
@@ -570,6 +572,7 @@ __declspec(dllexport) void run(void) {
     }
     next_line_y = 0;
     is_right = 0;
+    handrun_right = 0;
     for (view_index_current = 0; view_index_current < view_index; view_index_current++) {
         view = views[view_index_current];
         pos = views_pos[view_index_current];

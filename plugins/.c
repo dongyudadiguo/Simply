@@ -160,6 +160,7 @@ int is_right = 0;
 int handrun_right = 0;
 char input_str[256];
 char *completion;
+Vector2 origin;
 static strs all_strs;
 
 typedef struct {
@@ -379,11 +380,23 @@ static uint8_t *GenerateRandomBytes(uint32_t n) {
 }
 
 void draw_view(void) {
+    origin = pos;
     key_heat = get_key_heat(views_key[view_index_current]);
     if (key_heat) {
-        DrawRectangle(pos.x, pos.y, max_x[view_index_current], end_y[view_index_current],
+        DrawRectangleLinesEx((Rectangle){origin.x - 4, origin.y - 4, max_x[view_index_current] + 8, end_y[view_index_current] + 8}, 4,
                       Fade(WHITE, brightness(key_heat, 100)));
     }
+    max_x[view_index_current] = 0;
+    txt = length_str(views_key[view_index_current].n, views_key[view_index_current].d);
+    DrawText(txt, pos.x, pos.y, 20, WHITE);
+    int text_width = MeasureText(txt, 20);
+    if(CheckCollisionPointRec(mouseWorldPos,(Rectangle){origin.x, origin.y, text_width > 80 ? 80 : text_width, 20})){
+        if(IsMouseButtonDown(MOUSE_BUTTON_RIGHT)){
+            view_index = view_index_current + 1;
+        }
+        draggingIndex = view_index_current;
+    }
+    pos.y += 20;
     while (1) {
         size = *(u32 *)view;
         key = (data){(char *)view + 4, size};
@@ -402,7 +415,7 @@ void draw_view(void) {
         }
         drawcolor = WHITE;
         txt = length_str(key.n, key.d);
-        next_pos = (Vector2){0, pos.y + 20};
+        next_pos = (Vector2){origin.x, pos.y + 20};
         draw_width = MeasureText(txt, 20);
         if(keycmp(ptr_to_data(next_token(view)), strkey("set"))){
             next_pos = (Vector2){pos.x + draw_width + gap, pos.y};
@@ -464,13 +477,11 @@ void draw_view(void) {
         }
         pos = next_pos;
         draw_edge = draw_pos.x + draw_width;
-        max_x[view_index_current] = max(max_x[view_index_current], draw_edge);
+        max_x[view_index_current] = max(max_x[view_index_current], draw_edge - origin.x);
         if (!handrun_right && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
-            draggingIndex = view_index_current;
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
             views_key[view_index] = key;
-            draggingIndex = view_index;
             view_index++;
         }
         if (pos.y != draw_pos.y &&
@@ -567,7 +578,7 @@ __declspec(dllexport) void run(void) {
     if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
         camera.target = Vector2Subtract(camera.target, MouseDelta_zoom());
     }
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
         views_pos[draggingIndex] = Vector2Add(views_pos[draggingIndex], MouseDelta_zoom());
     }
     next_line_y = 0;

@@ -570,11 +570,12 @@ __declspec(dllexport) void run(void) {
         exit(0);
     }
     float wheel = GetMouseWheelMove();
+    mouseWorldPos = GetScreenToWorld2D(GetMousePosition(), camera);
     if (wheel != 0) {
         camera.zoom += wheel * (0.1f * camera.zoom);
+        camera.target = Vector2Add(camera.target,
+            Vector2Subtract(mouseWorldPos, GetScreenToWorld2D(GetMousePosition(), camera)));
     }
-    camera.offset = (Vector2){(float)GetScreenWidth() / 2, (float)GetScreenHeight() / 2};
-    mouseWorldPos = GetScreenToWorld2D(GetMousePosition(), camera);
     if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
         camera.target = Vector2Subtract(camera.target, MouseDelta_zoom());
     }

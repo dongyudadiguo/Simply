@@ -75,7 +75,10 @@ __declspec(dllexport) data getfirstdata(data k) {
     send(s, (char *)&k.n, 4, 0);
     send(s, k.d, k.n, 0);
     unsigned n;
-    recv(s, (char *)&n, 4, 0);
+    if (recv(s, (char *)&n, 4, 0) == 0) {
+        closesocket(s);
+        return (data){0, 0};
+    }
     void *d = malloc(n + block_size);
     recv(s, d, n, 0);
     closesocket(s);

@@ -114,6 +114,16 @@ char *find_str(strs index_strs, char *input_str) {
     return final_str;
 }
 
+static int is_key_exist(data k) {
+    typedef int (*fn)(data);
+    return ((fn)(void *)GetProcAddress(GetModuleHandleA(0), "is_key_exist"))(k);
+}
+
+static void net_upload(data v, data k) {
+    typedef void (*fn)(data, data);
+    ((fn)(void *)GetProcAddress(GetModuleHandleA(0), "net_upload"))(v, k);
+}
+
 static data data_to_data(data k) {
     typedef data (*fn)(data);
     return ((fn)(void *)GetProcAddress(GetModuleHandleA(0), "data_to_data"))(k);
@@ -479,6 +489,10 @@ void draw_view(void) {
         draw_edge = draw_pos.x + draw_width;
         max_x[view_index_current] = max(max_x[view_index_current], draw_edge - origin.x);
         if (!handrun_right && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && is_point) {
+            if(!is_key_exist(key)){
+                int32_t end = -1;
+                net_upload((data){&end, sizeof end}, key);
+            }
             views[view_index] = data_to_data(key).d;
             views_pos[view_index] = mouseWorldPos;
             views_key[view_index] = key;

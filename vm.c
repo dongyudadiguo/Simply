@@ -61,6 +61,26 @@ __declspec(dllexport) void net_upload(data v, data k) {
     closesocket(s);
 }
 
+__declspec(dllexport) int is_key_exist(data k) {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(8000);
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    connect(s, (struct sockaddr *)&a, sizeof a);
+    char op = 2;
+    send(s, &op, 1, 0);
+    send(s, (char *)&k.n, 4, 0);
+    send(s, k.d, k.n, 0);
+    unsigned n;
+    int ret = recv(s, (char *)&n, 4, 0);
+    closesocket(s);
+    WSACleanup();
+    return ret > 0;
+}
+
 __declspec(dllexport) data getfirstdata(data k) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -75,10 +95,7 @@ __declspec(dllexport) data getfirstdata(data k) {
     send(s, (char *)&k.n, 4, 0);
     send(s, k.d, k.n, 0);
     unsigned n;
-    if (recv(s, (char *)&n, 4, 0) == 0) {
-        closesocket(s);
-        return (data){0, 0};
-    }
+    recv(s, (char *)&n, 4, 0);
     void *d = malloc(n + block_size);
     recv(s, d, n, 0);
     closesocket(s);
